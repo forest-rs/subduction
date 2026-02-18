@@ -9,9 +9,11 @@
 //! - Optional `wp_presentation` for actual present time feedback
 //! - `wl_surface` commit presenter
 
+mod event_loop;
 mod presentation;
 mod queue;
 mod tick;
 
+pub use event_loop::{EmbeddedStateMode, OwnedQueueMode, WaylandState};
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
 pub use subduction_core::backend::Presenter;

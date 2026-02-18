@@ -8,3 +8,5 @@
 //! - Frame callback tick source (pull-based, pacing-only)
 //! - Optional `wp_presentation` for actual present time feedback
 //! - `wl_surface` commit presenter
+
+pub use subduction_core::backend::Presenter;

@@ -9,4 +9,9 @@
 //! - Optional `wp_presentation` for actual present time feedback
 //! - `wl_surface` commit presenter
 
+mod presentation;
+mod queue;
+mod tick;
+
+pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
 pub use subduction_core::backend::Presenter;

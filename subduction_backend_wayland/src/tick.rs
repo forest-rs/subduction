@@ -4,7 +4,7 @@
 //! Internal frame-tick queueing primitives.
 #![allow(
     dead_code,
-    reason = "queue wiring lands with FrameCallbackTicker in milestone D"
+    reason = "queue wiring is staged and consumed by later backend integration work"
 )]
 
 use crate::queue::BoundedQueue;

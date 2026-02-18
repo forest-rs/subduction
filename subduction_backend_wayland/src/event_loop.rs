@@ -34,7 +34,7 @@
 //! and delegates backend Dispatch impls from HostState.
 //! ```
 //!
-//! # QueueHandle object-creation contract
+//! # `QueueHandle` object-creation contract
 //!
 //! Every object participating in backend event delivery must be created with
 //! the queue handle for the selected mode.

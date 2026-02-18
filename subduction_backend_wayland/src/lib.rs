@@ -13,7 +13,9 @@ mod event_loop;
 mod presentation;
 mod queue;
 mod tick;
+mod time;
 
 pub use event_loop::{EmbeddedStateMode, OwnedQueueMode, WaylandState};
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
 pub use subduction_core::backend::Presenter;
+pub use time::{Clock, now, timebase};

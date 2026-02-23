@@ -19,7 +19,8 @@
 //!     -> QueueHandle<WaylandState>
 //! host/toolkit creates wl_surface with QueueHandle<WaylandState>
 //! backend objects bind/create with QueueHandle<WaylandState>
-//! backend dispatches via OwnedQueueMode::dispatch_pending()
+//! backend dispatches via OwnedQueueMode::dispatch_pending() or
+//! OwnedQueueMode::blocking_dispatch()
 //!
 //! Embedded-state mode
 //! -------------------
@@ -52,7 +53,10 @@
 //!
 //! Using the wrong queue handle causes silent non-delivery of events.
 
-use wayland_client::{Connection, DispatchError, EventQueue, QueueHandle};
+use wayland_client::{
+    Connection, DispatchError, EventQueue, QueueHandle,
+    backend::{ReadEventsGuard, WaylandError},
+};
 
 /// Backend-owned state for Wayland protocol handling.
 ///
@@ -98,11 +102,38 @@ impl OwnedQueueMode {
         self.event_queue.handle()
     }
 
-    /// Dispatches pending events without blocking.
+    /// Dispatches already-queued events without blocking.
     ///
-    /// This is the core primitive for host-controlled pumping.
+    /// This method only runs handlers for events that have already been read
+    /// from the Wayland socket into this queue. It does **not** perform socket
+    /// I/O by itself.
+    ///
+    /// In a non-blocking loop, pair this method with [`Self::flush`] and
+    /// [`Self::prepare_read`] (or equivalent external connection I/O) to move
+    /// protocol traffic before dispatching.
     pub fn dispatch_pending(&mut self) -> Result<usize, DispatchError> {
         self.event_queue.dispatch_pending(&mut self.state)
+    }
+
+    /// Flushes requests, blocks for new events when needed, and dispatches.
+    ///
+    /// This is the easiest complete pumping primitive for simple owned-mode
+    /// loops, and wraps [`EventQueue::blocking_dispatch`].
+    pub fn blocking_dispatch(&mut self) -> Result<usize, DispatchError> {
+        self.event_queue.blocking_dispatch(&mut self.state)
+    }
+
+    /// Flushes pending outgoing requests to the Wayland socket.
+    pub fn flush(&self) -> Result<(), WaylandError> {
+        self.event_queue.flush()
+    }
+
+    /// Starts a synchronized socket read for poll-based loops.
+    ///
+    /// If this returns [`None`], dispatch queued events before trying again.
+    #[must_use]
+    pub fn prepare_read(&self) -> Option<ReadEventsGuard> {
+        self.event_queue.prepare_read()
     }
 
     /// Returns an immutable reference to backend state.

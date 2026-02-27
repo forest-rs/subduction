@@ -119,8 +119,7 @@ where
                         return;
                     }
                     let v = version.min(WP_PRESENTATION_VERSION);
-                    let proxy: wp_presentation::WpPresentation =
-                        registry.bind(name, v, qh, ());
+                    let proxy: wp_presentation::WpPresentation = registry.bind(name, v, qh, ());
                     ws.presentation = Some(proxy);
                     ws.capabilities.has_presentation_time = true;
                 }

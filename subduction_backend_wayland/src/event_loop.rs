@@ -52,6 +52,131 @@
 //! Multi-surface routing is intentionally deferred.
 //!
 //! Using the wrong queue handle causes silent non-delivery of events.
+//!
+//! # Owned queue mode
+//!
+//! ## Simple blocking loop
+//!
+//! [`OwnedQueueMode::blocking_dispatch`] flushes and blocks in one call,
+//! which is the easiest way to pump events:
+//!
+//! ```rust,no_run
+//! use wayland_client::Connection;
+//! use subduction_backend_wayland::OwnedQueueMode;
+//!
+//! let connection = Connection::connect_to_env().unwrap();
+//! let mut mode = OwnedQueueMode::new(&connection);
+//! mode.bootstrap().unwrap();
+//!
+//! loop {
+//!     mode.blocking_dispatch().unwrap();
+//!     let _caps = mode.capabilities();
+//!     // ... poll ticks, check capabilities ...
+//! }
+//! ```
+//!
+//! ## Non-blocking (poll-based) loop
+//!
+//! For integration with an external event loop, use the five-step pattern:
+//!
+//! 1. [`flush()`](OwnedQueueMode::flush) — send pending outgoing requests.
+//! 2. [`dispatch_pending()`](OwnedQueueMode::dispatch_pending) — process
+//!    any already-buffered events.
+//! 3. [`prepare_read()`](OwnedQueueMode::prepare_read) — obtain a
+//!    [`ReadEventsGuard`](wayland_client::backend::ReadEventsGuard). If
+//!    this returns `None`, go back to step 2.
+//! 4. Poll the fd from `guard.connection_fd()` for readability.
+//! 5. `guard.read()` — read events from the socket, then go to step 2.
+//!
+//! `dispatch_pending` alone never reads from the socket — skipping the
+//! `prepare_read` / `read` cycle will stall the loop.
+//!
+//! ```rust,no_run
+//! use wayland_client::Connection;
+//! use subduction_backend_wayland::OwnedQueueMode;
+//!
+//! let connection = Connection::connect_to_env().unwrap();
+//! let mut mode = OwnedQueueMode::new(&connection);
+//! mode.bootstrap().unwrap();
+//!
+//! loop {
+//!     mode.flush().unwrap();
+//!     mode.dispatch_pending().unwrap();
+//!
+//!     if let Some(guard) = mode.prepare_read() {
+//!         let _fd = guard.connection_fd();
+//!         // ... poll fd for readability ...
+//!         guard.read().unwrap();
+//!     }
+//!     // dispatch again after reading
+//!     mode.dispatch_pending().unwrap();
+//! }
+//! ```
+//!
+//! # Embedded-state mode
+//!
+//! When the host already owns the Wayland event queue, embed a
+//! [`WaylandState`] inside the host state and wire delegation so that
+//! backend protocol events are forwarded through [`WaylandProtocol`].
+//!
+//! The host must:
+//!
+//! - Contain a [`WaylandState`] field in its state struct.
+//! - Implement `AsMut<WaylandState>` for the host state.
+//! - Call [`delegate_dispatch!`](wayland_client::delegate_dispatch) for
+//!   each protocol object the backend handles.
+//! - Call [`WaylandState::set_registry`] with the host-created registry.
+//! - Drive the roundtrip and dispatch loop itself.
+//! - Flush the connection after emitting requests (the backend does not
+//!   flush on the host's behalf in this mode).
+//!
+//! ```rust,no_run
+//! use wayland_client::protocol::{wl_output, wl_registry};
+//! use wayland_client::{Connection, EventQueue};
+//! use wayland_protocols::wp::presentation_time::client::wp_presentation;
+//! use subduction_backend_wayland::{
+//!     EmbeddedStateMode, OutputGlobalData, WaylandProtocol, WaylandState,
+//! };
+//!
+//! struct HostState {
+//!     wayland: WaylandState,
+//!     // ... other host fields ...
+//! }
+//!
+//! impl AsMut<WaylandState> for HostState {
+//!     fn as_mut(&mut self) -> &mut WaylandState {
+//!         &mut self.wayland
+//!     }
+//! }
+//!
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_registry::WlRegistry: ()] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wp_presentation::WpPresentation: ()] => WaylandProtocol);
+//!
+//! let connection = Connection::connect_to_env().unwrap();
+//! let mut event_queue: EventQueue<HostState> = connection.new_event_queue();
+//! let qh = event_queue.handle();
+//!
+//! let display = connection.display();
+//! let registry = display.get_registry(&qh, ());
+//!
+//! let mut state = HostState {
+//!     wayland: WaylandState::new(),
+//! };
+//! state.wayland.set_registry(registry);
+//!
+//! // Initial roundtrip populates the output registry.
+//! event_queue.roundtrip(&mut state).unwrap();
+//!
+//! loop {
+//!     event_queue.blocking_dispatch(&mut state).unwrap();
+//!     let _caps = state.wayland.capabilities();
+//!     // ... host dispatch logic ...
+//! }
+//! ```
 
 use crate::output_registry::OutputRegistry;
 use crate::protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
@@ -79,6 +204,10 @@ use wayland_protocols::wp::presentation_time::client::wp_presentation;
 /// 4. Wire [`delegate_dispatch!`](wayland_client::delegate_dispatch) for
 ///    `WlRegistry` and `WlOutput` via [`WaylandProtocol`].
 /// 5. Drive dispatch and the initial roundtrip themselves.
+///
+/// Embedded-mode hosts are responsible for flushing the connection after
+/// emitting requests. Future commit-sequencing APIs will handle flushing
+/// internally.
 #[derive(Debug)]
 pub struct WaylandState {
     pub(crate) registry: Option<wl_registry::WlRegistry>,
@@ -122,7 +251,10 @@ impl WaylandState {
     /// After `wp_presentation.clock_id` has been received, this reads the
     /// compositor-aligned clock. Before that, it falls back to
     /// `CLOCK_MONOTONIC`.
-    #[allow(dead_code, reason = "will be used by ticker/presenter in future implementation")]
+    #[allow(
+        dead_code,
+        reason = "will be used by ticker/presenter in future implementation"
+    )]
     #[must_use]
     pub(crate) fn now(&self) -> HostTime {
         now_for_clock(self.clock)

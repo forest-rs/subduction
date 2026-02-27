@@ -1,0 +1,21 @@
+[package]
+name = "wgpu_lotta_layers"
+description = "wgpu stress-test: 1000+ animated layers composited by WgpuPresenter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+lotta_layers_common = { path = "../lotta_layers_common" }
+subduction_core = { workspace = true, features = ["std"] }
+subduction_backend_wgpu = { path = "../../subduction_backend_wgpu" }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+winit = "0.30"
+pollster = "0.4"

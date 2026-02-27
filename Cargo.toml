@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "subduction_backend_apple",
   "subduction_backend_web",
+  "subduction_backend_wgpu",
   "subduction_backend_windows",
   "subduction_backend_android",
   "subduction_backend_wayland",
@@ -19,6 +20,8 @@ members = [
   "examples/web_layers",
   "examples/web_video",
   "examples/web_lotta_layers",
+  "examples/wgpu_layers",
+  "examples/wgpu_lotta_layers",
 ]
 
 [workspace.package]
@@ -35,6 +38,8 @@ subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
 kurbo = { version = "0.13", default-features = false, features = ["libm"] }
 understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "e66fecdc521b57b76bb3b28ddc70ce3944926664" }
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 web-sys = "0.3"
 

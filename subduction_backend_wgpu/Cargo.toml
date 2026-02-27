@@ -1,0 +1,22 @@
+[package]
+name = "subduction_backend_wgpu"
+description = "wgpu fallback compositor backend for subduction"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["compositing", "wgpu", "gpu"]
+categories = ["rendering::engine"]
+
+[lints]
+workspace = true
+
+[dependencies]
+subduction_core = { workspace = true, features = ["std"] }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+kurbo = { workspace = true }

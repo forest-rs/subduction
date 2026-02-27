@@ -53,6 +53,9 @@
 //!
 //! Using the wrong queue handle causes silent non-delivery of events.
 
+use crate::output_registry::OutputRegistry;
+use crate::protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
+use wayland_client::protocol::{wl_output, wl_registry};
 use wayland_client::{
     Connection, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
@@ -62,18 +65,66 @@ use wayland_client::{
 ///
 /// In embedded mode, host application state should contain one of these and
 /// delegate backend dispatch handling to it.
-#[derive(Debug, Default)]
+///
+/// # Embedded-mode wiring
+///
+/// Hosts that own their own event queue must:
+///
+/// 1. Call `wl_display.get_registry()` on their queue handle.
+/// 2. Call [`WaylandState::set_registry`] to store the registry proxy.
+/// 3. Implement `AsMut<WaylandState>` on their host state.
+/// 4. Wire [`delegate_dispatch!`](wayland_client::delegate_dispatch) for
+///    `WlRegistry` and `WlOutput` via [`WaylandProtocol`].
+/// 5. Drive dispatch and the initial roundtrip themselves.
+#[derive(Debug)]
 pub struct WaylandState {
-    _private: (),
+    pub(crate) registry: Option<wl_registry::WlRegistry>,
+    pub(crate) output_registry: OutputRegistry,
+    pub(crate) capabilities: Capabilities,
+    pub(crate) bootstrapped: bool,
 }
 
 impl WaylandState {
     /// Creates a new empty backend state.
     #[must_use]
     pub const fn new() -> Self {
-        Self { _private: () }
+        Self {
+            registry: None,
+            output_registry: OutputRegistry::new(),
+            capabilities: Capabilities::new(),
+            bootstrapped: false,
+        }
+    }
+
+    /// Returns the current protocol capabilities.
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        self.capabilities
+    }
+
+    /// Stores a host-created registry proxy for embedded-mode integration.
+    ///
+    /// Call this after creating the registry on your own queue handle so that
+    /// [`WaylandState`] knows global discovery is possible.
+    pub fn set_registry(&mut self, registry: wl_registry::WlRegistry) {
+        self.registry = Some(registry);
     }
 }
+
+impl Default for WaylandState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsMut<Self> for WaylandState {
+    fn as_mut(&mut self) -> &mut Self {
+        self
+    }
+}
+
+wayland_client::delegate_dispatch!(WaylandState: [wl_registry::WlRegistry: ()] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
 
 /// Owned-queue integration mode.
 ///
@@ -81,18 +132,50 @@ impl WaylandState {
 /// exposes explicit dispatch and queue-handle accessors.
 #[derive(Debug)]
 pub struct OwnedQueueMode {
+    connection: Connection,
     event_queue: EventQueue<WaylandState>,
     state: WaylandState,
 }
 
 impl OwnedQueueMode {
     /// Creates an owned-queue integration from an existing Wayland connection.
+    ///
+    /// The connection is cloned internally so that [`Self::bootstrap`] does
+    /// not require the caller to pass it again.
     #[must_use]
     pub fn new(connection: &Connection) -> Self {
         Self {
+            connection: connection.clone(),
             event_queue: connection.new_event_queue(),
             state: WaylandState::new(),
         }
+    }
+
+    /// Performs initial global discovery via a blocking roundtrip.
+    ///
+    /// This creates the `wl_registry` (once), performs a blocking roundtrip to
+    /// populate the output registry, and marks the state as bootstrapped.
+    ///
+    /// Failure is idempotent: the registry proxy survives a failed roundtrip so
+    /// a retry re-attempts without creating a duplicate.
+    pub fn bootstrap(&mut self) -> Result<(), DispatchError> {
+        if self.state.bootstrapped {
+            return Ok(());
+        }
+        if self.state.registry.is_none() {
+            let display = self.connection.display();
+            let qh = self.event_queue.handle();
+            self.state.registry = Some(display.get_registry(&qh, ()));
+        }
+        self.event_queue.roundtrip(&mut self.state)?;
+        self.state.bootstrapped = true;
+        Ok(())
+    }
+
+    /// Returns the current protocol capabilities.
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        self.state.capabilities()
     }
 
     /// Returns the queue handle that must be used for all backend-relevant

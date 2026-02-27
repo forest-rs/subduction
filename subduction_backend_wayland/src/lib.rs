@@ -11,7 +11,9 @@
 
 mod event_loop;
 mod hints;
+mod output_registry;
 mod presentation;
+mod protocol;
 mod queue;
 mod tick;
 mod time;
@@ -19,5 +21,6 @@ mod time;
 pub use event_loop::{EmbeddedStateMode, OwnedQueueMode, WaylandState};
 pub use hints::compute_present_hints;
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
+pub use protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
 pub use subduction_core::backend::Presenter;
 pub use time::{Clock, now, timebase};

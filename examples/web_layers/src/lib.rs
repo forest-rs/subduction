@@ -8,9 +8,9 @@
 //! web backend's building blocks: [`RafLoop`] for timing, [`DomPresenter`] for
 //! presentation, and [`Scheduler`] for frame planning.
 //!
-//! Build with: `wasm-pack build --target web examples/web-layers`
+//! Build with: `wasm-pack build --target web examples/web_layers`
 //!
-//! Then serve `examples/web-layers/` and open `index.html` in a browser.
+//! Then serve `examples/web_layers/` and open `index.html` in a browser.
 //!
 //! [`RafLoop`]: subduction_backend_web::RafLoop
 //! [`DomPresenter`]: subduction_backend_web::DomPresenter

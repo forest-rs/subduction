@@ -38,6 +38,8 @@ env:
     --exclude web_layers
     --exclude web_lotta_layers
     --exclude web_video
+    --exclude wgpu_layers
+    --exclude wgpu_lotta_layers
   # List of packages that don't support wasip1.
   RUST_NO_WASIP1_PKGS: >-
     --exclude macos_layers

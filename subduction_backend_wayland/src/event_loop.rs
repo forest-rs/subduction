@@ -55,11 +55,14 @@
 
 use crate::output_registry::OutputRegistry;
 use crate::protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
+use crate::time::{Clock, now_for_clock};
+use subduction_core::time::HostTime;
 use wayland_client::protocol::{wl_output, wl_registry};
 use wayland_client::{
     Connection, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
 };
+use wayland_protocols::wp::presentation_time::client::wp_presentation;
 
 /// Backend-owned state for Wayland protocol handling.
 ///
@@ -81,6 +84,8 @@ pub struct WaylandState {
     pub(crate) registry: Option<wl_registry::WlRegistry>,
     pub(crate) output_registry: OutputRegistry,
     pub(crate) capabilities: Capabilities,
+    pub(crate) clock: Clock,
+    pub(crate) presentation: Option<wp_presentation::WpPresentation>,
     pub(crate) bootstrapped: bool,
 }
 
@@ -92,6 +97,8 @@ impl WaylandState {
             registry: None,
             output_registry: OutputRegistry::new(),
             capabilities: Capabilities::new(),
+            clock: Clock::Monotonic,
+            presentation: None,
             bootstrapped: false,
         }
     }
@@ -109,6 +116,17 @@ impl WaylandState {
     pub fn set_registry(&mut self, registry: wl_registry::WlRegistry) {
         self.registry = Some(registry);
     }
+
+    /// Returns current host time using the selected backend clock.
+    ///
+    /// After `wp_presentation.clock_id` has been received, this reads the
+    /// compositor-aligned clock. Before that, it falls back to
+    /// `CLOCK_MONOTONIC`.
+    #[allow(dead_code, reason = "will be used by ticker/presenter in future implementation")]
+    #[must_use]
+    pub(crate) fn now(&self) -> HostTime {
+        now_for_clock(self.clock)
+    }
 }
 
 impl Default for WaylandState {
@@ -125,6 +143,7 @@ impl AsMut<Self> for WaylandState {
 
 wayland_client::delegate_dispatch!(WaylandState: [wl_registry::WlRegistry: ()] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wp_presentation::WpPresentation: ()] => WaylandProtocol);
 
 /// Owned-queue integration mode.
 ///

@@ -19,12 +19,17 @@
 //! ```
 
 use crate::event_loop::WaylandState;
+use crate::time::clock_from_presentation_clk_id;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::{wl_output, wl_registry};
 use wayland_client::{Dispatch, Proxy};
+use wayland_protocols::wp::presentation_time::client::wp_presentation;
 
 /// Maximum `wl_output` version the backend will bind.
 pub(crate) const WL_OUTPUT_MAX_VERSION: u32 = 4;
+
+/// Maximum `wp_presentation` version the backend will bind.
+const WP_PRESENTATION_VERSION: u32 = 1;
 
 /// Runtime protocol capability flags.
 ///
@@ -82,6 +87,7 @@ impl<D> Dispatch<WlRegistry, (), D> for WaylandProtocol
 where
     D: Dispatch<WlRegistry, ()>
         + Dispatch<wl_output::WlOutput, OutputGlobalData>
+        + Dispatch<wp_presentation::WpPresentation, ()>
         + AsMut<WaylandState>
         + 'static,
 {
@@ -108,8 +114,16 @@ where
                     let proxy: wl_output::WlOutput =
                         registry.bind(name, v, qh, OutputGlobalData { global_name: name });
                     ws.output_registry.add(name, proxy);
+                } else if interface == wp_presentation::WpPresentation::interface().name {
+                    if ws.presentation.is_some() {
+                        return;
+                    }
+                    let v = version.min(WP_PRESENTATION_VERSION);
+                    let proxy: wp_presentation::WpPresentation =
+                        registry.bind(name, v, qh, ());
+                    ws.presentation = Some(proxy);
+                    ws.capabilities.has_presentation_time = true;
                 }
-                // wp_presentation detection deferred to future commit
             }
             wl_registry::Event::GlobalRemove { name } => {
                 if let Some(entry) = ws.output_registry.remove(name)
@@ -141,6 +155,34 @@ where
         _qh: &wayland_client::QueueHandle<D>,
     ) {
         // No-op. Output property events handled in a future commit.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch<WpPresentation, (), D>
+// ---------------------------------------------------------------------------
+
+impl<D> Dispatch<wp_presentation::WpPresentation, (), D> for WaylandProtocol
+where
+    D: Dispatch<wp_presentation::WpPresentation, ()> + AsMut<WaylandState> + 'static,
+{
+    fn event(
+        state: &mut D,
+        _proxy: &wp_presentation::WpPresentation,
+        event: wp_presentation::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<D>,
+    ) {
+        let ws: &mut WaylandState = state.as_mut();
+        if let wp_presentation::Event::ClockId { clk_id } = event {
+            if let Some(clock) = clock_from_presentation_clk_id(clk_id) {
+                ws.clock = clock;
+                ws.capabilities.presentation_clock_domain_aligned = true;
+            } else {
+                ws.capabilities.presentation_clock_domain_aligned = false;
+            }
+        }
     }
 }
 

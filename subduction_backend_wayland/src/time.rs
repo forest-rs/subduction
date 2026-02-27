@@ -40,6 +40,18 @@ pub fn now() -> HostTime {
     now_for_clock(Clock::Monotonic)
 }
 
+/// Attempts to map a `wp_presentation.clock_id` value to a [`Clock`].
+///
+/// Returns `Some(Clock::Presentation(...))` if the raw id maps to a POSIX
+/// clock recognized by the platform. Returns `None` for unknown or
+/// out-of-range values, in which case the caller should keep the current
+/// clock and degrade gracefully.
+pub(crate) fn clock_from_presentation_clk_id(clk_id: u32) -> Option<Clock> {
+    let raw: i32 = i32::try_from(clk_id).ok()?;
+    let posix_id = PosixClockId::try_from(raw).ok()?;
+    Some(Clock::Presentation(posix_id))
+}
+
 pub(crate) fn now_for_clock(clock: Clock) -> HostTime {
     let timespec = clock_gettime(clock.posix_clock_id());
     timespec_to_host_time(timespec)
@@ -60,7 +72,9 @@ fn timespec_to_host_time(timespec: Timespec) -> HostTime {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clock, now, now_for_clock, timebase, timespec_to_host_time};
+    use super::{
+        Clock, clock_from_presentation_clk_id, now, now_for_clock, timebase, timespec_to_host_time,
+    };
     use rustix::time::{ClockId as PosixClockId, Timespec};
     use subduction_core::time::{HostTime, Timebase};
 
@@ -102,5 +116,34 @@ mod tests {
             tv_nsec: 999_999_999,
         };
         assert_eq!(timespec_to_host_time(input), HostTime(u64::MAX));
+    }
+
+    #[test]
+    fn clock_from_known_monotonic_id() {
+        let clk_id = PosixClockId::Monotonic as u32;
+        let clock = clock_from_presentation_clk_id(clk_id).unwrap();
+        assert_eq!(clock, Clock::Presentation(PosixClockId::Monotonic));
+        // The returned clock must be readable.
+        assert!(now_for_clock(clock).ticks() > 0);
+    }
+
+    #[test]
+    fn clock_from_known_monotonic_raw_id() {
+        let clk_id = PosixClockId::MonotonicRaw as u32;
+        let clock = clock_from_presentation_clk_id(clk_id).unwrap();
+        assert_eq!(clock, Clock::Presentation(PosixClockId::MonotonicRaw));
+        assert!(now_for_clock(clock).ticks() > 0);
+    }
+
+    #[test]
+    fn clock_from_unknown_in_range_id() {
+        // A value that fits in i32 but is not a recognized POSIX clock.
+        assert!(clock_from_presentation_clk_id(12345).is_none());
+    }
+
+    #[test]
+    fn clock_from_overflow_id() {
+        // u32::MAX overflows i32, should be rejected.
+        assert!(clock_from_presentation_clk_id(u32::MAX).is_none());
     }
 }

@@ -83,7 +83,7 @@
 //! 2. [`dispatch_pending()`](OwnedQueueMode::dispatch_pending) — process
 //!    any already-buffered events.
 //! 3. [`prepare_read()`](OwnedQueueMode::prepare_read) — obtain a
-//!    [`ReadEventsGuard`](wayland_client::backend::ReadEventsGuard). If
+//!    [`ReadEventsGuard`]. If
 //!    this returns `None`, go back to step 2.
 //! 4. Poll the fd from `guard.connection_fd()` for readability.
 //! 5. `guard.read()` — read events from the socket, then go to step 2.

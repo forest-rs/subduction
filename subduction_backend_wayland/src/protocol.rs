@@ -9,7 +9,7 @@
 //! trait-resolution cycle that arises when generic `Dispatch` impls live
 //! directly on [`WaylandState`].
 //!
-//! Both integration modes wire through here via [`delegate_dispatch!`]:
+//! Both integration modes wire through here via `delegate_dispatch!`:
 //!
 //! ```text
 //! WaylandProtocol               (generic Dispatch impls, D: AsMut<WaylandState>)
@@ -65,7 +65,7 @@ impl Default for Capabilities {
 /// User data attached to each bound `wl_output` proxy.
 ///
 /// Public because embedded-mode hosts need it as a type parameter in
-/// [`delegate_dispatch!`].
+/// [`delegate_dispatch!`](wayland_client::delegate_dispatch).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OutputGlobalData {
     pub(crate) global_name: u32,
@@ -75,7 +75,7 @@ pub struct OutputGlobalData {
 ///
 /// Use with [`delegate_dispatch!`](wayland_client::delegate_dispatch) to wire
 /// protocol handling for [`WaylandState`] into an application state type.
-/// See the [event-loop module](crate::event_loop) docs for wiring examples.
+/// See the [crate-level docs](crate) for wiring examples.
 #[derive(Debug)]
 pub struct WaylandProtocol;
 

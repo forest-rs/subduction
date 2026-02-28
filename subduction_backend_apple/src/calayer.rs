@@ -185,7 +185,18 @@ impl Presenter for LayerPresenter {
             }
         }
 
-        // 6. Clips
+        // 6. Bounds
+        for &idx in &changes.bounds {
+            if let Some(layer) = self.layers.get(&idx) {
+                let bounds = store.bounds_at(idx);
+                layer.setBounds(CGRect::new(
+                    CGPoint::new(0.0, 0.0),
+                    CGSize::new(bounds.width, bounds.height),
+                ));
+            }
+        }
+
+        // 7. Clips
         for &idx in &changes.clips {
             if let Some(layer) = self.layers.get(&idx) {
                 let clip = store.clip_at(idx);
@@ -193,12 +204,12 @@ impl Presenter for LayerPresenter {
             }
         }
 
-        // 7. Topology reorder
+        // 8. Topology reorder
         if changes.topology_changed {
             self.reorder_sublayers(store);
         }
 
-        // 8. Sync attached NSViews (position + opacity).
+        // 9. Sync attached NSViews (position + opacity).
         #[cfg(feature = "appkit")]
         for (&idx, view) in &self.views {
             let world = store.world_transform_at(idx);

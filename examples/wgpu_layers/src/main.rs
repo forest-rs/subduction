@@ -21,6 +21,8 @@ use subduction_backend_wgpu::WgpuPresenter;
 use subduction_core::backend::Presenter as _;
 use subduction_core::layer::{LayerId, LayerStore, SurfaceId};
 use subduction_core::transform::Transform3d;
+
+use kurbo::Size;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -284,6 +286,13 @@ impl ApplicationHandler for App {
 
                     let opacity = (0.5 + 0.5 * (t * 1.5 + phase).sin()) as f32;
                     s.store.set_opacity(layer_id, opacity);
+
+                    // Animate bounds on the last layer (purple) — pulsing size.
+                    if i == NUM_LAYERS - 1 {
+                        let scale = 0.75 + 0.5 * (t * 1.2 + phase).sin();
+                        let size = f64::from(LAYER_SIZE) * scale;
+                        s.store.set_bounds(layer_id, Size::new(size, size));
+                    }
                 }
 
                 // Evaluate and apply.

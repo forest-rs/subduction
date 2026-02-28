@@ -155,17 +155,6 @@ impl WgpuPresenter {
         self.output_size = (width, height);
     }
 
-    /// Resizes a specific layer's texture. Existing content is lost.
-    ///
-    /// The new texture view will be available from [`texture_for_slot`](Self::texture_for_slot)
-    /// and [`texture_for_surface`](Self::texture_for_surface) after this call.
-    pub fn resize_layer(&mut self, idx: u32, width: u32, height: u32) {
-        if self.layer_entries.contains_key(&idx) {
-            let entry = self.create_layer_entry((width, height));
-            self.layer_entries.insert(idx, entry);
-        }
-    }
-
     /// Returns a reference to the wgpu device.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
@@ -210,8 +199,13 @@ impl WgpuPresenter {
         for (i, &idx) in visible.iter().enumerate() {
             let entry = &self.layer_entries[&idx];
             let world = store.world_transform_at(idx);
-            let scale =
-                Transform3d::from_scale(f64::from(entry.size.0), f64::from(entry.size.1), 1.0);
+            let bounds = store.bounds_at(idx);
+            let (sw, sh) = if bounds.width > 0.0 && bounds.height > 0.0 {
+                (bounds.width, bounds.height)
+            } else {
+                (f64::from(entry.size.0), f64::from(entry.size.1))
+            };
+            let scale = Transform3d::from_scale(sw, sh, 1.0);
             let combined = ortho * world * scale;
             let opacity = store.effective_opacity_at(idx);
 
@@ -390,6 +384,23 @@ impl Presenter for WgpuPresenter {
             if let Some(surface_id) = store.content_at(idx) {
                 self.surface_to_slot.insert(surface_id.0, idx);
                 self.slot_to_surface.insert(idx, surface_id.0);
+            }
+        }
+
+        // Bounds changes: resize layer textures.
+        for &idx in &changes.bounds {
+            let bounds = store.bounds_at(idx);
+            if bounds.width > 0.0 && bounds.height > 0.0 {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "bounds are non-negative pixel dimensions that fit in u32"
+                )]
+                let size = (bounds.width as u32, bounds.height as u32);
+                if self.layer_entries.contains_key(&idx) {
+                    let entry = self.create_layer_entry(size);
+                    self.layer_entries.insert(idx, entry);
+                }
             }
         }
 

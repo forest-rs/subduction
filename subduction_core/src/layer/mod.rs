@@ -10,7 +10,8 @@
 //! - Topology — parent, first-child, and sibling links forming an ordered tree.
 //! - **Local properties** set by the caller: [`transform`](LayerStore::set_transform),
 //!   [`opacity`](LayerStore::set_opacity), [`clip`](LayerStore::set_clip),
-//!   [`content`](LayerStore::set_content), and [`flags`](LayerStore::set_flags).
+//!   [`content`](LayerStore::set_content), [`bounds`](LayerStore::set_bounds),
+//!   and [`flags`](LayerStore::set_flags).
 //! - **Computed properties** produced by [`evaluate`](LayerStore::evaluate):
 //!   `world_transform` (product of ancestor local transforms) and
 //!   `effective_opacity` (product of ancestor local opacities).
@@ -25,7 +26,7 @@
 //!
 //! - **TRANSFORM** / **OPACITY** — propagate to all descendants, since
 //!   world transforms and effective opacities are inherited.
-//! - **CLIP** / **CONTENT** — local-only; only the modified layer is marked.
+//! - **CLIP** / **CONTENT** / **BOUNDS** — local-only; only the modified layer is marked.
 //! - **TOPOLOGY** — structural changes (add/remove child, create/destroy
 //!   layer) that trigger a traversal-order rebuild.
 

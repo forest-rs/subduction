@@ -43,6 +43,8 @@ pub struct FrameChanges {
     pub clips: Vec<u32>,
     /// Layers whose surface content changed.
     pub content: Vec<u32>,
+    /// Layers whose bounds changed.
+    pub bounds: Vec<u32>,
     /// Layers that transitioned from visible to effectively hidden.
     pub hidden: Vec<u32>,
     /// Layers that transitioned from effectively hidden to visible.
@@ -62,6 +64,7 @@ impl FrameChanges {
         self.opacities.clear();
         self.clips.clear();
         self.content.clear();
+        self.bounds.clear();
         self.hidden.clear();
         self.unhidden.clear();
         self.added.clear();
@@ -162,6 +165,14 @@ impl LayerStore {
         changes.content = self
             .dirty
             .drain(dirty::CONTENT)
+            .deterministic()
+            .run()
+            .collect();
+
+        // Drain BOUNDS channel — no recomputation, just collect.
+        changes.bounds = self
+            .dirty
+            .drain(dirty::BOUNDS)
             .deterministic()
             .run()
             .collect();
@@ -267,6 +278,7 @@ mod tests {
         assert!(changes.opacities.is_empty());
         assert!(changes.clips.is_empty());
         assert!(changes.content.is_empty());
+        assert!(changes.bounds.is_empty());
         assert!(changes.added.is_empty());
         assert!(changes.removed.is_empty());
         assert!(!changes.topology_changed);

@@ -22,6 +22,7 @@ subduction_backend_apple = { path = "../../subduction_backend_apple", default-fe
   "appkit",
 ] }
 subduction_debug = { path = "../../subduction_debug" }
+kurbo = { workspace = true }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSNotification",

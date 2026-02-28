@@ -42,6 +42,8 @@ use subduction_core::trace::{
     PresentFeedbackEvent, SubmitEvent, TraceSink as _,
 };
 use subduction_core::transform::Transform3d;
+
+use kurbo::Size;
 use subduction_debug::recorder::RecorderSink;
 
 const WINDOW_W: f64 = 800.0;
@@ -494,6 +496,13 @@ fn animate_transforms(store: &mut LayerStore, sub_ids: &[LayerId], t: f64) {
             )]
             let opacity = (0.5 + 0.5 * (t * 1.5 + phase).sin()) as f32;
             store.set_opacity(layer_id, opacity);
+
+            // Animate bounds on the last circle layer (blue) — pulsing size.
+            if i == NUM_LAYERS - 1 {
+                let scale = 0.75 + 0.5 * (t * 1.2 + phase).sin();
+                let size = LAYER_SIZE * scale;
+                store.set_bounds(layer_id, Size::new(size, size));
+            }
         }
     }
 }

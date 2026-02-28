@@ -19,9 +19,10 @@
 //!   are routed through [`TRANSFORM`] so that the same drain pass
 //!   recomputes both world transforms and `effective_hidden`.)
 //!
-//! - **Local-only** — [`CLIP`] and [`CONTENT`] are marked with the default
-//!   policy. Only the explicitly marked layer appears in the drain output,
-//!   since clip shapes and surface content are per-layer properties.
+//! - **Local-only** — [`CLIP`], [`CONTENT`], and [`BOUNDS`] are marked with
+//!   the default policy. Only the explicitly marked layer appears in the drain
+//!   output, since clip shapes, surface content, and bounds are per-layer
+//!   properties.
 //!
 //! - **Structural** — [`TOPOLOGY`] is marked on topology mutations
 //!   (add/remove child, create/destroy layer). It triggers a traversal-order
@@ -52,3 +53,6 @@ pub const CONTENT: Channel = Channel::new(3);
 
 /// Tree topology changed — triggers traversal order rebuild.
 pub const TOPOLOGY: Channel = Channel::new(4);
+
+/// Layer bounds changed — no propagation needed.
+pub const BOUNDS: Channel = Channel::new(5);

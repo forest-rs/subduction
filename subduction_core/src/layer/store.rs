@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 
+use kurbo::Size;
 use understory_dirty::{CycleHandling, DirtyTracker, EagerPolicy};
 
 use crate::transform::Transform3d;
@@ -44,6 +45,7 @@ pub struct LayerStore {
     pub(crate) clip: Vec<Option<ClipShape>>,
     pub(crate) content: Vec<Option<SurfaceId>>,
     pub(crate) flags: Vec<LayerFlags>,
+    pub(crate) bounds: Vec<Size>,
 
     // -- Computed properties (written by evaluate) --
     pub(crate) world_transform: Vec<Transform3d>,
@@ -87,6 +89,7 @@ impl LayerStore {
             clip: Vec::new(),
             content: Vec::new(),
             flags: Vec::new(),
+            bounds: Vec::new(),
             world_transform: Vec::new(),
             effective_opacity: Vec::new(),
             effective_hidden: Vec::new(),
@@ -120,6 +123,7 @@ impl LayerStore {
             self.clip[idx as usize] = None;
             self.content[idx as usize] = None;
             self.flags[idx as usize] = LayerFlags::default();
+            self.bounds[idx as usize] = Size::ZERO;
             self.world_transform[idx as usize] = Transform3d::IDENTITY;
             self.effective_opacity[idx as usize] = 1.0;
             self.effective_hidden[idx as usize] = false;
@@ -137,6 +141,7 @@ impl LayerStore {
             self.clip.push(None);
             self.content.push(None);
             self.flags.push(LayerFlags::default());
+            self.bounds.push(Size::ZERO);
             self.world_transform.push(Transform3d::IDENTITY);
             self.effective_opacity.push(1.0);
             self.effective_hidden.push(false);
@@ -417,6 +422,13 @@ impl LayerStore {
         self.flags[id.idx as usize]
     }
 
+    /// Returns the bounds (width × height) of a layer.
+    #[must_use]
+    pub fn bounds(&self, id: LayerId) -> Size {
+        self.validate(id);
+        self.bounds[id.idx as usize]
+    }
+
     /// Returns the computed world transform of a layer.
     ///
     /// Only valid after [`evaluate`](Self::evaluate) has been called.
@@ -485,6 +497,13 @@ impl LayerStore {
         self.flags[id.idx as usize] = flags;
         // Flags can affect both transform computation (hidden) and topology.
         self.dirty.mark_with(id.idx, dirty::TRANSFORM, &EagerPolicy);
+    }
+
+    /// Sets the bounds (width × height) of a layer.
+    pub fn set_bounds(&mut self, id: LayerId, bounds: Size) {
+        self.validate(id);
+        self.bounds[id.idx as usize] = bounds;
+        self.dirty.mark(id.idx, dirty::BOUNDS);
     }
 
     // -- Raw-index accessors for backends --
@@ -581,6 +600,21 @@ impl LayerStore {
             self.len
         );
         self.flags[idx as usize]
+    }
+
+    /// Returns the bounds at raw slot `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn bounds_at(&self, idx: u32) -> Size {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        self.bounds[idx as usize]
     }
 
     // -- Internal helpers --
@@ -847,6 +881,31 @@ mod tests {
         assert!(
             changes.transforms.contains(&id.idx),
             "flags marks TRANSFORM channel"
+        );
+    }
+
+    #[test]
+    fn bounds_default_is_zero() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        let b = store.bounds(id);
+        assert_eq!(b.width, 0.0);
+        assert_eq!(b.height, 0.0);
+    }
+
+    #[test]
+    fn set_bounds_marks_dirty() {
+        use kurbo::Size;
+
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        let _ = store.evaluate();
+
+        store.set_bounds(id, Size::new(320.0, 240.0));
+        let changes = store.evaluate();
+        assert!(
+            changes.bounds.contains(&id.idx),
+            "bounds channel should contain the layer"
         );
     }
 }

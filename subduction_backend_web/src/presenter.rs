@@ -134,7 +134,22 @@ impl Presenter for DomPresenter {
             }
         }
 
-        // 6. Clips
+        // 6. Bounds
+        for &idx in &changes.bounds {
+            if let Some(el) = self.get_element(idx) {
+                let bounds = store.bounds_at(idx);
+                let s = el.style();
+                if bounds.width > 0.0 && bounds.height > 0.0 {
+                    let _ = s.set_property("width", &format!("{}px", bounds.width));
+                    let _ = s.set_property("height", &format!("{}px", bounds.height));
+                } else {
+                    let _ = s.remove_property("width");
+                    let _ = s.remove_property("height");
+                }
+            }
+        }
+
+        // 7. Clips
         for &idx in &changes.clips {
             if let Some(el) = self.get_element(idx) {
                 let clip = store.clip_at(idx);
@@ -142,7 +157,7 @@ impl Presenter for DomPresenter {
             }
         }
 
-        // 7. Topology reorder
+        // 8. Topology reorder
         if changes.topology_changed {
             for &idx in store.traversal_order() {
                 if let Some(el) = self.get_element(idx) {

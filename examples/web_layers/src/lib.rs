@@ -44,6 +44,7 @@ use web_sys::{
     WebGlUniformLocation,
 };
 
+use kurbo::Size;
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
@@ -603,7 +604,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
         ref mut store,
         ref mut presenter,
         ref layer_ids,
-        ref sizes,
+        ref mut sizes,
         ..
     } = *s;
     animate_transforms(store, layer_ids, sizes, t);
@@ -625,7 +626,12 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     s.scheduler.observe(&feedback);
 }
 
-fn animate_transforms(store: &mut LayerStore, layer_ids: &[LayerId], sizes: &[(f64, f64)], t: f64) {
+fn animate_transforms(
+    store: &mut LayerStore,
+    layer_ids: &[LayerId],
+    sizes: &mut [(f64, f64)],
+    t: f64,
+) {
     let cx = CONTAINER_W / 2.0;
     let cy = CONTAINER_H / 2.0;
 
@@ -638,6 +644,16 @@ fn animate_transforms(store: &mut LayerStore, layer_ids: &[LayerId], sizes: &[(f
         let y = cy + radius * angle.sin();
 
         let rotation = t * 2.0 + phase;
+
+        // Animate bounds on the last layer (amber div) — pulsing size.
+        if i == NUM_LAYERS - 1 {
+            let (base_w, base_h) = ELEMENT_SPECS[i];
+            let scale = 0.75 + 0.5 * (t * 1.2 + phase).sin();
+            let w = base_w * scale;
+            let h = base_h * scale;
+            store.set_bounds(layer_id, Size::new(w, h));
+            sizes[layer_id.index() as usize] = (w, h);
+        }
 
         // Center of the element for the centering offset (sizes indexed by slot).
         let (w, h) = sizes[layer_id.index() as usize];

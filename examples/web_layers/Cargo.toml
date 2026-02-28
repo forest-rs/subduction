@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 subduction_core = { workspace = true }
 subduction_backend_web = { path = "../../subduction_backend_web" }
+kurbo = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 wasm-bindgen = { workspace = true }

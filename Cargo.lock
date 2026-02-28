@@ -798,6 +798,7 @@ dependencies = [
 name = "macos_layers"
 version = "0.0.1"
 dependencies = [
+ "kurbo",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -2196,6 +2197,7 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "js-sys",
+ "kurbo",
  "subduction_backend_web",
  "subduction_core",
  "wasm-bindgen",
@@ -2383,6 +2385,7 @@ name = "wgpu_layers"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "kurbo",
  "pollster",
  "subduction_backend_wgpu",
  "subduction_core",

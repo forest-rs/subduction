@@ -58,7 +58,8 @@
 //! ## Simple blocking loop
 //!
 //! [`OwnedQueueMode::blocking_dispatch`] flushes and blocks in one call,
-//! which is the easiest way to pump events:
+//! which is the easiest way to pump events. After dispatch, drain queued
+//! ticks via [`OwnedQueueMode::poll_tick`]:
 //!
 //! ```rust,no_run
 //! use wayland_client::Connection;
@@ -68,10 +69,20 @@
 //! let mut mode = OwnedQueueMode::new(&connection);
 //! mode.bootstrap().unwrap();
 //!
+//! // Kick off the first frame callback (flushed by blocking_dispatch).
+//! // mode.state_mut().set_surface(surface);
+//! // mode.request_frame().unwrap();
+//!
 //! loop {
+//!     // 1. Dispatch — delivers wl_callback.done → enqueues ticks.
 //!     mode.blocking_dispatch().unwrap();
-//!     let _caps = mode.capabilities();
-//!     // ... poll ticks, check capabilities ...
+//!
+//!     // 2. Poll — drain all queued ticks.
+//!     while let Some(_tick) = mode.poll_tick() {
+//!         // 3. Process — compute hints, build frame, commit.
+//!         // 4. Request next callback (future: done inside commit_frame).
+//!         // mode.request_frame().unwrap();
+//!     }
 //! }
 //! ```
 //!
@@ -175,9 +186,16 @@
 //! event_queue.roundtrip(&mut state).unwrap();
 //!
 //! loop {
+//!     // Dispatch — delivers protocol events including wl_callback.done.
 //!     event_queue.blocking_dispatch(&mut state).unwrap();
-//!     let _caps = state.wayland.capabilities();
-//!     // ... host dispatch logic ...
+//!
+//!     // Poll ticks enqueued by the callback handler.
+//!     while let Some(_tick) = state.wayland.poll_tick() {
+//!         // Process tick, compute hints, build frame, commit ...
+//!         // Request next callback (embedded mode — host must flush):
+//!         // state.wayland.request_frame(&qh).unwrap();
+//!         // event_queue.flush().unwrap();
+//!     }
 //! }
 //! ```
 

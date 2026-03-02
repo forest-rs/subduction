@@ -40,7 +40,9 @@
 //!   does **not** flush. In owned mode, the next
 //!   [`blocking_dispatch`](OwnedQueueMode::blocking_dispatch) flushes
 //!   automatically. In non-blocking or embedded mode, the caller must flush.
-//! - Future commit-sequencing APIs will always flush after committing.
+//! - [`WaylandState::commit_frame`] flushes after committing via the
+//!   caller-provided `&Connection`. [`OwnedQueueMode::commit_frame`]
+//!   passes the stored connection automatically.
 //!
 //! # Frame callback lifecycle
 //!
@@ -60,9 +62,10 @@
 //!    [`OwnedQueueMode::poll_tick`]) in a loop until it returns `None` to
 //!    drain all queued ticks.
 //! 4. **Process** — for each tick, compute present hints, build and
-//!    evaluate the frame, then commit. The next callback is typically
-//!    requested as part of the commit sequence; until that is in place,
-//!    call `request_frame` again after consuming the tick.
+//!    evaluate the frame, then call
+//!    [`commit_frame`](WaylandState::commit_frame) (or
+//!    [`OwnedQueueMode::commit_frame`]) which handles the frame callback
+//!    request, presentation feedback request, surface commit, and flush.
 //!
 //! Always dispatch before polling: ticks are enqueued by dispatch handlers,
 //! so `poll_tick` will not return anything new until dispatch has run.
@@ -94,7 +97,37 @@
 //! different user data (for example `()`) to avoid dispatch conflicts. The
 //! backend's `Dispatch<WlCallback, FrameCallbackData, D>` impl will only
 //! fire for callbacks carrying `FrameCallbackData`.
+//!
+//! # End-to-end frame loop
+//!
+//! The complete per-frame sequence ties together dispatch, tick polling,
+//! timing hints, frame evaluation, and commit:
+//!
+//! 1. **Dispatch** — pump the event loop to deliver protocol events.
+//! 2. **Poll tick** — drain [`FrameTick`](subduction_core::timing::FrameTick)
+//!    values via [`poll_tick`](WaylandState::poll_tick).
+//! 3. **Compute present hints** — call
+//!    [`compute_present_hints`] with the tick.
+//! 4. **Plan** — decide what to render for this frame.
+//! 5. **Build / evaluate** — render the frame, attach the buffer, and
+//!    apply damage.
+//! 6. **Commit** — call [`commit_frame`](WaylandState::commit_frame) (or
+//!    [`OwnedQueueMode::commit_frame`]) to request the next frame callback,
+//!    request presentation feedback, commit the surface, and flush.
+//!
+//! ## Presentation feedback
+//!
+//! `commit_frame` returns a [`SubmissionId`] that identifies the commit.
+//! Feedback arrives as [`PresentEvent`]s correlated by `SubmissionId`:
+//!
+//! - **Simple path**: use
+//!   [`FrameTick::prev_actual_present`](subduction_core::timing::FrameTick::prev_actual_present)
+//!   which is populated automatically from the most recent feedback.
+//! - **Robust path**: consume [`PresentEvent`]s from a
+//!   [`PresentEventQueue`] by `SubmissionId` and feed them into a timing
+//!   scheduler's `observe()` method.
 
+mod commit;
 mod event_loop;
 mod hints;
 mod output_registry;
@@ -104,6 +137,7 @@ mod queue;
 mod tick;
 mod time;
 
+pub use commit::{CommitFrameError, FeedbackData};
 pub use event_loop::{
     EmbeddedStateMode, OwnedQueueMode, RequestFrameError, SetSurfaceError, WaylandState,
 };

@@ -18,12 +18,13 @@
 //! HostState                      (embedded mode, same delegation)
 //! ```
 
+use crate::commit::FeedbackData;
 use crate::event_loop::WaylandState;
 use crate::time::clock_from_presentation_clk_id;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
-use wayland_protocols::wp::presentation_time::client::wp_presentation;
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 /// Maximum `wl_output` version the backend will bind.
 pub(crate) const WL_OUTPUT_MAX_VERSION: u32 = 4;
@@ -216,6 +217,29 @@ where
         // The callback_data field is a millisecond timestamp from an
         // unspecified epoch — not safely comparable to HostTime or
         // presentation feedback timestamps. We use Clock::now() instead.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch<WpPresentationFeedback, FeedbackData, D>
+// ---------------------------------------------------------------------------
+
+impl<D> Dispatch<wp_presentation_feedback::WpPresentationFeedback, FeedbackData, D>
+    for WaylandProtocol
+where
+    D: Dispatch<wp_presentation_feedback::WpPresentationFeedback, FeedbackData>
+        + AsMut<WaylandState>
+        + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &wp_presentation_feedback::WpPresentationFeedback,
+        _event: wp_presentation_feedback::Event,
+        _data: &FeedbackData,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        // Presentation feedback event handling is a future implementation.
     }
 }
 

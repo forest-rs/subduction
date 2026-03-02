@@ -69,9 +69,8 @@
 //! let mut mode = OwnedQueueMode::new(&connection);
 //! mode.bootstrap().unwrap();
 //!
-//! // Kick off the first frame callback (flushed by blocking_dispatch).
-//! // mode.state_mut().set_surface(surface);
-//! // mode.request_frame().unwrap();
+//! // Register a surface (created by the host/toolkit).
+//! // mode.state_mut().set_surface(surface).unwrap();
 //!
 //! loop {
 //!     // 1. Dispatch — delivers wl_callback.done → enqueues ticks.
@@ -79,9 +78,10 @@
 //!
 //!     // 2. Poll — drain all queued ticks.
 //!     while let Some(_tick) = mode.poll_tick() {
-//!         // 3. Process — compute hints, build frame, commit.
-//!         // 4. Request next callback (future: done inside commit_frame).
-//!         // mode.request_frame().unwrap();
+//!         // 3. Process — compute hints, build frame ...
+//!         // 4. attach buffer + damage ...
+//!         // 5. Commit — requests next callback, feedback, commits, flushes.
+//!         // let _id = mode.commit_frame().unwrap();
 //!     }
 //! }
 //! ```
@@ -144,9 +144,11 @@
 //! ```rust,no_run
 //! use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
 //! use wayland_client::{Connection, EventQueue};
-//! use wayland_protocols::wp::presentation_time::client::wp_presentation;
+//! use wayland_protocols::wp::presentation_time::client::{
+//!     wp_presentation, wp_presentation_feedback,
+//! };
 //! use subduction_backend_wayland::{
-//!     EmbeddedStateMode, FrameCallbackData, OutputGlobalData,
+//!     EmbeddedStateMode, FeedbackData, FrameCallbackData, OutputGlobalData,
 //!     WaylandProtocol, WaylandState,
 //! };
 //!
@@ -169,6 +171,8 @@
 //!     [wp_presentation::WpPresentation: ()] => WaylandProtocol);
 //! wayland_client::delegate_dispatch!(HostState:
 //!     [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wp_presentation_feedback::WpPresentationFeedback: FeedbackData] => WaylandProtocol);
 //!
 //! let connection = Connection::connect_to_env().unwrap();
 //! let mut event_queue: EventQueue<HostState> = connection.new_event_queue();
@@ -191,15 +195,17 @@
 //!
 //!     // Poll ticks enqueued by the callback handler.
 //!     while let Some(_tick) = state.wayland.poll_tick() {
-//!         // Process tick, compute hints, build frame, commit ...
-//!         // Request next callback (embedded mode — host must flush):
-//!         // state.wayland.request_frame(&qh).unwrap();
-//!         // event_queue.flush().unwrap();
+//!         // Process tick, compute hints, build frame ...
+//!         // attach buffer + damage ...
+//!         // Commit — requests next callback, feedback, commits, flushes.
+//!         // let _id = state.wayland.commit_frame(&qh, &connection).unwrap();
 //!     }
 //! }
 //! ```
 
+use crate::commit::{CommitFrameError, CommitState, FeedbackData};
 use crate::output_registry::OutputRegistry;
+use crate::presentation::SubmissionId;
 use crate::protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
 use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
@@ -210,7 +216,7 @@ use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
 };
-use wayland_protocols::wp::presentation_time::client::wp_presentation;
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 /// Error returned by [`WaylandState::set_surface`] when a surface has already
 /// been registered.
@@ -259,6 +265,7 @@ pub struct WaylandState {
     pub(crate) presentation: Option<wp_presentation::WpPresentation>,
     pub(crate) bootstrapped: bool,
     pub(crate) ticker: TickerState,
+    pub(crate) commit: CommitState,
     pub(crate) surface: Option<wl_surface::WlSurface>,
 }
 
@@ -274,6 +281,7 @@ impl WaylandState {
             presentation: None,
             bootstrapped: false,
             ticker: TickerState::new(),
+            commit: CommitState::new(),
             surface: None,
         }
     }
@@ -336,6 +344,65 @@ impl WaylandState {
         Ok(())
     }
 
+    /// Sequences a frame callback request, presentation feedback request,
+    /// surface commit, and connection flush in the correct protocol order.
+    ///
+    /// Returns the [`SubmissionId`] assigned to this commit, which can be
+    /// correlated with future [`PresentEvent`](crate::PresentEvent)s.
+    ///
+    /// # Flush
+    ///
+    /// This method always flushes the connection after committing. If flush
+    /// fails, the surface commit was buffered but may not have reached the
+    /// compositor; the caller should treat this as a transport error.
+    ///
+    /// # Presentation feedback
+    ///
+    /// When `wp_presentation` is available and the pending feedback count is
+    /// below the internal limit, `commit_frame` requests presentation feedback
+    /// for this commit. If the limit is reached, feedback is silently skipped
+    /// — the commit and frame callback request still proceed.
+    pub fn commit_frame<D>(
+        &mut self,
+        qh: &QueueHandle<D>,
+        conn: &Connection,
+    ) -> Result<SubmissionId, CommitFrameError>
+    where
+        D: Dispatch<wl_callback::WlCallback, FrameCallbackData>
+            + Dispatch<wp_presentation_feedback::WpPresentationFeedback, FeedbackData>
+            + AsMut<Self>
+            + 'static,
+    {
+        // Clone proxies to avoid borrow conflicts with self.ticker / self.commit.
+        let surface = self.surface.clone().ok_or(CommitFrameError::NoSurface)?;
+        let presentation = self.presentation.clone();
+
+        // 1. Request next frame callback (best-effort; skip if already in flight).
+        if !self.ticker.is_callback_in_flight() {
+            let _cb = surface.frame(qh, FrameCallbackData);
+            self.ticker.mark_callback_requested();
+        }
+
+        // 2. Allocate submission ID.
+        let id = self.commit.allocate_id();
+
+        // 3. Request presentation feedback if available and under limit.
+        if let Some(pres) = presentation
+            && !self.commit.is_at_limit()
+        {
+            let _fb = pres.feedback(&surface, qh, FeedbackData { submission_id: id });
+            self.commit.increment_pending();
+        }
+
+        // 4. Commit the surface.
+        surface.commit();
+
+        // 5. Flush.
+        conn.flush().map_err(CommitFrameError::Flush)?;
+
+        Ok(id)
+    }
+
     /// Returns current host time using the selected backend clock.
     ///
     /// After `wp_presentation.clock_id` has been received, this reads the
@@ -364,6 +431,7 @@ wayland_client::delegate_dispatch!(WaylandState: [wl_registry::WlRegistry: ()] =
 wayland_client::delegate_dispatch!(WaylandState: [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wp_presentation::WpPresentation: ()] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wp_presentation_feedback::WpPresentationFeedback: FeedbackData] => WaylandProtocol);
 
 /// Owned-queue integration mode.
 ///
@@ -480,6 +548,16 @@ impl OwnedQueueMode {
         self.state.request_frame(&qh)
     }
 
+    /// Sequences a frame callback request, presentation feedback request,
+    /// surface commit, and connection flush.
+    ///
+    /// Convenience wrapper that calls [`WaylandState::commit_frame`] with
+    /// the owned queue handle and stored connection.
+    pub fn commit_frame(&mut self) -> Result<SubmissionId, CommitFrameError> {
+        let qh = self.event_queue.handle();
+        self.state.commit_frame(&qh, &self.connection)
+    }
+
     /// Pops the next queued [`FrameTick`], if any.
     ///
     /// Convenience wrapper that calls [`WaylandState::poll_tick`].
@@ -551,5 +629,75 @@ mod tests {
             state.request_frame(&qh),
             Err(RequestFrameError::AlreadyInFlight),
         );
+    }
+
+    fn test_connection_and_queue() -> (
+        Connection,
+        EventQueue<WaylandState>,
+        QueueHandle<WaylandState>,
+    ) {
+        let (s1, _s2) = std::os::unix::net::UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(s1).unwrap();
+        let eq: EventQueue<WaylandState> = conn.new_event_queue();
+        let qh = eq.handle();
+        (conn, eq, qh)
+    }
+
+    #[test]
+    fn commit_frame_without_surface_returns_no_surface() {
+        let (conn, _eq, qh) = test_connection_and_queue();
+        let mut state = WaylandState::new();
+        let result = state.commit_frame(&qh, &conn);
+        assert!(matches!(result, Err(CommitFrameError::NoSurface)));
+    }
+
+    #[test]
+    fn commit_frame_with_inert_surface_returns_submission_id() {
+        let (conn, _eq, qh) = test_connection_and_queue();
+        let mut state = WaylandState::new();
+        state.set_surface(inert_surface()).unwrap();
+        let id = state.commit_frame(&qh, &conn).unwrap();
+        assert_eq!(id, SubmissionId(0));
+    }
+
+    #[test]
+    fn successive_commit_frames_produce_monotonic_ids() {
+        let (conn, _eq, qh) = test_connection_and_queue();
+        let mut state = WaylandState::new();
+        state.set_surface(inert_surface()).unwrap();
+
+        let id0 = state.commit_frame(&qh, &conn).unwrap();
+        // Clear in-flight so next commit_frame can request a new callback.
+        let empty_reg = OutputRegistry::new();
+        state.ticker.on_callback_done(state.clock, &empty_reg);
+
+        let id1 = state.commit_frame(&qh, &conn).unwrap();
+        assert!(id1 > id0);
+    }
+
+    #[test]
+    fn commit_frame_marks_callback_in_flight() {
+        let (conn, _eq, qh) = test_connection_and_queue();
+        let mut state = WaylandState::new();
+        state.set_surface(inert_surface()).unwrap();
+
+        assert!(!state.ticker.is_callback_in_flight());
+        let _id = state.commit_frame(&qh, &conn).unwrap();
+        assert!(state.ticker.is_callback_in_flight());
+    }
+
+    #[test]
+    fn commit_frame_skips_callback_when_already_in_flight() {
+        let (conn, _eq, qh) = test_connection_and_queue();
+        let mut state = WaylandState::new();
+        state.set_surface(inert_surface()).unwrap();
+
+        // First commit requests a callback.
+        let _id0 = state.commit_frame(&qh, &conn).unwrap();
+        assert!(state.ticker.is_callback_in_flight());
+
+        // Second commit skips the callback request (no error).
+        let _id1 = state.commit_frame(&qh, &conn).unwrap();
+        assert!(state.ticker.is_callback_in_flight());
     }
 }

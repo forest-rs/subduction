@@ -12,7 +12,10 @@
 //!
 //! Run with: `cargo run -p wayland_wgpu`
 
-#![expect(unsafe_code, reason = "wgpu surface creation from raw Wayland handles requires unsafe")]
+#![expect(
+    unsafe_code,
+    reason = "wgpu surface creation from raw Wayland handles requires unsafe"
+)]
 
 use std::ptr::NonNull;
 
@@ -22,9 +25,7 @@ use subduction_backend_wayland::{
 };
 use wayland_client::protocol::{wl_callback, wl_compositor, wl_output, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
-use wayland_protocols::wp::presentation_time::client::{
-    wp_presentation, wp_presentation_feedback,
-};
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 const WINDOW_W: u32 = 800;
@@ -176,7 +177,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for HostState {
             if interface == wl_compositor::WlCompositor::interface().name
                 && state.compositor.is_none()
             {
-                let compositor: wl_compositor::WlCompositor = proxy.bind(name, version.min(6), qh, ());
+                let compositor: wl_compositor::WlCompositor =
+                    proxy.bind(name, version.min(6), qh, ());
                 state.compositor = Some(compositor);
             } else if interface == xdg_wm_base::XdgWmBase::interface().name
                 && state.wm_base.is_none()
@@ -271,11 +273,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for HostState {
             xdg_toplevel::Event::Close => {
                 state.closed = true;
             }
-            xdg_toplevel::Event::Configure {
-                width,
-                height,
-                ..
-            } => {
+            xdg_toplevel::Event::Configure { width, height, .. } => {
                 if width > 0 && height > 0 {
                     #[expect(
                         clippy::cast_sign_loss,
@@ -471,7 +469,10 @@ fn main() {
     });
 
     let wgpu_surface = {
-        let display_ptr = connection.backend().display_ptr().cast::<std::ffi::c_void>();
+        let display_ptr = connection
+            .backend()
+            .display_ptr()
+            .cast::<std::ffi::c_void>();
         let surface_ptr = Proxy::id(&wl_surface).as_ptr().cast::<std::ffi::c_void>();
 
         // SAFETY: The Wayland display and surface are valid for the lifetime
@@ -488,8 +489,7 @@ fn main() {
                 ),
             ),
         };
-        unsafe { instance.create_surface_unsafe(target) }
-            .expect("failed to create wgpu surface")
+        unsafe { instance.create_surface_unsafe(target) }.expect("failed to create wgpu surface")
     };
 
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

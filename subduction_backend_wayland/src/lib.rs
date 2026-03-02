@@ -47,7 +47,9 @@ mod queue;
 mod tick;
 mod time;
 
-pub use event_loop::{EmbeddedStateMode, OwnedQueueMode, WaylandState};
+pub use event_loop::{
+    EmbeddedStateMode, OwnedQueueMode, RequestFrameError, SetSurfaceError, WaylandState,
+};
 pub use hints::compute_present_hints;
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
 pub use protocol::{Capabilities, OutputGlobalData, WaylandProtocol};

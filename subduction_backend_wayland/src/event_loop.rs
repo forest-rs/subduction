@@ -180,14 +180,34 @@
 
 use crate::output_registry::OutputRegistry;
 use crate::protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
+use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
 use subduction_core::time::HostTime;
-use wayland_client::protocol::{wl_output, wl_registry};
+use subduction_core::timing::FrameTick;
+use wayland_client::protocol::{wl_output, wl_registry, wl_surface};
 use wayland_client::{
     Connection, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
 };
 use wayland_protocols::wp::presentation_time::client::wp_presentation;
+
+/// Error returned by [`WaylandState::set_surface`] when a surface has already
+/// been registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetSurfaceError {
+    /// A surface has already been set; the single-surface contract allows only
+    /// one.
+    AlreadySet,
+}
+
+/// Error returned when requesting a frame callback is not possible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestFrameError {
+    /// No surface has been registered via [`WaylandState::set_surface`].
+    NoSurface,
+    /// A frame callback is already in flight.
+    AlreadyInFlight,
+}
 
 /// Backend-owned state for Wayland protocol handling.
 ///
@@ -216,12 +236,14 @@ pub struct WaylandState {
     pub(crate) clock: Clock,
     pub(crate) presentation: Option<wp_presentation::WpPresentation>,
     pub(crate) bootstrapped: bool,
+    pub(crate) ticker: TickerState,
+    pub(crate) surface: Option<wl_surface::WlSurface>,
 }
 
 impl WaylandState {
     /// Creates a new empty backend state.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             registry: None,
             output_registry: OutputRegistry::new(),
@@ -229,6 +251,8 @@ impl WaylandState {
             clock: Clock::Monotonic,
             presentation: None,
             bootstrapped: false,
+            ticker: TickerState::new(),
+            surface: None,
         }
     }
 
@@ -246,15 +270,30 @@ impl WaylandState {
         self.registry = Some(registry);
     }
 
+    /// Registers the surface that the backend will pace with frame callbacks.
+    ///
+    /// This is a one-shot operation enforcing the single-surface v1 contract.
+    /// Returns [`SetSurfaceError::AlreadySet`] if called more than once.
+    pub fn set_surface(&mut self, surface: wl_surface::WlSurface) -> Result<(), SetSurfaceError> {
+        if self.surface.is_some() {
+            return Err(SetSurfaceError::AlreadySet);
+        }
+        self.surface = Some(surface);
+        Ok(())
+    }
+
+    /// Pops the next queued [`FrameTick`], if any.
+    #[must_use]
+    pub fn poll_tick(&mut self) -> Option<FrameTick> {
+        self.ticker.poll_tick()
+    }
+
     /// Returns current host time using the selected backend clock.
     ///
     /// After `wp_presentation.clock_id` has been received, this reads the
     /// compositor-aligned clock. Before that, it falls back to
     /// `CLOCK_MONOTONIC`.
-    #[allow(
-        dead_code,
-        reason = "will be used by ticker/presenter in future implementation"
-    )]
+    #[allow(dead_code, reason = "called from future wl_callback dispatch handler")]
     #[must_use]
     pub(crate) fn now(&self) -> HostTime {
         now_for_clock(self.clock)

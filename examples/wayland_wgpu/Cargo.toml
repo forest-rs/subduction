@@ -17,6 +17,6 @@ subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 wayland-client = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
 pollster = "0.4"

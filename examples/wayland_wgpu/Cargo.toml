@@ -1,0 +1,22 @@
+[package]
+name = "wayland_wgpu"
+description = "Wayland example: frame-callback-paced wgpu rendering"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+subduction_core = { workspace = true, features = ["std"] }
+subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
+pollster = "0.4"

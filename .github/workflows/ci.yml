@@ -37,6 +37,7 @@ env:
     --exclude trace_demo
     --exclude web_layers
     --exclude web_lotta_layers
+    --exclude wayland_wgpu
     --exclude web_video
     --exclude wgpu_layers
     --exclude wgpu_lotta_layers
@@ -48,6 +49,7 @@ env:
     --exclude subduction_backend_apple
     --exclude subduction_backend_wayland
     --exclude subduction_backend_web
+    --exclude wayland_wgpu
     --exclude web_layers
     --exclude web_lotta_layers
     --exclude web_video
@@ -61,6 +63,7 @@ env:
     --exclude subduction_backend_apple
     --exclude subduction_backend_wayland
     --exclude trace_demo
+    --exclude wayland_wgpu
   # Packages excluded on non-macOS runners (macOS-only).
   RUST_MAC_EXCLUDE_PKGS: >-
     --exclude macos_layers
@@ -70,6 +73,7 @@ env:
   # Packages excluded on non-Linux runners (Linux-only).
   RUST_LINUX_EXCLUDE_PKGS: >-
     --exclude subduction_backend_wayland
+    --exclude wayland_wgpu
   # macOS examples validated in dedicated jobs (supported feature sets only).
   RUST_MAC_EXAMPLE_PKGS: >-
     -p macos_layers

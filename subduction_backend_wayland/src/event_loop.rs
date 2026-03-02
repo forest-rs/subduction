@@ -359,7 +359,7 @@ impl WaylandState {
     /// surface commit, and connection flush in the correct protocol order.
     ///
     /// Returns the [`SubmissionId`] assigned to this commit, which can be
-    /// correlated with future [`PresentEvent`](crate::PresentEvent)s.
+    /// correlated with future [`PresentEvent`]s.
     ///
     /// # Flush
     ///

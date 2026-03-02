@@ -11,6 +11,28 @@ use subduction_core::time::HostTime;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubmissionId(pub u64);
 
+/// Per-feedback-object accumulation state while the feedback is in flight.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingFeedback {
+    pub(crate) sync_output: Option<OutputId>,
+}
+
+/// Converts a `wp_presentation_feedback.presented` timestamp to [`HostTime`].
+///
+/// `tv_nsec` is clamped to `≤999_999_999` to prevent overflow. Arithmetic is
+/// saturating so edge-case compositor data never causes a panic.
+pub(crate) fn presentation_time_to_host_time(
+    tv_sec_hi: u32,
+    tv_sec_lo: u32,
+    tv_nsec: u32,
+) -> HostTime {
+    let seconds = u64::from(tv_sec_hi) << 32 | u64::from(tv_sec_lo);
+    let nanos = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::from(tv_nsec.min(999_999_999)));
+    HostTime(nanos)
+}
+
 /// Per-commit presentation feedback event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PresentEvent {
@@ -95,7 +117,7 @@ impl Default for PresentEventQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{PresentEvent, PresentEventQueue, SubmissionId};
+    use super::{PresentEvent, PresentEventQueue, SubmissionId, presentation_time_to_host_time};
     use subduction_core::output::OutputId;
     use subduction_core::time::HostTime;
 
@@ -161,5 +183,71 @@ mod tests {
             })
         );
         assert_eq!(queue.dropped_count(), 1);
+    }
+
+    // --- presentation_time_to_host_time tests ---
+
+    #[test]
+    fn timestamp_packing_normal_values() {
+        // 1 second + 500_000_000 ns
+        let t = presentation_time_to_host_time(0, 1, 500_000_000);
+        assert_eq!(t, HostTime(1_500_000_000));
+    }
+
+    #[test]
+    fn timestamp_packing_large_tv_sec_hi() {
+        // tv_sec_hi = 1 means seconds = 1 << 32 = 4_294_967_296
+        let t = presentation_time_to_host_time(1, 0, 0);
+        assert_eq!(t, HostTime(4_294_967_296 * 1_000_000_000));
+    }
+
+    #[test]
+    fn timestamp_packing_zero() {
+        let t = presentation_time_to_host_time(0, 0, 0);
+        assert_eq!(t, HostTime(0));
+    }
+
+    #[test]
+    fn timestamp_packing_saturates_on_overflow() {
+        // u32::MAX across all fields should saturate rather than panic.
+        let t = presentation_time_to_host_time(u32::MAX, u32::MAX, u32::MAX);
+        assert_eq!(t, HostTime(u64::MAX));
+    }
+
+    #[test]
+    fn tv_nsec_clamped_above_max() {
+        // tv_nsec > 999_999_999 is clamped.
+        let clamped = presentation_time_to_host_time(0, 0, 1_500_000_000);
+        let expected = presentation_time_to_host_time(0, 0, 999_999_999);
+        assert_eq!(clamped, expected);
+    }
+
+    #[test]
+    fn tv_nsec_exact_max_is_not_clamped() {
+        let t = presentation_time_to_host_time(0, 0, 999_999_999);
+        assert_eq!(t, HostTime(999_999_999));
+    }
+
+    #[test]
+    fn refresh_zero_produces_none() {
+        // Verify the conversion convention: refresh == 0 → None.
+        let refresh: u32 = 0;
+        let interval: Option<u64> = if refresh == 0 {
+            None
+        } else {
+            Some(u64::from(refresh))
+        };
+        assert_eq!(interval, None);
+    }
+
+    #[test]
+    fn refresh_nonzero_produces_some() {
+        let refresh: u32 = 16_666_667;
+        let interval: Option<u64> = if refresh == 0 {
+            None
+        } else {
+            Some(u64::from(refresh))
+        };
+        assert_eq!(interval, Some(16_666_667));
     }
 }

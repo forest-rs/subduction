@@ -39,10 +39,6 @@ impl CommitState {
 
     /// Decrements the count of pending presentation feedback objects,
     /// saturating at zero.
-    #[allow(
-        dead_code,
-        reason = "called from presentation feedback path in a future implementation"
-    )]
     pub(crate) fn decrement_pending(&mut self) {
         self.pending_count = self.pending_count.saturating_sub(1);
     }
@@ -74,10 +70,6 @@ pub enum CommitFrameError {
 /// [`delegate_dispatch!`](wayland_client::delegate_dispatch).
 #[derive(Debug, Clone, Copy)]
 pub struct FeedbackData {
-    #[allow(
-        dead_code,
-        reason = "read by presentation feedback dispatch in a future implementation"
-    )]
     pub(crate) submission_id: SubmissionId,
 }
 

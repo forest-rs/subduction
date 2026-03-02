@@ -123,9 +123,10 @@
 //! - **Simple path**: use
 //!   [`FrameTick::prev_actual_present`](subduction_core::timing::FrameTick::prev_actual_present)
 //!   which is populated automatically from the most recent feedback.
-//! - **Robust path**: consume [`PresentEvent`]s from a
-//!   [`PresentEventQueue`] by `SubmissionId` and feed them into a timing
-//!   scheduler's `observe()` method.
+//! - **Robust path**: drain [`PresentEvent`]s via
+//!   [`WaylandState::poll_present_event`] (or
+//!   [`OwnedQueueMode::poll_present_event`]) and correlate them by
+//!   [`SubmissionId`] to feed a timing scheduler's `observe()` method.
 
 mod commit;
 mod event_loop;

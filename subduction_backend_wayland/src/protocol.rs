@@ -20,10 +20,11 @@
 
 use crate::commit::FeedbackData;
 use crate::event_loop::WaylandState;
+use crate::presentation::{PresentEvent, presentation_time_to_host_time};
 use crate::time::clock_from_presentation_clk_id;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 /// Maximum `wl_output` version the backend will bind.
@@ -232,14 +233,62 @@ where
         + 'static,
 {
     fn event(
-        _state: &mut D,
+        state: &mut D,
         _proxy: &wp_presentation_feedback::WpPresentationFeedback,
-        _event: wp_presentation_feedback::Event,
-        _data: &FeedbackData,
+        event: wp_presentation_feedback::Event,
+        data: &FeedbackData,
         _conn: &Connection,
         _qh: &QueueHandle<D>,
     ) {
-        // Presentation feedback event handling is a future implementation.
+        let ws: &mut WaylandState = state.as_mut();
+        let id = data.submission_id;
+        match event {
+            wp_presentation_feedback::Event::SyncOutput { output } => {
+                let resolved = ws.output_registry.id_for_proxy(&output);
+                if let Some(pending) = ws.pending_feedback.get_mut(&id) {
+                    // "Known beats unknown": only overwrite if the new lookup
+                    // resolves to Some, or if no value was stored yet.
+                    if resolved.is_some() || pending.sync_output.is_none() {
+                        pending.sync_output = resolved;
+                    }
+                }
+            }
+            wp_presentation_feedback::Event::Presented {
+                tv_sec_hi,
+                tv_sec_lo,
+                tv_nsec,
+                refresh,
+                flags,
+                ..
+            } => {
+                let actual_present = presentation_time_to_host_time(tv_sec_hi, tv_sec_lo, tv_nsec);
+                let refresh_interval = if refresh == 0 {
+                    None
+                } else {
+                    Some(u64::from(refresh))
+                };
+                let raw_flags = match flags {
+                    WEnum::Value(k) => k.bits(),
+                    WEnum::Unknown(v) => v,
+                };
+                let output = ws.pending_feedback.remove(&id).and_then(|p| p.sync_output);
+                ws.present_events.push(PresentEvent::Presented {
+                    id,
+                    actual_present,
+                    refresh_interval,
+                    output,
+                    flags: raw_flags,
+                });
+                ws.ticker.set_last_observed_actual_present(actual_present);
+                ws.commit.decrement_pending();
+            }
+            wp_presentation_feedback::Event::Discarded => {
+                let _ = ws.pending_feedback.remove(&id);
+                ws.present_events.push(PresentEvent::Discarded { id });
+                ws.commit.decrement_pending();
+            }
+            _ => {} // Event enum is #[non_exhaustive]
+        }
     }
 }
 

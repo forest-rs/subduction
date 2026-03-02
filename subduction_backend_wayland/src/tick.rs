@@ -143,7 +143,6 @@ impl TickerState {
 
     /// Stores the most recent actual present time for propagation into the
     /// next [`FrameTick::prev_actual_present`].
-    #[allow(dead_code, reason = "called from presentation feedback path")]
     pub(crate) fn set_last_observed_actual_present(&mut self, t: HostTime) {
         self.last_observed_actual_present = Some(t);
     }

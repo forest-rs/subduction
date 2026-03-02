@@ -205,10 +205,11 @@
 
 use crate::commit::{CommitFrameError, CommitState, FeedbackData};
 use crate::output_registry::OutputRegistry;
-use crate::presentation::SubmissionId;
+use crate::presentation::{PendingFeedback, PresentEvent, PresentEventQueue, SubmissionId};
 use crate::protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
 use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
+use std::collections::HashMap;
 use subduction_core::time::HostTime;
 use subduction_core::timing::FrameTick;
 use wayland_client::protocol::{wl_callback, wl_output, wl_registry, wl_surface};
@@ -267,6 +268,8 @@ pub struct WaylandState {
     pub(crate) ticker: TickerState,
     pub(crate) commit: CommitState,
     pub(crate) surface: Option<wl_surface::WlSurface>,
+    pub(crate) present_events: PresentEventQueue,
+    pub(crate) pending_feedback: HashMap<SubmissionId, PendingFeedback>,
 }
 
 impl WaylandState {
@@ -283,6 +286,8 @@ impl WaylandState {
             ticker: TickerState::new(),
             commit: CommitState::new(),
             surface: None,
+            present_events: PresentEventQueue::default(),
+            pending_feedback: HashMap::new(),
         }
     }
 
@@ -316,6 +321,12 @@ impl WaylandState {
     #[must_use]
     pub fn poll_tick(&mut self) -> Option<FrameTick> {
         self.ticker.poll_tick()
+    }
+
+    /// Pops the next queued [`PresentEvent`], if any.
+    #[must_use]
+    pub fn poll_present_event(&mut self) -> Option<PresentEvent> {
+        self.present_events.pop()
     }
 
     /// Requests the next frame callback from the compositor.
@@ -392,6 +403,8 @@ impl WaylandState {
         {
             let _fb = pres.feedback(&surface, qh, FeedbackData { submission_id: id });
             self.commit.increment_pending();
+            self.pending_feedback
+                .insert(id, PendingFeedback { sync_output: None });
         }
 
         // 4. Commit the surface.
@@ -565,6 +578,14 @@ impl OwnedQueueMode {
     pub fn poll_tick(&mut self) -> Option<FrameTick> {
         self.state.poll_tick()
     }
+
+    /// Pops the next queued [`PresentEvent`], if any.
+    ///
+    /// Convenience wrapper that calls [`WaylandState::poll_present_event`].
+    #[must_use]
+    pub fn poll_present_event(&mut self) -> Option<PresentEvent> {
+        self.state.poll_present_event()
+    }
 }
 
 /// Embedded-state integration mode.
@@ -593,8 +614,57 @@ impl<HostState> EmbeddedStateMode<HostState> {
 }
 
 #[cfg(test)]
+impl WaylandState {
+    /// Test helper: simulates the `sync_output` event from the dispatch handler.
+    ///
+    /// Takes a pre-resolved `Option<OutputId>` (bypassing proxy lookup).
+    fn test_on_sync_output(
+        &mut self,
+        id: SubmissionId,
+        resolved: Option<subduction_core::output::OutputId>,
+    ) {
+        if let Some(pending) = self.pending_feedback.get_mut(&id)
+            && (resolved.is_some() || pending.sync_output.is_none())
+        {
+            pending.sync_output = resolved;
+        }
+    }
+
+    /// Test helper: simulates the `presented` terminal event from the dispatch handler.
+    fn test_on_presented(
+        &mut self,
+        id: SubmissionId,
+        actual_present: HostTime,
+        refresh_interval: Option<u64>,
+        flags: u32,
+    ) {
+        let output = self
+            .pending_feedback
+            .remove(&id)
+            .and_then(|p| p.sync_output);
+        self.present_events.push(PresentEvent::Presented {
+            id,
+            actual_present,
+            refresh_interval,
+            output,
+            flags,
+        });
+        self.ticker.set_last_observed_actual_present(actual_present);
+        self.commit.decrement_pending();
+    }
+
+    /// Test helper: simulates the `discarded` terminal event from the dispatch handler.
+    fn test_on_discarded(&mut self, id: SubmissionId) {
+        let _ = self.pending_feedback.remove(&id);
+        self.present_events.push(PresentEvent::Discarded { id });
+        self.commit.decrement_pending();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use subduction_core::output::OutputId;
     use wayland_client::Proxy;
     use wayland_client::backend::ObjectId;
 
@@ -699,5 +769,225 @@ mod tests {
         // Second commit skips the callback request (no error).
         let _id1 = state.commit_frame(&qh, &conn).unwrap();
         assert!(state.ticker.is_callback_in_flight());
+    }
+
+    // --- Presentation feedback integration tests ---
+
+    /// Helper: sets up a `WaylandState` with a pending feedback entry.
+    fn state_with_pending(id: SubmissionId) -> WaylandState {
+        let mut state = WaylandState::new();
+        state
+            .pending_feedback
+            .insert(id, PendingFeedback { sync_output: None });
+        state.commit.increment_pending();
+        state
+    }
+
+    #[test]
+    fn flags_extraction_wenum_value() {
+        use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::Kind;
+        // Kind is bitflags: Vsync = 0x1, HwClock = 0x2.
+        let combined = Kind::Vsync | Kind::HwClock;
+        assert_eq!(combined.bits(), 0x3);
+    }
+
+    #[test]
+    fn flags_extraction_wenum_unknown() {
+        use wayland_client::WEnum;
+        use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::Kind;
+        let raw: u32 = match WEnum::<Kind>::Unknown(0xFF) {
+            WEnum::Value(k) => k.bits(),
+            WEnum::Unknown(v) => v,
+        };
+        assert_eq!(raw, 0xFF);
+    }
+
+    #[test]
+    fn discard_enqueues_event_and_decrements_pending() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+        assert_eq!(state.commit.pending_count(), 1);
+
+        state.test_on_discarded(id);
+
+        assert_eq!(
+            state.poll_present_event(),
+            Some(PresentEvent::Discarded { id })
+        );
+        assert_eq!(state.commit.pending_count(), 0);
+        assert!(state.pending_feedback.is_empty());
+    }
+
+    #[test]
+    fn out_of_order_delivery() {
+        let id0 = SubmissionId(0);
+        let id1 = SubmissionId(1);
+        let mut state = WaylandState::new();
+        // Insert both pending entries.
+        state
+            .pending_feedback
+            .insert(id0, PendingFeedback { sync_output: None });
+        state.commit.increment_pending();
+        state
+            .pending_feedback
+            .insert(id1, PendingFeedback { sync_output: None });
+        state.commit.increment_pending();
+
+        // Feedback for id1 arrives first.
+        state.test_on_presented(id1, HostTime(200), Some(16_666_667), 0);
+        // Then id0.
+        state.test_on_presented(id0, HostTime(100), Some(16_666_667), 0);
+
+        let ev1 = state.poll_present_event().unwrap();
+        let ev0 = state.poll_present_event().unwrap();
+        assert!(matches!(ev1, PresentEvent::Presented { id, .. } if id == id1));
+        assert!(matches!(ev0, PresentEvent::Presented { id, .. } if id == id0));
+        assert_eq!(state.commit.pending_count(), 0);
+    }
+
+    #[test]
+    fn sync_output_present_resolves_output() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+        let output = OutputId(7);
+
+        state.test_on_sync_output(id, Some(output));
+        state.test_on_presented(id, HostTime(1000), None, 0);
+
+        let ev = state.poll_present_event().unwrap();
+        assert!(matches!(
+            ev,
+            PresentEvent::Presented { output: Some(o), .. } if o == output
+        ));
+    }
+
+    #[test]
+    fn sync_output_unknown_produces_none() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+
+        // sync_output with a proxy not in the registry → None.
+        state.test_on_sync_output(id, None);
+        state.test_on_presented(id, HostTime(1000), None, 0);
+
+        let ev = state.poll_present_event().unwrap();
+        assert!(matches!(ev, PresentEvent::Presented { output: None, .. }));
+    }
+
+    #[test]
+    fn sync_output_missing_entirely() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+
+        // No sync_output before presented → output: None.
+        state.test_on_presented(id, HostTime(1000), None, 0);
+
+        let ev = state.poll_present_event().unwrap();
+        assert!(matches!(ev, PresentEvent::Presented { output: None, .. }));
+    }
+
+    #[test]
+    fn known_beats_unknown_sync_output_policy() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+        let known = OutputId(3);
+
+        // First: known output arrives.
+        state.test_on_sync_output(id, Some(known));
+        // Second: unknown output arrives — should NOT overwrite.
+        state.test_on_sync_output(id, None);
+
+        state.test_on_presented(id, HostTime(1000), None, 0);
+
+        let ev = state.poll_present_event().unwrap();
+        assert!(matches!(
+            ev,
+            PresentEvent::Presented { output: Some(o), .. } if o == known
+        ));
+    }
+
+    #[test]
+    fn last_observed_actual_present_updated() {
+        let id = SubmissionId(0);
+        let mut state = state_with_pending(id);
+
+        state.test_on_presented(id, HostTime(42_000), None, 0);
+
+        // The ticker should have the actual present time stored.
+        // Verify by generating a tick and checking prev_actual_present.
+        let reg = OutputRegistry::new();
+        state.ticker.mark_callback_requested();
+        state.ticker.on_callback_done(state.clock, &reg);
+        let tick = state.ticker.poll_tick().unwrap();
+        assert_eq!(tick.prev_actual_present, Some(HostTime(42_000)));
+    }
+
+    #[test]
+    fn terminal_event_for_missing_submission_presented() {
+        let mut state = WaylandState::new();
+        let id = SubmissionId(99);
+        // Simulate increment that happened at creation time.
+        state.commit.increment_pending();
+
+        // Presented for an id not in the pending map — no panic, event
+        // still emitted, pending count still decrements.
+        state.test_on_presented(id, HostTime(500), None, 0);
+
+        let ev = state.poll_present_event().unwrap();
+        assert!(matches!(
+            ev,
+            PresentEvent::Presented { id: sid, output: None, .. } if sid == id
+        ));
+        assert_eq!(state.commit.pending_count(), 0);
+    }
+
+    #[test]
+    fn terminal_event_for_missing_submission_discarded() {
+        let mut state = WaylandState::new();
+        let id = SubmissionId(99);
+        state.commit.increment_pending();
+
+        state.test_on_discarded(id);
+
+        let ev = state.poll_present_event().unwrap();
+        assert_eq!(ev, PresentEvent::Discarded { id });
+        assert_eq!(state.commit.pending_count(), 0);
+    }
+
+    #[test]
+    fn pending_map_counter_coherence() {
+        let mut state = WaylandState::new();
+
+        // Normal flow: insert two pending entries.
+        let id0 = SubmissionId(0);
+        let id1 = SubmissionId(1);
+        state
+            .pending_feedback
+            .insert(id0, PendingFeedback { sync_output: None });
+        state.commit.increment_pending();
+        state
+            .pending_feedback
+            .insert(id1, PendingFeedback { sync_output: None });
+        state.commit.increment_pending();
+        assert_eq!(
+            state.pending_feedback.len(),
+            state.commit.pending_count() as usize
+        );
+
+        // Discard one.
+        state.test_on_discarded(id0);
+        assert_eq!(
+            state.pending_feedback.len(),
+            state.commit.pending_count() as usize
+        );
+
+        // Present the other.
+        state.test_on_presented(id1, HostTime(100), None, 0);
+        assert_eq!(
+            state.pending_feedback.len(),
+            state.commit.pending_count() as usize
+        );
+        assert_eq!(state.pending_feedback.len(), 0);
+        assert_eq!(state.commit.pending_count(), 0);
     }
 }

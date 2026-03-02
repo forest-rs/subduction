@@ -4,6 +4,7 @@
 //! Internal output tracking for `wl_output` globals.
 
 use subduction_core::output::OutputId;
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_output;
 
 /// A tracked `wl_output` global.
@@ -74,6 +75,16 @@ impl OutputRegistry {
             .iter()
             .position(|e| e.global_name == global_name)?;
         Some(self.entries.swap_remove(pos))
+    }
+
+    /// Looks up the stable [`OutputId`] for a `wl_output` proxy by comparing
+    /// `Proxy::id()` values.
+    pub(crate) fn id_for_proxy(&self, proxy: &wl_output::WlOutput) -> Option<OutputId> {
+        let target = proxy.id();
+        self.entries
+            .iter()
+            .find(|e| e.proxy.id() == target)
+            .map(|e| e.id)
     }
 
     /// Looks up the stable [`OutputId`] for a compositor global name.

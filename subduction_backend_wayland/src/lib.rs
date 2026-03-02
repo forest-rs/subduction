@@ -36,6 +36,10 @@
 //! - [`OwnedQueueMode::blocking_dispatch`] flushes before blocking.
 //! - [`OwnedQueueMode::dispatch_pending`] does **not** flush — the caller
 //!   must call [`OwnedQueueMode::flush`] separately.
+//! - [`WaylandState::request_frame`] emits a `wl_surface.frame` request but
+//!   does **not** flush. In owned mode, the next
+//!   [`blocking_dispatch`](OwnedQueueMode::blocking_dispatch) flushes
+//!   automatically. In non-blocking or embedded mode, the caller must flush.
 //! - Future commit-sequencing APIs will always flush after committing.
 
 mod event_loop;
@@ -52,6 +56,6 @@ pub use event_loop::{
 };
 pub use hints::compute_present_hints;
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
-pub use protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
+pub use protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
 pub use subduction_core::backend::Presenter;
 pub use time::{Clock, now, timebase};

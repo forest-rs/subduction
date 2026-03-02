@@ -21,8 +21,8 @@
 use crate::event_loop::WaylandState;
 use crate::time::clock_from_presentation_clk_id;
 use wayland_client::protocol::wl_registry::WlRegistry;
-use wayland_client::protocol::{wl_output, wl_registry};
-use wayland_client::{Dispatch, Proxy};
+use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::wp::presentation_time::client::wp_presentation;
 
 /// Maximum `wl_output` version the backend will bind.
@@ -71,6 +71,14 @@ pub struct OutputGlobalData {
     pub(crate) global_name: u32,
 }
 
+/// Userdata marker for backend-issued frame callbacks.
+///
+/// Distinguishes backend callbacks from host/toolkit callbacks on the same
+/// queue. Public because embedded-mode hosts need it in
+/// [`delegate_dispatch!`](wayland_client::delegate_dispatch).
+#[derive(Debug, Clone, Copy)]
+pub struct FrameCallbackData;
+
 /// Delegation target for Wayland protocol event dispatch.
 ///
 /// Use with [`delegate_dispatch!`](wayland_client::delegate_dispatch) to wire
@@ -96,8 +104,8 @@ where
         registry: &WlRegistry,
         event: wl_registry::Event,
         _data: &(),
-        _conn: &wayland_client::Connection,
-        qh: &wayland_client::QueueHandle<D>,
+        _conn: &Connection,
+        qh: &QueueHandle<D>,
     ) {
         let ws: &mut WaylandState = state.as_mut();
         match event {
@@ -150,8 +158,8 @@ where
         _proxy: &wl_output::WlOutput,
         _event: wl_output::Event,
         _data: &OutputGlobalData,
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<D>,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
     ) {
         // No-op. Output property events handled in a future commit.
     }
@@ -170,8 +178,8 @@ where
         _proxy: &wp_presentation::WpPresentation,
         event: wp_presentation::Event,
         _data: &(),
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<D>,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
     ) {
         let ws: &mut WaylandState = state.as_mut();
         if let wp_presentation::Event::ClockId { clk_id } = event {
@@ -182,6 +190,32 @@ where
                 ws.capabilities.presentation_clock_domain_aligned = false;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch<WlCallback, FrameCallbackData, D>
+// ---------------------------------------------------------------------------
+
+impl<D> Dispatch<wl_callback::WlCallback, FrameCallbackData, D> for WaylandProtocol
+where
+    D: Dispatch<wl_callback::WlCallback, FrameCallbackData> + AsMut<WaylandState> + 'static,
+{
+    fn event(
+        state: &mut D,
+        _proxy: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _data: &FrameCallbackData,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            let ws: &mut WaylandState = state.as_mut();
+            ws.ticker.on_callback_done(ws.clock, &ws.output_registry);
+        }
+        // The callback_data field is a millisecond timestamp from an
+        // unspecified epoch — not safely comparable to HostTime or
+        // presentation feedback timestamps. We use Clock::now() instead.
     }
 }
 

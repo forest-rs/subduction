@@ -131,11 +131,12 @@
 //!   flush on the host's behalf in this mode).
 //!
 //! ```rust,no_run
-//! use wayland_client::protocol::{wl_output, wl_registry};
+//! use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
 //! use wayland_client::{Connection, EventQueue};
 //! use wayland_protocols::wp::presentation_time::client::wp_presentation;
 //! use subduction_backend_wayland::{
-//!     EmbeddedStateMode, OutputGlobalData, WaylandProtocol, WaylandState,
+//!     EmbeddedStateMode, FrameCallbackData, OutputGlobalData,
+//!     WaylandProtocol, WaylandState,
 //! };
 //!
 //! struct HostState {
@@ -155,6 +156,8 @@
 //!     [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
 //! wayland_client::delegate_dispatch!(HostState:
 //!     [wp_presentation::WpPresentation: ()] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
 //!
 //! let connection = Connection::connect_to_env().unwrap();
 //! let mut event_queue: EventQueue<HostState> = connection.new_event_queue();
@@ -179,14 +182,14 @@
 //! ```
 
 use crate::output_registry::OutputRegistry;
-use crate::protocol::{Capabilities, OutputGlobalData, WaylandProtocol};
+use crate::protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
 use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
 use subduction_core::time::HostTime;
 use subduction_core::timing::FrameTick;
-use wayland_client::protocol::{wl_output, wl_registry, wl_surface};
+use wayland_client::protocol::{wl_callback, wl_output, wl_registry, wl_surface};
 use wayland_client::{
-    Connection, DispatchError, EventQueue, QueueHandle,
+    Connection, Dispatch, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
 };
 use wayland_protocols::wp::presentation_time::client::wp_presentation;
@@ -222,7 +225,8 @@ pub enum RequestFrameError {
 /// 2. Call [`WaylandState::set_registry`] to store the registry proxy.
 /// 3. Implement `AsMut<WaylandState>` on their host state.
 /// 4. Wire [`delegate_dispatch!`](wayland_client::delegate_dispatch) for
-///    `WlRegistry` and `WlOutput` via [`WaylandProtocol`].
+///    `WlRegistry`, `WlOutput`, `WpPresentation`, and `WlCallback` via
+///    [`WaylandProtocol`].
 /// 5. Drive dispatch and the initial roundtrip themselves.
 ///
 /// Embedded-mode hosts are responsible for flushing the connection after
@@ -288,6 +292,32 @@ impl WaylandState {
         self.ticker.poll_tick()
     }
 
+    /// Requests the next frame callback from the compositor.
+    ///
+    /// Sends a `wl_surface.frame()` request with backend-specific userdata,
+    /// marking one callback as in-flight. Returns
+    /// [`RequestFrameError::NoSurface`] if no surface has been registered, or
+    /// [`RequestFrameError::AlreadyInFlight`] if a callback is already pending.
+    ///
+    /// # Flush requirement
+    ///
+    /// This method emits a protocol request but does **not** flush the
+    /// connection. In owned mode, the next
+    /// [`blocking_dispatch`](OwnedQueueMode::blocking_dispatch) flushes
+    /// automatically. In non-blocking or embedded mode, the caller must flush.
+    pub fn request_frame<D>(&mut self, qh: &QueueHandle<D>) -> Result<(), RequestFrameError>
+    where
+        D: Dispatch<wl_callback::WlCallback, FrameCallbackData> + AsMut<Self> + 'static,
+    {
+        let surface = self.surface.as_ref().ok_or(RequestFrameError::NoSurface)?;
+        if self.ticker.is_callback_in_flight() {
+            return Err(RequestFrameError::AlreadyInFlight);
+        }
+        let _callback = surface.frame(qh, FrameCallbackData);
+        self.ticker.mark_callback_requested();
+        Ok(())
+    }
+
     /// Returns current host time using the selected backend clock.
     ///
     /// After `wp_presentation.clock_id` has been received, this reads the
@@ -315,6 +345,7 @@ impl AsMut<Self> for WaylandState {
 wayland_client::delegate_dispatch!(WaylandState: [wl_registry::WlRegistry: ()] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wl_output::WlOutput: OutputGlobalData] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wp_presentation::WpPresentation: ()] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
 
 /// Owned-queue integration mode.
 ///
@@ -419,6 +450,25 @@ impl OwnedQueueMode {
     pub fn state_mut(&mut self) -> &mut WaylandState {
         &mut self.state
     }
+
+    /// Requests the next frame callback from the compositor.
+    ///
+    /// Convenience wrapper that calls [`WaylandState::request_frame`] with the
+    /// owned queue handle. Does **not** flush — the next
+    /// [`blocking_dispatch`](Self::blocking_dispatch) flushes automatically, or
+    /// call [`flush`](Self::flush) explicitly.
+    pub fn request_frame(&mut self) -> Result<(), RequestFrameError> {
+        let qh = self.event_queue.handle();
+        self.state.request_frame(&qh)
+    }
+
+    /// Pops the next queued [`FrameTick`], if any.
+    ///
+    /// Convenience wrapper that calls [`WaylandState::poll_tick`].
+    #[must_use]
+    pub fn poll_tick(&mut self) -> Option<FrameTick> {
+        self.state.poll_tick()
+    }
 }
 
 /// Embedded-state integration mode.
@@ -443,5 +493,45 @@ impl<HostState> EmbeddedStateMode<HostState> {
     #[must_use]
     pub fn queue_handle(&self) -> QueueHandle<HostState> {
         self.queue_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wayland_client::Proxy;
+    use wayland_client::backend::ObjectId;
+
+    fn test_queue_handle() -> (EventQueue<WaylandState>, QueueHandle<WaylandState>) {
+        let (s1, _s2) = std::os::unix::net::UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(s1).unwrap();
+        let eq: EventQueue<WaylandState> = conn.new_event_queue();
+        let qh = eq.handle();
+        (eq, qh)
+    }
+
+    fn inert_surface() -> wl_surface::WlSurface {
+        let (s1, _s2) = std::os::unix::net::UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(s1).unwrap();
+        wl_surface::WlSurface::from_id(&conn, ObjectId::null()).unwrap()
+    }
+
+    #[test]
+    fn request_frame_without_surface_returns_error() {
+        let (_eq, qh) = test_queue_handle();
+        let mut state = WaylandState::new();
+        assert_eq!(state.request_frame(&qh), Err(RequestFrameError::NoSurface),);
+    }
+
+    #[test]
+    fn request_frame_when_in_flight_returns_already_in_flight() {
+        let (_eq, qh) = test_queue_handle();
+        let mut state = WaylandState::new();
+        state.set_surface(inert_surface()).unwrap();
+        state.ticker.mark_callback_requested();
+        assert_eq!(
+            state.request_frame(&qh),
+            Err(RequestFrameError::AlreadyInFlight),
+        );
     }
 }

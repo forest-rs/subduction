@@ -14,10 +14,6 @@ use subduction_core::timing::{FrameTick, TimingConfidence};
 ///
 /// Overflow policy is `drop_oldest` to retain the freshest pacing signal.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "methods called by TickerState in future dispatch path"
-)]
 pub(crate) struct TickQueue {
     inner: BoundedQueue<FrameTick>,
 }
@@ -66,10 +62,6 @@ impl Default for TickQueue {
 /// This is a seam for future output routing logic. Currently returns the
 /// lowest tracked output, falling back to `OutputId::default()` when the
 /// registry is empty.
-#[allow(
-    dead_code,
-    reason = "called by TickerState::on_callback_done in future dispatch path"
-)]
 pub(crate) fn select_tick_output(registry: &OutputRegistry) -> OutputId {
     registry.lowest_id().unwrap_or_default()
 }
@@ -80,10 +72,6 @@ pub(crate) fn select_tick_output(registry: &OutputRegistry) -> OutputId {
 /// complete, and queues them for polling. Protocol I/O is handled externally;
 /// this type contains only the bookkeeping.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "fields used by methods wired in future dispatch path"
-)]
 pub(crate) struct TickerState {
     queue: TickQueue,
     tick_index: u64,
@@ -106,7 +94,6 @@ impl TickerState {
     /// If a callback is in flight, builds a [`FrameTick`] with `PacingOnly`
     /// confidence, enqueues it, increments the tick index, and clears the
     /// in-flight flag. If no callback is in flight, debug-asserts and returns.
-    #[allow(dead_code, reason = "called from future wl_callback Dispatch impl")]
     pub(crate) fn on_callback_done(&mut self, clock: Clock, output_registry: &OutputRegistry) {
         debug_assert!(
             self.callback_in_flight,
@@ -141,13 +128,11 @@ impl TickerState {
     }
 
     /// Returns whether a frame callback is currently in flight.
-    #[allow(dead_code, reason = "called from future frame request logic")]
     pub(crate) fn is_callback_in_flight(&self) -> bool {
         self.callback_in_flight
     }
 
     /// Marks that a frame callback request has been sent.
-    #[allow(dead_code, reason = "called from future frame request logic")]
     pub(crate) fn mark_callback_requested(&mut self) {
         debug_assert!(
             !self.callback_in_flight,

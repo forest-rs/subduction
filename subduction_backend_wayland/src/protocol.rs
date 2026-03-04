@@ -23,7 +23,9 @@ use crate::event_loop::WaylandState;
 use crate::presentation::{PresentEvent, presentation_time_to_host_time};
 use crate::time::clock_from_presentation_clk_id;
 use wayland_client::protocol::wl_registry::WlRegistry;
-use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
+use wayland_client::protocol::{
+    wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_subsurface, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
@@ -32,6 +34,12 @@ pub(crate) const WL_OUTPUT_MAX_VERSION: u32 = 4;
 
 /// Maximum `wp_presentation` version the backend will bind.
 const WP_PRESENTATION_VERSION: u32 = 1;
+
+/// Maximum `wl_compositor` version the backend will bind.
+const WL_COMPOSITOR_MAX_VERSION: u32 = 6;
+
+/// Maximum `wl_subcompositor` version the backend will bind.
+const WL_SUBCOMPOSITOR_VERSION: u32 = 1;
 
 /// Runtime protocol capability flags.
 ///
@@ -98,6 +106,8 @@ where
     D: Dispatch<WlRegistry, ()>
         + Dispatch<wl_output::WlOutput, OutputGlobalData>
         + Dispatch<wp_presentation::WpPresentation, ()>
+        + Dispatch<wl_compositor::WlCompositor, ()>
+        + Dispatch<wl_subcompositor::WlSubcompositor, ()>
         + AsMut<WaylandState>
         + 'static,
 {
@@ -132,6 +142,20 @@ where
                     let proxy: wp_presentation::WpPresentation = registry.bind(name, v, qh, ());
                     ws.presentation = Some(proxy);
                     ws.capabilities.has_presentation_time = true;
+                } else if interface == wl_compositor::WlCompositor::interface().name {
+                    if ws.compositor.is_some() {
+                        return;
+                    }
+                    let v = version.min(WL_COMPOSITOR_MAX_VERSION);
+                    let proxy: wl_compositor::WlCompositor = registry.bind(name, v, qh, ());
+                    ws.compositor = Some(proxy);
+                } else if interface == wl_subcompositor::WlSubcompositor::interface().name {
+                    if ws.subcompositor.is_some() {
+                        return;
+                    }
+                    let v = version.min(WL_SUBCOMPOSITOR_VERSION);
+                    let proxy: wl_subcompositor::WlSubcompositor = registry.bind(name, v, qh, ());
+                    ws.subcompositor = Some(proxy);
                 }
             }
             wl_registry::Event::GlobalRemove { name } => {
@@ -144,6 +168,46 @@ where
             }
             _ => {} // Event enum is #[non_exhaustive]
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch<WlCompositor, (), D>
+// ---------------------------------------------------------------------------
+
+impl<D> Dispatch<wl_compositor::WlCompositor, (), D> for WaylandProtocol
+where
+    D: Dispatch<wl_compositor::WlCompositor, ()> + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &wl_compositor::WlCompositor,
+        _event: wl_compositor::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        // wl_compositor has no events.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch<WlSubcompositor, (), D>
+// ---------------------------------------------------------------------------
+
+impl<D> Dispatch<wl_subcompositor::WlSubcompositor, (), D> for WaylandProtocol
+where
+    D: Dispatch<wl_subcompositor::WlSubcompositor, ()> + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &wl_subcompositor::WlSubcompositor,
+        _event: wl_subcompositor::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        // wl_subcompositor has no events.
     }
 }
 
@@ -289,6 +353,68 @@ where
             }
             _ => {} // Event enum is #[non_exhaustive]
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Presenter: Dispatch<WlSurface, LayerSurfaceData, D>
+// ---------------------------------------------------------------------------
+
+/// User data attached to each `wl_surface` created by [`WaylandPresenter`].
+///
+/// Public because embedded-mode hosts need it as a type parameter in
+/// [`delegate_dispatch!`](wayland_client::delegate_dispatch).
+///
+/// [`WaylandPresenter`]: crate::presenter::WaylandPresenter
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LayerSurfaceData {
+    /// The slot index this surface belongs to.
+    pub(crate) slot: u32,
+}
+
+impl<D> Dispatch<wl_surface::WlSurface, LayerSurfaceData, D> for WaylandProtocol
+where
+    D: Dispatch<wl_surface::WlSurface, LayerSurfaceData> + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &wl_surface::WlSurface,
+        _event: wl_surface::Event,
+        _data: &LayerSurfaceData,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        // wl_surface.enter/leave are informational; no action needed for
+        // presenter-managed surfaces.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Presenter: Dispatch<WlSubsurface, LayerSubsurfaceData, D>
+// ---------------------------------------------------------------------------
+
+/// User data attached to each `wl_subsurface` created by [`WaylandPresenter`].
+///
+/// Public because embedded-mode hosts need it as a type parameter in
+/// [`delegate_dispatch!`](wayland_client::delegate_dispatch).
+///
+/// [`WaylandPresenter`]: crate::presenter::WaylandPresenter
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LayerSubsurfaceData;
+
+impl<D> Dispatch<wl_subsurface::WlSubsurface, LayerSubsurfaceData, D> for WaylandProtocol
+where
+    D: Dispatch<wl_subsurface::WlSubsurface, LayerSubsurfaceData> + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &wl_subsurface::WlSubsurface,
+        _event: wl_subsurface::Event,
+        _data: &LayerSubsurfaceData,
+        _conn: &Connection,
+        _qh: &QueueHandle<D>,
+    ) {
+        // wl_subsurface has no events in the current protocol version.
     }
 }
 

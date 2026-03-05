@@ -1,0 +1,18 @@
+[package]
+name = "wayland_layers"
+description = "Wayland example: animated subsurface layers driven by subduction_backend_wayland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+subduction_core = { workspace = true }
+subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
+wayland_example_common = { path = "../wayland_example_common" }
+wayland-client = "0.31"

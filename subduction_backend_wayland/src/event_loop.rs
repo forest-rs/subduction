@@ -656,7 +656,7 @@ impl OwnedQueueMode {
         self.state.poll_present_event()
     }
 
-    /// Creates a [`WaylandPresenter`] using globals and surface from the
+    /// Creates a [`crate::WaylandPresenter`] using globals and surface from the
     /// backend state.
     ///
     /// Requires that [`bootstrap`](Self::bootstrap) has been called (to

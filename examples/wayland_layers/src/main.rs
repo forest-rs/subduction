@@ -32,11 +32,11 @@ const LAYER_SIZE: u32 = 80;
 
 /// ARGB colors for the five layers.
 const COLORS: [[u8; 4]; NUM_LAYERS] = [
-    [242, 67, 54, 230],   // red
-    [33, 150, 243, 230],  // blue
-    [77, 176, 80, 230],   // green
-    [255, 194, 8, 230],   // amber
-    [156, 39, 176, 230],  // purple
+    [242, 67, 54, 230],  // red
+    [33, 150, 243, 230], // blue
+    [77, 176, 80, 230],  // green
+    [255, 194, 8, 230],  // amber
+    [156, 39, 176, 230], // purple
 ];
 
 fn main() {
@@ -105,7 +105,10 @@ fn main() {
     let mut layer_pool = ShmPool::new(&shm, layer_bytes, &qh);
 
     // Buffers must be kept alive so the wl_buffer proxies remain valid.
-    #[allow(clippy::collection_is_never_read, reason = "keeps wl_buffer proxies alive")]
+    #[allow(
+        clippy::collection_is_never_read,
+        reason = "keeps wl_buffer proxies alive"
+    )]
     let mut layer_buffers: Vec<ShmBuffer> = Vec::with_capacity(NUM_LAYERS);
     for (i, &layer_id) in layer_ids.iter().enumerate() {
         let [r, g, b, a] = COLORS[i];
@@ -167,7 +170,13 @@ fn main() {
             let elapsed_nanos = plan.semantic_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;
 
-            animate_transforms(&mut store, &layer_ids, f64::from(win_w), f64::from(win_h), t);
+            animate_transforms(
+                &mut store,
+                &layer_ids,
+                f64::from(win_w),
+                f64::from(win_h),
+                t,
+            );
 
             let changes = store.evaluate();
             presenter.apply(&store, &changes);

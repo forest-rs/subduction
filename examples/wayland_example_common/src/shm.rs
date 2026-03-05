@@ -88,15 +88,9 @@ impl ShmPool {
             self.file.write_all(&row).expect("write failed");
         }
 
-        let buffer = self.pool.create_buffer(
-            self.offset,
-            w,
-            h,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
+        let buffer =
+            self.pool
+                .create_buffer(self.offset, w, h, stride, wl_shm::Format::Argb8888, qh, ());
         self.offset += buf_bytes as i32;
         Some(ShmBuffer { buffer })
     }

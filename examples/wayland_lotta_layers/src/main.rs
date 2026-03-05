@@ -137,7 +137,10 @@ fn main() {
     let mut layer_pool = ShmPool::new(&shm, layer_bytes, &qh);
 
     // Buffers must be kept alive so the wl_buffer proxies remain valid.
-    #[allow(clippy::collection_is_never_read, reason = "keeps wl_buffer proxies alive")]
+    #[allow(
+        clippy::collection_is_never_read,
+        reason = "keeps wl_buffer proxies alive"
+    )]
     let mut layer_buffers: Vec<ShmBuffer> = Vec::with_capacity(total_children);
     for (i, &child_id) in child_ids.iter().enumerate() {
         let [r, g, b] = layer_color(i);

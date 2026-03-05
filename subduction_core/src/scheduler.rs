@@ -92,6 +92,25 @@ impl SchedulerConfig {
             },
         }
     }
+
+    /// Default configuration for Wayland (pacing-only timing via frame
+    /// callbacks, with optional `wp_presentation` feedback).
+    #[must_use]
+    pub const fn wayland() -> Self {
+        Self {
+            initial_depth: 2,
+            min_depth: 1,
+            max_depth: 3,
+            ema_alpha: 0.15,
+            safety_multiplier: 2.0,
+            // ~16ms at 1ns tick resolution.
+            nominal_latency: Duration(16_000_000),
+            degradation_policy: DegradationPolicy::Adaptive {
+                miss_threshold: 3,
+                recovery_threshold: 10,
+            },
+        }
+    }
 }
 
 /// Exponential moving average tracker.

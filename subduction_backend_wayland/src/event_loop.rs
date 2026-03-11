@@ -142,14 +142,17 @@
 //!   flush on the host's behalf in this mode).
 //!
 //! ```rust,no_run
-//! use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
+//! use wayland_client::protocol::{
+//!     wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor,
+//!     wl_subsurface, wl_surface,
+//! };
 //! use wayland_client::{Connection, EventQueue};
 //! use wayland_protocols::wp::presentation_time::client::{
 //!     wp_presentation, wp_presentation_feedback,
 //! };
 //! use subduction_backend_wayland::{
-//!     EmbeddedStateMode, FeedbackData, FrameCallbackData, OutputGlobalData,
-//!     WaylandProtocol, WaylandState,
+//!     EmbeddedStateMode, FeedbackData, FrameCallbackData, LayerSubsurfaceData,
+//!     LayerSurfaceData, OutputGlobalData, WaylandProtocol, WaylandState,
 //! };
 //!
 //! struct HostState {
@@ -173,6 +176,16 @@
 //!     [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
 //! wayland_client::delegate_dispatch!(HostState:
 //!     [wp_presentation_feedback::WpPresentationFeedback: FeedbackData] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_compositor::WlCompositor: ()] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_subcompositor::WlSubcompositor: ()] => WaylandProtocol);
+//!
+//! // Required when using WaylandPresenter:
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_surface::WlSurface: LayerSurfaceData] => WaylandProtocol);
+//! wayland_client::delegate_dispatch!(HostState:
+//!     [wl_subsurface::WlSubsurface: LayerSubsurfaceData] => WaylandProtocol);
 //!
 //! let connection = Connection::connect_to_env().unwrap();
 //! let mut event_queue: EventQueue<HostState> = connection.new_event_queue();
@@ -206,13 +219,18 @@
 use crate::commit::{CommitFrameError, CommitState, FeedbackData};
 use crate::output_registry::OutputRegistry;
 use crate::presentation::{PendingFeedback, PresentEvent, PresentEventQueue, SubmissionId};
-use crate::protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
+use crate::protocol::{
+    Capabilities, FrameCallbackData, LayerSubsurfaceData, LayerSurfaceData, OutputGlobalData,
+    WaylandProtocol,
+};
 use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
 use std::collections::HashMap;
 use subduction_core::time::HostTime;
 use subduction_core::timing::FrameTick;
-use wayland_client::protocol::{wl_callback, wl_output, wl_registry, wl_surface};
+use wayland_client::protocol::{
+    wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_subsurface, wl_surface,
+};
 use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, QueueHandle,
     backend::{ReadEventsGuard, WaylandError},
@@ -236,6 +254,30 @@ pub enum RequestFrameError {
     /// A frame callback is already in flight.
     AlreadyInFlight,
 }
+
+/// Error returned by [`OwnedQueueMode::create_presenter`] when a required
+/// global or surface is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreatePresenterError {
+    /// `wl_compositor` was not bound during global discovery.
+    NoCompositor,
+    /// `wl_subcompositor` was not bound during global discovery.
+    NoSubcompositor,
+    /// No surface has been registered via [`WaylandState::set_surface`].
+    NoSurface,
+}
+
+impl core::fmt::Display for CreatePresenterError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoCompositor => f.write_str("wl_compositor not available"),
+            Self::NoSubcompositor => f.write_str("wl_subcompositor not available"),
+            Self::NoSurface => f.write_str("no surface registered with WaylandState"),
+        }
+    }
+}
+
+impl std::error::Error for CreatePresenterError {}
 
 /// Backend-owned state for Wayland protocol handling.
 ///
@@ -264,6 +306,8 @@ pub struct WaylandState {
     pub(crate) capabilities: Capabilities,
     pub(crate) clock: Clock,
     pub(crate) presentation: Option<wp_presentation::WpPresentation>,
+    pub(crate) compositor: Option<wl_compositor::WlCompositor>,
+    pub(crate) subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     pub(crate) bootstrapped: bool,
     pub(crate) ticker: TickerState,
     pub(crate) commit: CommitState,
@@ -282,6 +326,8 @@ impl WaylandState {
             capabilities: Capabilities::new(),
             clock: Clock::Monotonic,
             presentation: None,
+            compositor: None,
+            subcompositor: None,
             bootstrapped: false,
             ticker: TickerState::new(),
             commit: CommitState::new(),
@@ -303,6 +349,25 @@ impl WaylandState {
     /// [`WaylandState`] knows global discovery is possible.
     pub fn set_registry(&mut self, registry: wl_registry::WlRegistry) {
         self.registry = Some(registry);
+    }
+
+    /// Returns the `wl_compositor` bound during global discovery, if any.
+    #[must_use]
+    pub fn compositor(&self) -> Option<&wl_compositor::WlCompositor> {
+        self.compositor.as_ref()
+    }
+
+    /// Returns the `wl_subcompositor` bound during global discovery, if any.
+    #[must_use]
+    pub fn subcompositor(&self) -> Option<&wl_subcompositor::WlSubcompositor> {
+        self.subcompositor.as_ref()
+    }
+
+    /// Returns the surface registered via [`set_surface`](Self::set_surface),
+    /// if any.
+    #[must_use]
+    pub fn surface(&self) -> Option<&wl_surface::WlSurface> {
+        self.surface.as_ref()
     }
 
     /// Registers the surface that the backend will pace with frame callbacks.
@@ -445,6 +510,10 @@ wayland_client::delegate_dispatch!(WaylandState: [wl_output::WlOutput: OutputGlo
 wayland_client::delegate_dispatch!(WaylandState: [wp_presentation::WpPresentation: ()] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
 wayland_client::delegate_dispatch!(WaylandState: [wp_presentation_feedback::WpPresentationFeedback: FeedbackData] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_compositor::WlCompositor: ()] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_subcompositor::WlSubcompositor: ()] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_surface::WlSurface: LayerSurfaceData] => WaylandProtocol);
+wayland_client::delegate_dispatch!(WaylandState: [wl_subsurface::WlSubsurface: LayerSubsurfaceData] => WaylandProtocol);
 
 /// Owned-queue integration mode.
 ///
@@ -585,6 +654,36 @@ impl OwnedQueueMode {
     #[must_use]
     pub fn poll_present_event(&mut self) -> Option<PresentEvent> {
         self.state.poll_present_event()
+    }
+
+    /// Creates a [`crate::WaylandPresenter`] using globals and surface from the
+    /// backend state.
+    ///
+    /// Requires that [`bootstrap`](Self::bootstrap) has been called (to
+    /// bind `wl_compositor` and `wl_subcompositor`) and that a surface has
+    /// been registered via
+    /// [`state_mut().set_surface()`](WaylandState::set_surface).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CreatePresenterError`] if any required global or the
+    /// surface is missing.
+    pub fn create_presenter(
+        &self,
+        config: crate::presenter::WaylandPresenterConfig,
+    ) -> Result<crate::presenter::WaylandPresenter<WaylandState>, CreatePresenterError> {
+        let compositor = self
+            .state
+            .compositor
+            .clone()
+            .ok_or(CreatePresenterError::NoCompositor)?;
+        let subcompositor = self
+            .state
+            .subcompositor
+            .clone()
+            .ok_or(CreatePresenterError::NoSubcompositor)?;
+        let qh = self.event_queue.handle();
+        crate::presenter::WaylandPresenter::new(&self.state, compositor, subcompositor, qh, config)
     }
 }
 

@@ -133,6 +133,7 @@ mod event_loop;
 mod hints;
 mod output_registry;
 mod presentation;
+pub mod presenter;
 mod protocol;
 mod queue;
 mod tick;
@@ -140,10 +141,15 @@ mod time;
 
 pub use commit::{CommitFrameError, FeedbackData};
 pub use event_loop::{
-    EmbeddedStateMode, OwnedQueueMode, RequestFrameError, SetSurfaceError, WaylandState,
+    CreatePresenterError, EmbeddedStateMode, OwnedQueueMode, RequestFrameError, SetSurfaceError,
+    WaylandState,
 };
 pub use hints::compute_present_hints;
 pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
-pub use protocol::{Capabilities, FrameCallbackData, OutputGlobalData, WaylandProtocol};
+pub use presenter::{PositionRounding, WaylandPresenter, WaylandPresenterConfig};
+pub use protocol::{
+    Capabilities, FrameCallbackData, LayerSubsurfaceData, LayerSurfaceData, OutputGlobalData,
+    WaylandProtocol,
+};
 pub use subduction_core::backend::Presenter;
 pub use time::{Clock, now, timebase};

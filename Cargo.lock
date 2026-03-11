@@ -2172,6 +2172,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland_example_common"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "subduction_backend_wayland",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
+name = "wayland_layers"
+version = "0.0.1"
+dependencies = [
+ "subduction_backend_wayland",
+ "subduction_core",
+ "wayland-client",
+ "wayland_example_common",
+]
+
+[[package]]
+name = "wayland_lotta_layers"
+version = "0.0.1"
+dependencies = [
+ "lotta_layers_common",
+ "subduction_backend_wayland",
+ "subduction_core",
+ "wayland-client",
+ "wayland_example_common",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"

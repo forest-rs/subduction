@@ -20,6 +20,9 @@ members = [
   "examples/web_layers",
   "examples/web_video",
   "examples/web_lotta_layers",
+  "examples/wayland_example_common",
+  "examples/wayland_layers",
+  "examples/wayland_lotta_layers",
   "examples/wgpu_layers",
   "examples/wgpu_lotta_layers",
 ]

@@ -1,0 +1,19 @@
+[package]
+name = "wayland_lotta_layers"
+description = "Wayland stress-test: 100 animated subsurface layers in grouped orbits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+lotta_layers_common = { path = "../lotta_layers_common" }
+subduction_core = { workspace = true }
+subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
+wayland_example_common = { path = "../wayland_example_common" }
+wayland-client = "0.31"

@@ -527,6 +527,36 @@ impl LayerStore {
         self.world_transform[idx as usize]
     }
 
+    /// Returns the local (non-inherited) transform at raw slot `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn local_transform_at(&self, idx: u32) -> Transform3d {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        self.local_transform[idx as usize]
+    }
+
+    /// Returns the local (non-inherited) opacity at raw slot `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn local_opacity_at(&self, idx: u32) -> f32 {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        self.local_opacity[idx as usize]
+    }
+
     /// Returns the computed effective opacity at raw slot `idx`.
     ///
     /// # Panics
@@ -615,6 +645,23 @@ impl LayerStore {
             self.len
         );
         self.bounds[idx as usize]
+    }
+
+    /// Returns the raw parent slot index at raw slot `idx`, or `None` if
+    /// the layer is a root (has no parent).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn parent_at(&self, idx: u32) -> Option<u32> {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        let p = self.parent[idx as usize];
+        if p == INVALID { None } else { Some(p) }
     }
 
     // -- Internal helpers --

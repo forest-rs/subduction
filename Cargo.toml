@@ -24,6 +24,20 @@ members = [
   "examples/wgpu_lotta_layers",
 ]
 
+# Only cross-platform crates are built by default. Platform-specific backends
+# and their examples must be selected explicitly (e.g. `cargo check -p subduction_backend_wayland`).
+default-members = [
+  "subduction_core",
+  "subduction_debug",
+  "subduction_render",
+  "subduction_sync_harness",
+  "subduction_backend_wgpu",
+  "examples/lotta_layers_common",
+  "examples/trace_demo",
+  "examples/wgpu_layers",
+  "examples/wgpu_lotta_layers",
+]
+
 [workspace.package]
 version = "0.0.1"
 edition = "2024"

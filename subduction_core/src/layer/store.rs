@@ -955,4 +955,76 @@ mod tests {
             "bounds channel should contain the layer"
         );
     }
+
+    // ── Raw-index accessor tests ──────────────────────────────────
+
+    #[test]
+    fn parent_at_root_is_none() {
+        let mut store = LayerStore::new();
+        let root = store.create_layer();
+        assert_eq!(store.parent_at(root.idx), None);
+    }
+
+    #[test]
+    fn parent_at_returns_parent_slot() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let child = store.create_layer();
+        store.add_child(parent, child);
+        assert_eq!(store.parent_at(child.idx), Some(parent.idx));
+    }
+
+    #[test]
+    fn parent_at_reflects_reparent() {
+        let mut store = LayerStore::new();
+        let a = store.create_layer();
+        let b = store.create_layer();
+        let child = store.create_layer();
+        store.add_child(a, child);
+        assert_eq!(store.parent_at(child.idx), Some(a.idx));
+
+        store.reparent(child, b);
+        assert_eq!(store.parent_at(child.idx), Some(b.idx));
+    }
+
+    #[test]
+    fn parent_at_none_after_remove() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let child = store.create_layer();
+        store.add_child(parent, child);
+        store.remove_from_parent(child);
+        assert_eq!(store.parent_at(child.idx), None);
+    }
+
+    #[test]
+    fn local_transform_at_default_is_identity() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        assert_eq!(store.local_transform_at(id.idx), Transform3d::IDENTITY);
+    }
+
+    #[test]
+    fn local_transform_at_returns_set_value() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        let xf = Transform3d::from_translation(7.0, 3.0, 0.0);
+        store.set_transform(id, xf);
+        assert_eq!(store.local_transform_at(id.idx), xf);
+    }
+
+    #[test]
+    fn local_opacity_at_default_is_one() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        assert!((store.local_opacity_at(id.idx) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn local_opacity_at_returns_set_value() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        store.set_opacity(id, 0.42);
+        assert!((store.local_opacity_at(id.idx) - 0.42).abs() < f32::EPSILON);
+    }
 }

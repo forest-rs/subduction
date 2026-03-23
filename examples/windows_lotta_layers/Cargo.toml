@@ -1,0 +1,31 @@
+[package]
+name = "windows_lotta_layers"
+description = "Windows stress-test: 1000+ animated DirectComposition layers in grouped orbits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+lotta_layers_common = { path = "../lotta_layers_common" }
+subduction_core = { workspace = true, features = ["std", "trace"] }
+subduction_backend_windows = { path = "../../subduction_backend_windows" }
+subduction_debug = { path = "../../subduction_debug" }
+kurbo = { workspace = true }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectComposition",
+] }
+windows-core = "0.62"

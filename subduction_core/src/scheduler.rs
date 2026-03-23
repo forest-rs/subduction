@@ -75,6 +75,26 @@ impl SchedulerConfig {
         }
     }
 
+    /// Default configuration for Windows (estimated timing via DWM/DXGI).
+    ///
+    /// Similar to macOS but with a wider safety multiplier to account for
+    /// less predictable present timing from `DwmFlush`/DXGI frame stats.
+    #[must_use]
+    pub const fn windows() -> Self {
+        Self {
+            initial_depth: 2,
+            min_depth: 1,
+            max_depth: 3,
+            ema_alpha: 0.2,
+            safety_multiplier: 2.0,
+            nominal_latency: Duration(0),
+            degradation_policy: DegradationPolicy::Adaptive {
+                miss_threshold: 3,
+                recovery_threshold: 10,
+            },
+        }
+    }
+
     /// Default configuration for Web (pacing-only timing).
     #[must_use]
     pub const fn web() -> Self {

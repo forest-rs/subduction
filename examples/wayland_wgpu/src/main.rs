@@ -23,7 +23,9 @@ use bytemuck::{Pod, Zeroable};
 use subduction_backend_wayland::{
     FeedbackData, FrameCallbackData, OutputGlobalData, WaylandProtocol, WaylandState,
 };
-use wayland_client::protocol::{wl_callback, wl_compositor, wl_output, wl_registry, wl_surface};
+use wayland_client::protocol::{
+    wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -145,6 +147,8 @@ wayland_client::delegate_dispatch!(HostState:
     [wl_callback::WlCallback: FrameCallbackData] => WaylandProtocol);
 wayland_client::delegate_dispatch!(HostState:
     [wp_presentation_feedback::WpPresentationFeedback: FeedbackData] => WaylandProtocol);
+wayland_client::delegate_dispatch!(HostState:
+    [wl_subcompositor::WlSubcompositor: ()] => WaylandProtocol);
 
 // ---------------------------------------------------------------------------
 // Custom WlRegistry dispatch — binds host globals + forwards to backend
@@ -306,7 +310,7 @@ fn create_pipeline(
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("julia layout"),
         bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("julia pipeline"),
@@ -338,7 +342,7 @@ fn create_pipeline(
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -389,6 +393,7 @@ fn render_frame(
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);

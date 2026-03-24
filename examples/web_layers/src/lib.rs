@@ -344,7 +344,7 @@ async fn init_wgpu(canvas: &HtmlCanvasElement) -> WgpuState {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("plasma"),
         bind_group_layouts: &[&time_bgl],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("plasma"),
@@ -376,7 +376,7 @@ async fn init_wgpu(canvas: &HtmlCanvasElement) -> WgpuState {
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -573,6 +573,7 @@ fn render_wgpu(gpu: &WgpuState, t: f32) {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &gpu.bind_group, &[]);

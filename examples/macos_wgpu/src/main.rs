@@ -394,7 +394,7 @@ fn create_prism_pipeline(
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("prism layout"),
         bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("prism pipeline"),
@@ -441,7 +441,7 @@ fn create_prism_pipeline(
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -461,7 +461,7 @@ fn create_fullscreen_pipeline(
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -493,7 +493,7 @@ fn create_fullscreen_pipeline(
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -834,6 +834,7 @@ fn on_tick(tick: FrameTick) {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_pipeline(&gpu.pipeline);
                 pass.set_bind_group(0, &gpu.bind_group, &[]);

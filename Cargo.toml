@@ -29,7 +29,7 @@ version = "0.0.1"
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
 # and with the MSRV in the `Unreleased` section of CHANGELOG.md.
-rust-version = "1.88"
+rust-version = "1.92"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/subduction"
 
@@ -38,7 +38,7 @@ subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
 kurbo = { version = "0.13", default-features = false, features = ["libm"] }
 understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "e66fecdc521b57b76bb3b28ddc70ce3944926664" }
-wgpu = "27"
+wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 web-sys = "0.3"

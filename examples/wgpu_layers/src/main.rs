@@ -151,7 +151,7 @@ impl ApplicationHandler for App {
         let fill_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fill layout"),
             bind_group_layouts: &[&fill_bgl],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let fill_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -176,7 +176,7 @@ impl ApplicationHandler for App {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -329,6 +329,7 @@ impl ApplicationHandler for App {
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
+                        multiview_mask: None,
                     });
 
                     pass.set_pipeline(&s.fill_pipeline);

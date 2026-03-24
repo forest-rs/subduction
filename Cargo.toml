@@ -23,6 +23,7 @@ members = [
   "examples/wayland_example_common",
   "examples/wayland_layers",
   "examples/wayland_lotta_layers",
+  "examples/wayland_wgpu",
   "examples/wgpu_layers",
   "examples/wgpu_lotta_layers",
 ]

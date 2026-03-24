@@ -2260,6 +2260,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland_wgpu"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "subduction_backend_wayland",
+ "subduction_core",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wgpu",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"

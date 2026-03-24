@@ -32,12 +32,14 @@
 
 mod clip;
 mod evaluate;
+mod hit_test;
 mod id;
 mod store;
 mod traverse;
 
 pub use clip::ClipShape;
 pub use evaluate::FrameChanges;
+pub use hit_test::HitEntry;
 pub use id::{INVALID, LayerId, SurfaceId};
 pub use store::{LayerFlags, LayerStore};
 pub use traverse::Children;

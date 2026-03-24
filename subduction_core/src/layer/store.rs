@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use kurbo::Size;
+use kurbo::{Rect, Size};
 use understory_dirty::{CycleHandling, DirtyTracker, EagerPolicy};
 
 use crate::transform::Transform3d;
@@ -46,6 +46,7 @@ pub struct LayerStore {
     pub(crate) content: Vec<Option<SurfaceId>>,
     pub(crate) flags: Vec<LayerFlags>,
     pub(crate) bounds: Vec<Size>,
+    pub(crate) hit_rect: Vec<Option<Rect>>,
 
     // -- Computed properties (written by evaluate) --
     pub(crate) world_transform: Vec<Transform3d>,
@@ -90,6 +91,7 @@ impl LayerStore {
             content: Vec::new(),
             flags: Vec::new(),
             bounds: Vec::new(),
+            hit_rect: Vec::new(),
             world_transform: Vec::new(),
             effective_opacity: Vec::new(),
             effective_hidden: Vec::new(),
@@ -124,6 +126,7 @@ impl LayerStore {
             self.content[idx as usize] = None;
             self.flags[idx as usize] = LayerFlags::default();
             self.bounds[idx as usize] = Size::ZERO;
+            self.hit_rect[idx as usize] = None;
             self.world_transform[idx as usize] = Transform3d::IDENTITY;
             self.effective_opacity[idx as usize] = 1.0;
             self.effective_hidden[idx as usize] = false;
@@ -142,6 +145,7 @@ impl LayerStore {
             self.content.push(None);
             self.flags.push(LayerFlags::default());
             self.bounds.push(Size::ZERO);
+            self.hit_rect.push(None);
             self.world_transform.push(Transform3d::IDENTITY);
             self.effective_opacity.push(1.0);
             self.effective_hidden.push(false);
@@ -429,6 +433,17 @@ impl LayerStore {
         self.bounds[id.idx as usize]
     }
 
+    /// Returns the optional hit-test rect of a layer.
+    ///
+    /// When `Some`, [`hit_test`](Self::hit_test) checks containment against
+    /// this rect instead of the layer's full bounds. When `None` (the
+    /// default), the full bounds are used.
+    #[must_use]
+    pub fn hit_rect(&self, id: LayerId) -> Option<Rect> {
+        self.validate(id);
+        self.hit_rect[id.idx as usize]
+    }
+
     /// Returns the computed world transform of a layer.
     ///
     /// Only valid after [`evaluate`](Self::evaluate) has been called.
@@ -504,6 +519,18 @@ impl LayerStore {
         self.validate(id);
         self.bounds[id.idx as usize] = bounds;
         self.dirty.mark(id.idx, dirty::BOUNDS);
+    }
+
+    /// Sets an optional hit-test rect for a layer (in local coordinates).
+    ///
+    /// When set, [`hit_test`](Self::hit_test) checks containment against this
+    /// rect instead of the full bounds. Use this when the layer's surface is
+    /// larger than its interactive area (e.g. to accommodate shadows or glow).
+    ///
+    /// No dirty channel is marked — hit testing is a read-only query.
+    pub fn set_hit_rect(&mut self, id: LayerId, hit_rect: Option<Rect>) {
+        self.validate(id);
+        self.hit_rect[id.idx as usize] = hit_rect;
     }
 
     // -- Raw-index accessors for backends --
@@ -645,6 +672,21 @@ impl LayerStore {
             self.len
         );
         self.bounds[idx as usize]
+    }
+
+    /// Returns the hit-test rect at raw slot `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn hit_rect_at(&self, idx: u32) -> Option<Rect> {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        self.hit_rect[idx as usize]
     }
 
     /// Returns the raw parent slot index at raw slot `idx`, or `None` if

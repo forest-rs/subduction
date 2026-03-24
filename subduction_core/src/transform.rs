@@ -138,6 +138,73 @@ impl Transform3d {
             && c[3][3].is_finite()
     }
 
+    /// Computes the inverse of this affine 4×4 matrix.
+    ///
+    /// Inverts the upper-left 3×3 via cofactors, then computes the inverse
+    /// translation as −M⁻¹ · t. Returns `None` if the 3×3 determinant is
+    /// near zero (absolute value below `1e-12`).
+    #[must_use]
+    pub fn inverse(&self) -> Option<Self> {
+        let c = &self.cols;
+
+        // Extract 3×3 sub-matrix: m[row][col] stored as c[col][row].
+        let m00 = c[0][0]; let m01 = c[1][0]; let m02 = c[2][0];
+        let m10 = c[0][1]; let m11 = c[1][1]; let m12 = c[2][1];
+        let m20 = c[0][2]; let m21 = c[1][2]; let m22 = c[2][2];
+
+        // Cofactors of the 3×3.
+        let cf00 = m11 * m22 - m12 * m21;
+        let cf01 = m12 * m20 - m10 * m22;
+        let cf02 = m10 * m21 - m11 * m20;
+        let cf10 = m02 * m21 - m01 * m22;
+        let cf11 = m00 * m22 - m02 * m20;
+        let cf12 = m01 * m20 - m00 * m21;
+        let cf20 = m01 * m12 - m02 * m11;
+        let cf21 = m02 * m10 - m00 * m12;
+        let cf22 = m00 * m11 - m01 * m10;
+
+        let det = m00 * cf00 + m01 * cf01 + m02 * cf02;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+
+        let inv_det = 1.0 / det;
+
+        // Adjugate (transpose of cofactor) divided by determinant.
+        // Column-major: inv_cols[col][row] = adjugate[row][col] / det
+        //                                  = cofactor[col][row] / det
+        let i00 = cf00 * inv_det; let i10 = cf01 * inv_det; let i20 = cf02 * inv_det;
+        let i01 = cf10 * inv_det; let i11 = cf11 * inv_det; let i21 = cf12 * inv_det;
+        let i02 = cf20 * inv_det; let i12 = cf21 * inv_det; let i22 = cf22 * inv_det;
+
+        // Inverse translation: −M⁻¹ · t
+        let tx = c[3][0]; let ty = c[3][1]; let tz = c[3][2];
+        let itx = -(i00 * tx + i01 * ty + i02 * tz);
+        let ity = -(i10 * tx + i11 * ty + i12 * tz);
+        let itz = -(i20 * tx + i21 * ty + i22 * tz);
+
+        Some(Self::from_cols(
+            [i00, i10, i20, 0.0],
+            [i01, i11, i21, 0.0],
+            [i02, i12, i22, 0.0],
+            [itx, ity, itz, 1.0]
+        ))
+    }
+
+    /// Transforms a 2-D point through this matrix.
+    ///
+    /// The input is treated as `[x, y, 0, 1]` and the output is projected
+    /// by dividing by *w*. Returns `None` if the resulting *w* component is
+    /// near zero (absolute value below `1e-12`).
+    #[must_use]
+    pub fn transform_point(&self, point: kurbo::Point) -> Option<kurbo::Point> {
+        let [x, y, _, w] = *self * [point.x, point.y, 0.0, 1.0];
+        if w.abs() < 1e-12 {
+            return None;
+        }
+        Some(kurbo::Point::new(x / w, y / w))
+    }
+
     /// Is this transform [NaN]?
     ///
     /// [NaN]: f64::is_nan
@@ -371,5 +438,107 @@ mod tests {
         assert_eq!(ts_point.y, transform_point[1]);
         assert_eq!(transform_point[2], 0.0);
         assert_eq!(transform_point[3], 1.0);
+    }
+
+    #[test]
+    fn inverse_of_identity() {
+        let inv = Transform3d::IDENTITY.inverse().unwrap();
+        assert_eq!(inv, Transform3d::IDENTITY);
+    }
+
+    #[test]
+    fn inverse_of_translation() {
+        let t = Transform3d::from_translation(5.0, -3.0, 7.0);
+        let inv = t.inverse().unwrap();
+        assert_eq!(inv, Transform3d::from_translation(-5.0, 3.0, -7.0));
+    }
+
+    #[test]
+    fn inverse_of_scale() {
+        let s = Transform3d::from_scale(2.0, 4.0, 5.0);
+        let inv = s.inverse().unwrap();
+        let expected = Transform3d::from_scale(0.5, 0.25, 0.2);
+        let eps = 1e-10;
+        for col in 0..4 {
+            for row in 0..4 {
+                assert!(
+                    (inv.cols[col][row] - expected.cols[col][row]).abs() < eps,
+                    "mismatch at [{col}][{row}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_of_rotation_round_trips() {
+        let r = Transform3d::from_rotation_z(0.7);
+        let inv = r.inverse().unwrap();
+        let product = r * inv;
+        let eps = 1e-10;
+        for col in 0..4 {
+            for row in 0..4 {
+                let expected = if col == row { 1.0 } else { 0.0 };
+                assert!(
+                    (product.cols[col][row] - expected).abs() < eps,
+                    "mismatch at [{col}][{row}]: {} vs {expected}",
+                    product.cols[col][row]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_of_zero_scale_returns_none() {
+        let s = Transform3d::from_scale(0.0, 1.0, 1.0);
+        assert!(s.inverse().is_none());
+    }
+
+    #[test]
+    fn inverse_of_compound_transform() {
+        let s = Transform3d::from_scale(2.0, 3.0, 1.0);
+        let t = Transform3d::from_translation(10.0, 20.0, 0.0);
+        let combined = t * s; // scale then translate
+        let inv = combined.inverse().unwrap();
+        let product = combined * inv;
+        let eps = 1e-10;
+        for col in 0..4 {
+            for row in 0..4 {
+                let expected = if col == row { 1.0 } else { 0.0 };
+                assert!(
+                    (product.cols[col][row] - expected).abs() < eps,
+                    "mismatch at [{col}][{row}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transform_point_identity() {
+        let p = kurbo::Point::new(3.0, 7.0);
+        let result = Transform3d::IDENTITY.transform_point(p).unwrap();
+        assert_eq!(result, p);
+    }
+
+    #[test]
+    fn transform_point_translation() {
+        let t = Transform3d::from_translation(10.0, 20.0, 0.0);
+        let result = t.transform_point(kurbo::Point::new(5.0, 3.0)).unwrap();
+        assert_eq!(result, kurbo::Point::new(15.0, 23.0));
+    }
+
+    #[test]
+    fn transform_point_round_trip() {
+        let s = Transform3d::from_scale(2.0, 3.0, 1.0);
+        let t = Transform3d::from_translation(10.0, 20.0, 0.0);
+        let combined = t * s;
+        let inv = combined.inverse().unwrap();
+
+        let original = kurbo::Point::new(7.0, 11.0);
+        let transformed = combined.transform_point(original).unwrap();
+        let recovered = inv.transform_point(transformed).unwrap();
+
+        let eps = 1e-10;
+        assert!((recovered.x - original.x).abs() < eps);
+        assert!((recovered.y - original.y).abs() < eps);
     }
 }

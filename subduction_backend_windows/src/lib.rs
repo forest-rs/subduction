@@ -4,11 +4,11 @@
 //! Windows backend for subduction.
 //!
 //! This crate provides composable building blocks for driving a subduction
-//! layer tree on Windows via DirectComposition:
+//! layer tree on Windows via `DirectComposition`:
 //!
-//! - [`DCompPresenter`]: DirectComposition visual tree presenter
-//! - [`CompositionManager`]: Low-level DirectComposition visual tree manager
-//! - [`TickSource`] / [`FrameEventTickSource`]: VSync-paced tick sources
+//! - [`DCompPresenter`]: `DirectComposition` visual tree presenter
+//! - [`CompositionManager`]: Low-level `DirectComposition` visual tree manager
+//! - [`TickSource`] / [`FrameEventTickSource`]: `VSync`-paced tick sources
 //! - [`now`] / [`timebase`]: QPC-based timing
 //!
 //! # Frame loop
@@ -41,15 +41,15 @@ pub mod presenter;
 pub mod tick;
 mod timing;
 
-pub use composition::{CompositionManager, LayerId, AnimationProperty, PendingAnimation};
+pub use composition::{AnimationProperty, CompositionManager, LayerId, PendingAnimation};
 pub use presenter::DCompPresenter;
 pub use subduction_core::backend::Presenter;
-pub use tick::{compute_hints, make_tick, FrameEventTickSource, TickSource, WM_APP_TICK};
+pub use tick::{FrameEventTickSource, TickSource, WM_APP_TICK, compute_hints, make_tick};
 
 use subduction_core::time::{HostTime, Timebase};
 use subduction_core::timing::{FrameTick, PresentHints};
 
-/// Returns the current host time using QPC (QueryPerformanceCounter).
+/// Returns the current host time using QPC (`QueryPerformanceCounter`).
 #[must_use]
 pub fn now() -> HostTime {
     timing::now()

@@ -932,10 +932,7 @@ mod tests {
         let id = store.create_layer();
         let _ = store.evaluate();
 
-        store.set_clip(
-            id,
-            Some(ClipShape::Rect(kurbo::Rect::new(0.0, 0.0, 100.0, 100.0))),
-        );
+        store.set_clip(id, Some(ClipShape::Rect(Rect::new(0.0, 0.0, 100.0, 100.0))));
         let changes = store.evaluate();
         assert!(
             changes.clips.contains(&id.idx),
@@ -997,8 +994,6 @@ mod tests {
             "bounds channel should contain the layer"
         );
     }
-
-    // ── Raw-index accessor tests ──────────────────────────────────
 
     #[test]
     fn parent_at_root_is_none() {

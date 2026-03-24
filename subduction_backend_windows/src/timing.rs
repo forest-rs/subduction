@@ -13,7 +13,7 @@ static QPC_FREQ: OnceLock<i64> = OnceLock::new();
 
 fn cached_frequency() -> i64 {
     *QPC_FREQ.get_or_init(|| {
-        let mut freq = 0i64;
+        let mut freq = 0_i64;
         // SAFETY: `QueryPerformanceFrequency` writes to the provided pointer.
         // It always succeeds on Windows XP and later.
         unsafe { QueryPerformanceFrequency(&mut freq).unwrap() };
@@ -24,7 +24,7 @@ fn cached_frequency() -> i64 {
 /// Current monotonic time as a [`HostTime`] (raw QPC ticks).
 #[must_use]
 pub(crate) fn now() -> HostTime {
-    let mut count = 0i64;
+    let mut count = 0_i64;
     // SAFETY: `QueryPerformanceCounter` writes to the provided pointer.
     // It always succeeds on Windows XP and later.
     unsafe { QueryPerformanceCounter(&mut count).unwrap() };

@@ -1,17 +1,17 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! VSync-paced tick sources that drive frames via `PostMessageW`.
+//! `VSync`-paced tick sources that drive frames via `PostMessageW`.
 //!
 //! The tick thread calls `DwmFlush()` (or waits on a frame latency
-//! waitable) to pace itself to the DWM compositor VSync, then posts
+//! waitable) to pace itself to the DWM compositor `VSync`, then posts
 //! [`WM_APP_TICK`] to the window's message queue. Because the message
 //! is *posted* (not sent), Windows' internal modal loops for move and
 //! resize dispatch it — animations continue uninterrupted during window
 //! drag.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use subduction_core::output::OutputId;
@@ -23,9 +23,9 @@ use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
-/// Custom window message posted by the tick thread on each VSync.
+/// Custom window message posted by the tick thread on each `VSync`.
 ///
-/// Handle this in your `wnd_proc` to drive one frame per VSync.
+/// Handle this in your `wnd_proc` to drive one frame per `VSync`.
 /// Call [`make_tick`] inside the handler to construct the [`FrameTick`].
 pub const WM_APP_TICK: u32 = WM_APP + 1;
 
@@ -240,12 +240,11 @@ pub fn make_tick(
 /// Compute presentation hints from a tick.
 ///
 /// `safety_margin_ns` — how far before the predicted present to set the
-/// commit deadline (start with ~2_000_000 = 2 ms).
+/// commit deadline (start with ~2,000,000 = 2 ms).
 #[must_use]
 pub fn compute_hints(tick: &FrameTick, safety_margin_ns: u64) -> PresentHints {
     let timebase = crate::timing::timebase();
-    let margin_ticks =
-        safety_margin_ns * u64::from(timebase.denom) / u64::from(timebase.numer);
+    let margin_ticks = safety_margin_ns * u64::from(timebase.denom) / u64::from(timebase.numer);
 
     PresentHints {
         desired_present: tick.predicted_present,

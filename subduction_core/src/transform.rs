@@ -148,9 +148,15 @@ impl Transform3d {
         let c = &self.cols;
 
         // Extract 3×3 sub-matrix: m[row][col] stored as c[col][row].
-        let m00 = c[0][0]; let m01 = c[1][0]; let m02 = c[2][0];
-        let m10 = c[0][1]; let m11 = c[1][1]; let m12 = c[2][1];
-        let m20 = c[0][2]; let m21 = c[1][2]; let m22 = c[2][2];
+        let m00 = c[0][0];
+        let m01 = c[1][0];
+        let m02 = c[2][0];
+        let m10 = c[0][1];
+        let m11 = c[1][1];
+        let m12 = c[2][1];
+        let m20 = c[0][2];
+        let m21 = c[1][2];
+        let m22 = c[2][2];
 
         // Cofactors of the 3×3.
         let cf00 = m11 * m22 - m12 * m21;
@@ -173,12 +179,20 @@ impl Transform3d {
         // Adjugate (transpose of cofactor) divided by determinant.
         // Column-major: inv_cols[col][row] = adjugate[row][col] / det
         //                                  = cofactor[col][row] / det
-        let i00 = cf00 * inv_det; let i10 = cf01 * inv_det; let i20 = cf02 * inv_det;
-        let i01 = cf10 * inv_det; let i11 = cf11 * inv_det; let i21 = cf12 * inv_det;
-        let i02 = cf20 * inv_det; let i12 = cf21 * inv_det; let i22 = cf22 * inv_det;
+        let i00 = cf00 * inv_det;
+        let i10 = cf01 * inv_det;
+        let i20 = cf02 * inv_det;
+        let i01 = cf10 * inv_det;
+        let i11 = cf11 * inv_det;
+        let i21 = cf12 * inv_det;
+        let i02 = cf20 * inv_det;
+        let i12 = cf21 * inv_det;
+        let i22 = cf22 * inv_det;
 
         // Inverse translation: −M⁻¹ · t
-        let tx = c[3][0]; let ty = c[3][1]; let tz = c[3][2];
+        let tx = c[3][0];
+        let ty = c[3][1];
+        let tz = c[3][2];
         let itx = -(i00 * tx + i01 * ty + i02 * tz);
         let ity = -(i10 * tx + i11 * ty + i12 * tz);
         let itz = -(i20 * tx + i21 * ty + i22 * tz);
@@ -187,7 +201,7 @@ impl Transform3d {
             [i00, i10, i20, 0.0],
             [i01, i11, i21, 0.0],
             [i02, i12, i22, 0.0],
-            [itx, ity, itz, 1.0]
+            [itx, ity, itz, 1.0],
         ))
     }
 

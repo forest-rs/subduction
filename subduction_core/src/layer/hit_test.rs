@@ -15,7 +15,6 @@ use kurbo::{Point, Rect};
 use super::id::{INVALID, LayerId};
 use super::store::LayerStore;
 
-
 /// A layer intersected by a point query.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitEntry {
@@ -25,7 +24,7 @@ pub struct HitEntry {
     ///
     /// Frameworks use this directly for widget-level hit testing within
     /// the layer's content surface.
-    pub local_point: Point
+    pub local_point: Point,
 }
 
 impl LayerStore {
@@ -79,22 +78,22 @@ impl LayerStore {
 
             let world_inv = match self.world_transform[i].inverse() {
                 Some(inv) => inv,
-                None => continue
+                None => continue,
             };
 
             let local_point = match world_inv.transform_point(point) {
                 Some(p) => p,
-                None => continue
+                None => continue,
             };
 
             if !hit_area.contains(local_point) {
                 continue;
             }
 
-            if let Some(clip) = &self.clip[i] {
-                if !clip.contains(local_point) {
-                    continue;
-                }
+            if let Some(clip) = &self.clip[i]
+                && !clip.contains(local_point)
+            {
+                continue;
             }
 
             if !self.passes_ancestor_clips(idx, point) {
@@ -104,9 +103,9 @@ impl LayerStore {
             results.push(HitEntry {
                 layer: LayerId {
                     idx,
-                    generation: self.generation[i]
+                    generation: self.generation[i],
                 },
-                local_point
+                local_point,
             });
         }
     }
@@ -120,11 +119,11 @@ impl LayerStore {
             if let Some(clip) = &self.clip[ai] {
                 let inv = match self.world_transform[ai].inverse() {
                     Some(inv) => inv,
-                    None => return false
+                    None => return false,
                 };
                 let local = match inv.transform_point(screen_point) {
                     Some(p) => p,
-                    None => return false
+                    None => return false,
                 };
                 if !clip.contains(local) {
                     return false;
@@ -135,7 +134,6 @@ impl LayerStore {
         true
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -221,9 +219,10 @@ mod tests {
         // Parent with a clip region.
         let parent = store.create_layer();
         store.set_bounds(parent, Size::new(200.0, 200.0));
-        store.set_clip(parent, Some(ClipShape::Rect(
-            Rect::new(0.0, 0.0, 100.0, 100.0)
-        )));
+        store.set_clip(
+            parent,
+            Some(ClipShape::Rect(Rect::new(0.0, 0.0, 100.0, 100.0))),
+        );
 
         // Child extends beyond the parent's clip.
         let child = store.create_layer();
@@ -245,9 +244,10 @@ mod tests {
 
         let grandparent = store.create_layer();
         store.set_bounds(grandparent, Size::new(300.0, 300.0));
-        store.set_clip(grandparent, Some(ClipShape::Rect(
-            Rect::new(0.0, 0.0, 80.0, 80.0)
-        )));
+        store.set_clip(
+            grandparent,
+            Some(ClipShape::Rect(Rect::new(0.0, 0.0, 80.0, 80.0))),
+        );
 
         let parent = store.create_layer();
         store.reparent(parent, grandparent);
@@ -313,9 +313,10 @@ mod tests {
         store.set_bounds(id, Size::new(100.0, 100.0));
         store.set_content(id, Some(SurfaceId(1)));
         // 90° rotation: local +X → world +Y, local +Y → world −X.
-        store.set_transform(id, Transform3d::from_rotation_z(
-            core::f64::consts::FRAC_PI_2
-        ));
+        store.set_transform(
+            id,
+            Transform3d::from_rotation_z(core::f64::consts::FRAC_PI_2),
+        );
         store.evaluate();
 
         // World point (-50, 50) → local (50, 50) after inverse rotation.
@@ -355,9 +356,7 @@ mod tests {
         let id = store.create_layer();
         store.set_bounds(id, Size::new(200.0, 200.0));
         store.set_content(id, Some(SurfaceId(1)));
-        store.set_clip(id, Some(ClipShape::Rect(
-            Rect::new(10.0, 10.0, 90.0, 90.0)
-        )));
+        store.set_clip(id, Some(ClipShape::Rect(Rect::new(10.0, 10.0, 90.0, 90.0))));
         store.evaluate();
 
         // Inside both bounds and clip.
@@ -373,9 +372,13 @@ mod tests {
 
         let parent = store.create_layer();
         store.set_bounds(parent, Size::new(100.0, 100.0));
-        store.set_clip(parent, Some(ClipShape::RoundedRect(
-            RoundedRect::from_rect(Rect::new(0.0, 0.0, 100.0, 100.0), 20.0)
-        )));
+        store.set_clip(
+            parent,
+            Some(ClipShape::RoundedRect(RoundedRect::from_rect(
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                20.0,
+            ))),
+        );
 
         let child = store.create_layer();
         store.reparent(child, parent);

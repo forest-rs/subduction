@@ -16,8 +16,8 @@
 use std::cell::UnsafeCell;
 
 use subduction_backend_windows::{
-    self as backend, compute_hints, make_tick, DCompPresenter, Presenter as _, TickSource,
-    WM_APP_TICK,
+    self as backend, DCompPresenter, Presenter as _, TickSource, WM_APP_TICK, compute_hints,
+    make_tick,
 };
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::scheduler::{Scheduler, SchedulerConfig};
@@ -36,8 +36,8 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::DirectComposition::IDCompositionDevice;
-use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::Interface;

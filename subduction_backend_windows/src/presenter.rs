@@ -1,9 +1,9 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! [`Presenter`] trait implementation backed by DirectComposition.
+//! [`Presenter`] trait implementation backed by `DirectComposition`.
 //!
-//! Maps subduction's [`LayerStore`] mutations to DirectComposition visual
+//! Maps subduction's [`LayerStore`] mutations to `DirectComposition` visual
 //! tree operations via [`CompositionManager`].
 //!
 //! [`LayerStore`]: subduction_core::layer::LayerStore
@@ -15,23 +15,23 @@ use crate::composition::{CompositionManager, LayerId};
 
 use windows::Win32::Graphics::DirectComposition::IDCompositionVisual;
 
-/// DirectComposition presenter for subduction.
+/// `DirectComposition` presenter for subduction.
 ///
 /// Manages the mapping between subduction's layer tree and
-/// DirectComposition visuals. Visuals are property-only — applications
+/// `DirectComposition` visuals. Visuals are property-only — applications
 /// attach GPU content via [`visual_for`](Self::visual_for).
 ///
 /// # Transforms
 ///
 /// Uses **local** transforms (not world transforms) because
-/// DirectComposition composes parent transforms automatically through
+/// `DirectComposition` composes parent transforms automatically through
 /// the visual tree hierarchy. Translation goes through `SetOffsetX/Y`
 /// (inherits to children), while rotation/scale goes through an
 /// `IDCompositionEffectGroup` 3D transform (does **not** inherit).
 ///
 /// # Opacity
 ///
-/// Uses **local** opacity for the same reason — DComp multiplies parent
+/// Uses **local** opacity for the same reason — `DComp` multiplies parent
 /// opacity into children automatically.
 pub struct DCompPresenter {
     composition: CompositionManager,
@@ -47,7 +47,10 @@ impl std::fmt::Debug for DCompPresenter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DCompPresenter")
             .field("composition", &self.composition)
-            .field("mapped_layers", &self.layer_map.iter().filter(|s| s.is_some()).count())
+            .field(
+                "mapped_layers",
+                &self.layer_map.iter().filter(|s| s.is_some()).count(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -82,8 +85,7 @@ impl DCompPresenter {
     /// }
     /// ```
     pub fn visual_for(&self, idx: u32) -> Option<&IDCompositionVisual> {
-        self.mapped_id(idx)
-            .map(|id| self.composition.visual(id))
+        self.mapped_id(idx).map(|id| self.composition.visual(id))
     }
 
     /// Get the composition [`LayerId`] for a subduction slot index.
@@ -92,7 +94,7 @@ impl DCompPresenter {
         self.layer_map.get(idx as usize).copied().flatten()
     }
 
-    /// Commit all pending DirectComposition changes atomically.
+    /// Commit all pending `DirectComposition` changes atomically.
     pub fn commit(&self) -> windows::core::Result<()> {
         self.composition.commit()
     }
@@ -113,12 +115,19 @@ impl DCompPresenter {
 
     /// Apply a 5x4 color matrix effect (20 floats, row-major).
     pub fn set_color_matrix(&mut self, idx: u32, matrix: &[f32; 20]) -> windows::core::Result<()> {
-        let id = self.mapped_id(idx).expect("set_color_matrix: unmapped layer");
+        let id = self
+            .mapped_id(idx)
+            .expect("set_color_matrix: unmapped layer");
         self.composition.set_color_matrix(id, matrix)
     }
 
     /// Apply a brightness effect with white/black point curves.
-    pub fn set_brightness(&mut self, idx: u32, white: (f32, f32), black: (f32, f32)) -> windows::core::Result<()> {
+    pub fn set_brightness(
+        &mut self,
+        idx: u32,
+        white: (f32, f32),
+        black: (f32, f32),
+    ) -> windows::core::Result<()> {
         let id = self.mapped_id(idx).expect("set_brightness: unmapped layer");
         self.composition.set_brightness(id, white, black)
     }
@@ -132,15 +141,33 @@ impl DCompPresenter {
     // ── Animations (delegated to CompositionManager) ─────
 
     /// Animate opacity from `from` to `to` over `duration_s` seconds.
-    pub fn animate_opacity(&mut self, idx: u32, from: f32, to: f32, duration_s: f64, now: f64) -> windows::core::Result<()> {
-        let id = self.mapped_id(idx).expect("animate_opacity: unmapped layer");
-        self.composition.animate_opacity(id, from, to, duration_s, now)
+    pub fn animate_opacity(
+        &mut self,
+        idx: u32,
+        from: f32,
+        to: f32,
+        duration_s: f64,
+        now: f64,
+    ) -> windows::core::Result<()> {
+        let id = self
+            .mapped_id(idx)
+            .expect("animate_opacity: unmapped layer");
+        self.composition
+            .animate_opacity(id, from, to, duration_s, now)
     }
 
     /// Animate offset from `from` to `to` over `duration_s` seconds.
-    pub fn animate_offset(&mut self, idx: u32, from: (f32, f32), to: (f32, f32), duration_s: f64, now: f64) -> windows::core::Result<()> {
+    pub fn animate_offset(
+        &mut self,
+        idx: u32,
+        from: (f32, f32),
+        to: (f32, f32),
+        duration_s: f64,
+        now: f64,
+    ) -> windows::core::Result<()> {
         let id = self.mapped_id(idx).expect("animate_offset: unmapped layer");
-        self.composition.animate_offset(id, from, to, duration_s, now)
+        self.composition
+            .animate_offset(id, from, to, duration_s, now)
     }
 
     /// Check for completed animations. Returns the number completed.
@@ -157,7 +184,9 @@ impl DCompPresenter {
 
     /// DWM-level scroll: shift visual content without re-rendering.
     pub fn set_scroll_offset(&mut self, idx: u32, dx: f32, dy: f32) -> windows::core::Result<()> {
-        let id = self.mapped_id(idx).expect("set_scroll_offset: unmapped layer");
+        let id = self
+            .mapped_id(idx)
+            .expect("set_scroll_offset: unmapped layer");
         self.composition.set_scroll_offset(id, dx, dy)
     }
 
@@ -182,10 +211,30 @@ fn transform_to_f32(t: &subduction_core::transform::Transform3d) -> [[f32; 4]; 4
         reason = "Transform values are intentionally truncated from f64 to f32 for DirectComposition"
     )]
     [
-        [cols[0][0] as f32, cols[0][1] as f32, cols[0][2] as f32, cols[0][3] as f32],
-        [cols[1][0] as f32, cols[1][1] as f32, cols[1][2] as f32, cols[1][3] as f32],
-        [cols[2][0] as f32, cols[2][1] as f32, cols[2][2] as f32, cols[2][3] as f32],
-        [cols[3][0] as f32, cols[3][1] as f32, cols[3][2] as f32, cols[3][3] as f32],
+        [
+            cols[0][0] as f32,
+            cols[0][1] as f32,
+            cols[0][2] as f32,
+            cols[0][3] as f32,
+        ],
+        [
+            cols[1][0] as f32,
+            cols[1][1] as f32,
+            cols[1][2] as f32,
+            cols[1][3] as f32,
+        ],
+        [
+            cols[2][0] as f32,
+            cols[2][1] as f32,
+            cols[2][2] as f32,
+            cols[2][3] as f32,
+        ],
+        [
+            cols[3][0] as f32,
+            cols[3][1] as f32,
+            cols[3][2] as f32,
+            cols[3][3] as f32,
+        ],
     ]
 }
 
@@ -200,13 +249,9 @@ fn apply_clip(
         reason = "Clip coordinates are intentionally truncated from f64 to f32"
     )]
     match clip {
-        ClipShape::Rect(r) => composition.set_clip(
-            layer_id,
-            r.x0 as f32,
-            r.y0 as f32,
-            r.x1 as f32,
-            r.y1 as f32,
-        ),
+        ClipShape::Rect(r) => {
+            composition.set_clip(layer_id, r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32)
+        }
         ClipShape::RoundedRect(rr) => {
             let r = rr.rect();
             let radii = rr.radii();
@@ -265,14 +310,12 @@ impl Presenter for DCompPresenter {
                     clippy::cast_possible_truncation,
                     reason = "Layer index fits in u32 by construction"
                 )]
-                let store_parent = store
-                    .parent_at(idx as u32)
-                    .and_then(|p| self.mapped_id(p));
+                let store_parent = store.parent_at(idx as u32).and_then(|p| self.mapped_id(p));
                 let old_parent = self.layer_parents[idx].flatten();
                 if store_parent != old_parent {
-                    let _ =
-                        self.composition
-                            .reparent(layer_id, old_parent, store_parent, true);
+                    let _ = self
+                        .composition
+                        .reparent(layer_id, old_parent, store_parent, true);
                     self.layer_parents[idx] = Some(store_parent);
                 }
             }

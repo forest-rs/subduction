@@ -16,8 +16,8 @@ use std::cell::UnsafeCell;
 
 use lotta_layers_common::LAYER_SIZE;
 use subduction_backend_windows::{
-    self as backend, compute_hints, make_tick, DCompPresenter, Presenter as _, TickSource,
-    WM_APP_TICK,
+    self as backend, DCompPresenter, Presenter as _, TickSource, WM_APP_TICK, compute_hints,
+    make_tick,
 };
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::scheduler::{Scheduler, SchedulerConfig};
@@ -35,8 +35,8 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::DirectComposition::IDCompositionDevice;
-use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::Interface;
@@ -175,11 +175,7 @@ unsafe fn run() -> windows::core::Result<()> {
     let dcomp_device = presenter.composition().device();
     let size = LAYER_SIZE as u32;
     for (i, &child_id) in child_ids.iter().enumerate() {
-        let [r, g, b] = lotta_layers_common::hsl_to_rgb(
-            (i as f64 * 137.508) % 360.0,
-            0.7,
-            0.6,
-        );
+        let [r, g, b] = lotta_layers_common::hsl_to_rgb((i as f64 * 137.508) % 360.0, 0.7, 0.6);
         #[expect(
             clippy::cast_possible_truncation,
             reason = "Color values are in [0,1] range"

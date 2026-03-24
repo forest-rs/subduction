@@ -9,7 +9,7 @@ pub enum ClipShape {
     /// An axis-aligned rectangle.
     Rect(kurbo::Rect),
     /// A rectangle with rounded corners.
-    RoundedRect(kurbo::RoundedRect)
+    RoundedRect(kurbo::RoundedRect),
 }
 
 impl ClipShape {
@@ -46,26 +46,29 @@ mod tests {
 
     #[test]
     fn rounded_rect_contains_center() {
-        let clip = ClipShape::RoundedRect(
-            RoundedRect::from_rect(Rect::new(0.0, 0.0, 100.0, 100.0), 20.0)
-        );
+        let clip = ClipShape::RoundedRect(RoundedRect::from_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            20.0,
+        ));
         assert!(clip.contains(Point::new(50.0, 50.0)));
     }
 
     #[test]
     fn rounded_rect_rejects_corner() {
         // Point in the bounding rect but outside the rounded corner arc.
-        let clip = ClipShape::RoundedRect(
-            RoundedRect::from_rect(Rect::new(0.0, 0.0, 100.0, 100.0), 20.0)
-        );
+        let clip = ClipShape::RoundedRect(RoundedRect::from_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            20.0,
+        ));
         assert!(!clip.contains(Point::new(2.0, 2.0)));
     }
 
     #[test]
     fn rounded_rect_rejects_outside() {
-        let clip = ClipShape::RoundedRect(
-            RoundedRect::from_rect(Rect::new(0.0, 0.0, 100.0, 100.0), 10.0)
-        );
+        let clip = ClipShape::RoundedRect(RoundedRect::from_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            10.0,
+        ));
         assert!(!clip.contains(Point::new(-5.0, 50.0)));
     }
 }

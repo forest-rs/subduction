@@ -86,6 +86,11 @@ env:
     --exclude macos_lotta_layers
     --exclude macos_wgpu
     --exclude subduction_backend_apple
+  # Packages excluded on non-Windows runners (Windows-only).
+  RUST_WIN_EXCLUDE_PKGS: >-
+    --exclude subduction_backend_windows
+    --exclude windows_layers
+    --exclude windows_lotta_layers
   # Packages excluded on non-Linux runners (Linux-only).
   RUST_LINUX_EXCLUDE_PKGS: >-
     --exclude subduction_backend_wayland
@@ -224,7 +229,7 @@ jobs:
 
       - name: cargo clippy (Linux)
         if: runner.os == 'Linux'
-        run: cargo hack clippy ${{ env.RUST_MAC_EXCLUDE_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std -- -D warnings
+        run: cargo hack clippy ${{ env.RUST_MAC_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std -- -D warnings
 
       - name: cargo clippy (Windows)
         if: runner.os == 'Windows'
@@ -232,7 +237,7 @@ jobs:
 
       - name: cargo clippy (macOS)
         if: runner.os == 'macOS'
-        run: cargo hack clippy ${{ env.RUST_MAC_EXAMPLE_MATRIX_EXCLUDE_PKGS }} ${{ env.RUST_LINUX_EXCLUDE_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std -- -D warnings
+        run: cargo hack clippy ${{ env.RUST_MAC_EXAMPLE_MATRIX_EXCLUDE_PKGS }} ${{ env.RUST_LINUX_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std -- -D warnings
 
       - name: cargo clippy (auxiliary) (non-macOS)
         if: runner.os != 'macOS'
@@ -305,7 +310,7 @@ jobs:
 
       - name: cargo nextest (Linux)
         if: runner.os == 'Linux'
-        run: cargo nextest run ${{ env.RUST_MAC_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
+        run: cargo nextest run ${{ env.RUST_MAC_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
 
       - name: cargo nextest (Windows)
         if: runner.os == 'Windows'
@@ -313,11 +318,11 @@ jobs:
 
       - name: cargo nextest (macOS)
         if: runner.os == 'macOS'
-        run: cargo nextest run ${{ env.RUST_LINUX_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
+        run: cargo nextest run ${{ env.RUST_LINUX_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
 
       - name: cargo test --doc (Linux)
         if: runner.os == 'Linux'
-        run: cargo test --doc ${{ env.RUST_MAC_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
+        run: cargo test --doc ${{ env.RUST_MAC_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
 
       - name: cargo test --doc (Windows)
         if: runner.os == 'Windows'
@@ -325,7 +330,7 @@ jobs:
 
       - name: cargo test --doc (macOS)
         if: runner.os == 'macOS'
-        run: cargo test --doc ${{ env.RUST_LINUX_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
+        run: cargo test --doc ${{ env.RUST_LINUX_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --all-features --no-fail-fast
 
   test-stable-wasm:
     name: cargo test (wasm32)
@@ -390,7 +395,7 @@ jobs:
 
       - name: cargo check (Linux)
         if: runner.os == 'Linux'
-        run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} ${{ env.RUST_MAC_EXCLUDE_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std
+        run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} ${{ env.RUST_MAC_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std
 
       - name: cargo check (Windows)
         if: runner.os == 'Windows'
@@ -398,7 +403,7 @@ jobs:
 
       - name: cargo check (macOS)
         if: runner.os == 'macOS'
-        run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} ${{ env.RUST_LINUX_EXCLUDE_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std
+        run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} ${{ env.RUST_LINUX_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std
 
   check-msrv-wasm:
     name: cargo check (msrv) (wasm32)
@@ -443,7 +448,7 @@ jobs:
 
       # We test documentation using nightly to match docs.rs.
       - name: cargo doc
-        run: cargo doc ${{ env.RUST_MAC_EXCLUDE_PKGS }} --workspace --locked --all-features --no-deps --document-private-items
+        run: cargo doc ${{ env.RUST_MAC_EXCLUDE_PKGS }} ${{ env.RUST_WIN_EXCLUDE_PKGS }} --workspace --locked --all-features --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: '--cfg docsrs -D warnings'
 

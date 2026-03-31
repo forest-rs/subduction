@@ -739,7 +739,9 @@ fn rebuild_effect_chain(layer: &CompositionLayer) -> Result<()> {
     }
 
     // First effect reads from the visual's own content.
-    unsafe { active[0].as_ref().unwrap().SetInput(0, None, 0)?; }
+    unsafe {
+        active[0].as_ref().unwrap().SetInput(0, None, 0)?;
+    }
 
     // Each subsequent effect reads from the previous one's output.
     for i in 1..len {
@@ -752,6 +754,8 @@ fn rebuild_effect_chain(layer: &CompositionLayer) -> Result<()> {
     }
 
     // Set the tail of the chain on the visual.
-    unsafe { visual3.SetEffect(active[len - 1].as_ref().unwrap())?; }
+    unsafe {
+        visual3.SetEffect(active[len - 1].as_ref().unwrap())?;
+    }
     Ok(())
 }

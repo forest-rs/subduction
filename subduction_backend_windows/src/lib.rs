@@ -38,11 +38,13 @@
 
 pub mod composition;
 pub mod presenter;
+pub mod surface;
 pub mod tick;
 mod timing;
 
 pub use composition::{AnimationProperty, CompositionManager, LayerId, PendingAnimation};
 pub use presenter::DCompPresenter;
+pub use surface::DCompSurfacePresenter;
 pub use subduction_core::backend::Presenter;
 pub use tick::{FrameEventTickSource, TickSource, WM_APP_TICK, compute_hints, make_tick};
 

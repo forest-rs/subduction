@@ -1,11 +1,11 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Windows example: animated DirectComposition layers driven by
+//! Windows example: animated `DirectComposition` layers driven by
 //! `subduction_backend_windows`.
 //!
 //! Creates a window with five layers that orbit and pulse opacity,
-//! demonstrating that subduction's layer tree can drive DirectComposition
+//! demonstrating that subduction's layer tree can drive `DirectComposition`
 //! visuals with the standard Plan → Animate → Evaluate → Render frame
 //! loop.
 //!
@@ -16,8 +16,8 @@
 use std::cell::UnsafeCell;
 
 use subduction_backend_windows::{
-    self as backend, DCompPresenter, Presenter as _, TickSource, WM_APP_TICK, compute_hints,
-    make_tick,
+    self as backend, DCompPresenter, DCompSurfacePresenter, Presenter as _, TickSource,
+    WM_APP_TICK, compute_hints, make_tick,
 };
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::scheduler::{Scheduler, SchedulerConfig};
@@ -35,8 +35,6 @@ use subduction_debug::recorder::RecorderSink;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::DirectComposition::IDCompositionDevice;
-use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -109,6 +107,10 @@ unsafe fn run() -> windows::core::Result<()> {
     let instance = unsafe { GetModuleHandleW(None)? };
 
     let class_name = windows::core::w!("SubductionLayers");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "WNDCLASSEXW size always fits in u32"
+    )]
     let wc = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
@@ -120,6 +122,10 @@ unsafe fn run() -> windows::core::Result<()> {
     };
     unsafe { RegisterClassExW(&wc) };
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Window dimensions are small constants that fit in i32"
+    )]
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP,
@@ -175,18 +181,25 @@ unsafe fn run() -> windows::core::Result<()> {
     let changes = store.evaluate();
     presenter.apply(&store, &changes);
 
-    // --- Fill each layer with a solid color via IDCompositionSurface ---
+    // --- Fill each layer with a solid color via DCompSurfacePresenter ---
     let dcomp_device = presenter.composition().device();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "LAYER_SIZE is a small constant that fits in u32"
+    )]
     let size = LAYER_SIZE as u32;
     for (i, &layer_id) in sub_ids.iter().enumerate() {
-        fill_layer_color(
-            dcomp_device,
-            &device,
-            presenter.visual_for(layer_id.index()).unwrap(),
-            size,
-            size,
-            COLORS[i],
-        )?;
+        let surface = DCompSurfacePresenter::new(dcomp_device, size, size)?;
+        let (dxgi_surface, _offset) = surface.begin_draw(None)?;
+
+        let texture: ID3D11Texture2D = dxgi_surface.cast()?;
+        let mut rtv: Option<ID3D11RenderTargetView> = None;
+        unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv))? };
+        let context = unsafe { device.GetImmediateContext()? };
+        unsafe { context.ClearRenderTargetView(&rtv.unwrap(), &COLORS[i]) };
+
+        surface.end_draw()?;
+        surface.attach_to(presenter.visual_for(layer_id.index()).unwrap())?;
     }
     // Commit the content changes.
     presenter.commit()?;
@@ -403,42 +416,6 @@ fn animate_transforms(store: &mut LayerStore, sub_ids: &[LayerId], t: f64) {
             store.set_bounds(layer_id, Size::new(size, size));
         }
     }
-}
-
-/// Create an `IDCompositionSurface`, fill it with a solid color, and
-/// set it as the visual's content.
-fn fill_layer_color(
-    dcomp_device: &IDCompositionDevice,
-    d3d_device: &ID3D11Device,
-    visual: &windows::Win32::Graphics::DirectComposition::IDCompositionVisual,
-    width: u32,
-    height: u32,
-    color: [f32; 4],
-) -> windows::core::Result<()> {
-    // SAFETY: COM calls to create surface, draw into it, and set content.
-    unsafe {
-        let surface = dcomp_device.CreateSurface(
-            width,
-            height,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
-            DXGI_ALPHA_MODE_PREMULTIPLIED,
-        )?;
-
-        let mut offset = POINT::default();
-        let dxgi_surface: IDXGISurface = surface.BeginDraw(None, &mut offset)?;
-        let texture: ID3D11Texture2D = dxgi_surface.cast()?;
-
-        let mut rtv: Option<ID3D11RenderTargetView> = None;
-        d3d_device.CreateRenderTargetView(&texture, None, Some(&mut rtv))?;
-        let rtv = rtv.unwrap();
-
-        let context = d3d_device.GetImmediateContext()?;
-        context.ClearRenderTargetView(&rtv, &color);
-
-        surface.EndDraw()?;
-        visual.SetContent(&surface)?;
-    }
-    Ok(())
 }
 
 fn flush_trace() {

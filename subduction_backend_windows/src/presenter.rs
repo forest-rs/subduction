@@ -38,6 +38,10 @@ pub struct DCompPresenter {
     surface_to_slot: HashMap<SurfaceId, u32>,
     /// Maps subduction slot index → [`SurfaceId`].
     slot_to_surface: HashMap<u32, SurfaceId>,
+    /// Set on the first `DComp` HRESULT failure. Once true, [`apply`]
+    /// becomes a no-op. The caller should check [`is_device_lost`] after
+    /// each frame and recreate the compositor when set.
+    device_lost: bool,
 }
 
 impl std::fmt::Debug for DCompPresenter {
@@ -62,6 +66,7 @@ impl DCompPresenter {
             layer_parents: Vec::new(),
             surface_to_slot: HashMap::new(),
             slot_to_surface: HashMap::new(),
+            device_lost: false,
         }
     }
 
@@ -91,6 +96,16 @@ impl DCompPresenter {
     #[must_use]
     pub fn mapped_id(&self, idx: u32) -> Option<LayerId> {
         self.layer_map.get(idx as usize).copied().flatten()
+    }
+
+    /// Returns `true` if a `DComp` call has failed, indicating device loss.
+    ///
+    /// Once set, [`apply`](Presenter::apply) becomes a no-op. The caller
+    /// should tear down and recreate the compositor.
+    #[must_use]
+    #[inline]
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost
     }
 
     /// Commit all pending `DirectComposition` changes atomically.
@@ -238,6 +253,22 @@ impl DCompPresenter {
         self.slot_to_surface.insert(slot, id);
     }
 
+    /// Check a `DComp` result. On error, sets `device_lost` so the rest of
+    /// `apply` (and future frames) is skipped.
+    ///
+    /// Usage: `let r = self.composition.foo(); self.check(r);`
+    /// (bind the result first to avoid overlapping borrows on `self`).
+    #[inline]
+    fn check(&mut self, result: windows::core::Result<()>) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(_) => {
+                self.device_lost = true;
+                false
+            }
+        }
+    }
+
     /// Ensure the maps have enough slots for the given index.
     fn ensure_slot(&mut self, idx: u32) {
         let needed = idx as usize + 1;
@@ -304,22 +335,31 @@ fn apply_clip(
 
 impl Presenter for DCompPresenter {
     fn apply(&mut self, store: &LayerStore, changes: &FrameChanges) {
+        // On the first DComp HRESULT failure `device_lost` is set and all
+        // subsequent work is skipped. The caller checks `is_device_lost()`
+        // after each frame and recreates the compositor when needed.
+        if self.device_lost {
+            return;
+        }
+
         // ── Structural: added layers ────────────────────────────────
         for &idx in &changes.added {
             self.ensure_slot(idx);
 
-            // Resolve parent: subduction slot → composition LayerId.
             let parent_id = store
                 .parent_at(idx)
                 .and_then(|parent_idx| self.mapped_id(parent_idx));
 
-            let layer_id = self
-                .composition
-                .create_layer(parent_id)
-                .expect("failed to create DirectComposition visual");
-
-            self.layer_map[idx as usize] = Some(layer_id);
-            self.layer_parents[idx as usize] = Some(parent_id);
+            match self.composition.create_layer(parent_id) {
+                Ok(layer_id) => {
+                    self.layer_map[idx as usize] = Some(layer_id);
+                    self.layer_parents[idx as usize] = Some(parent_id);
+                }
+                Err(_) => {
+                    self.device_lost = true;
+                    return;
+                }
+            }
         }
 
         // ── Structural: removed layers ──────────────────────────────
@@ -327,9 +367,13 @@ impl Presenter for DCompPresenter {
             self.remove_surface_mapping_for_slot(idx);
             if let Some(layer_id) = self.mapped_id(idx) {
                 let parent = self.layer_parents[idx as usize].flatten();
-                let _ = self.composition.destroy_layer(layer_id, parent, true);
-                self.layer_map[idx as usize] = None;
-                self.layer_parents[idx as usize] = None;
+                let r = self.composition.destroy_layer(layer_id, parent, true);
+                if self.check(r) {
+                    self.layer_map[idx as usize] = None;
+                    self.layer_parents[idx as usize] = None;
+                } else {
+                    return;
+                }
             }
         }
 
@@ -344,6 +388,9 @@ impl Presenter for DCompPresenter {
         // ── Topology: reparent layers whose parent changed ─────────
         if changes.topology_changed {
             for idx in 0..self.layer_map.len() {
+                if self.device_lost {
+                    return;
+                }
                 let Some(layer_id) = self.layer_map[idx] else {
                     continue;
                 };
@@ -354,10 +401,12 @@ impl Presenter for DCompPresenter {
                 let store_parent = store.parent_at(idx as u32).and_then(|p| self.mapped_id(p));
                 let old_parent = self.layer_parents[idx].flatten();
                 if store_parent != old_parent {
-                    let _ = self
+                    let r = self
                         .composition
                         .reparent(layer_id, old_parent, store_parent, true);
-                    self.layer_parents[idx] = Some(store_parent);
+                    if self.check(r) {
+                        self.layer_parents[idx] = Some(store_parent);
+                    }
                 }
             }
         }
@@ -367,6 +416,9 @@ impl Presenter for DCompPresenter {
         //   - Translation → SetOffsetX/Y (inherits through visual tree)
         //   - Residual (rotation/scale) → SetTransform (inherits through visual tree)
         for &idx in &changes.transforms {
+            if self.device_lost {
+                return;
+            }
             if let Some(layer_id) = self.mapped_id(idx) {
                 let t = store.local_transform_at(idx);
                 let cols = t.to_cols_array_2d();
@@ -376,60 +428,71 @@ impl Presenter for DCompPresenter {
                     reason = "Translation is intentionally truncated from f64 to f32"
                 )]
                 let (tx, ty) = (cols[3][0] as f32, cols[3][1] as f32);
-                let _ = self.composition.set_offset(layer_id, tx, ty);
+                self.check(self.composition.set_offset(layer_id, tx, ty));
 
-                // Check if there's a non-identity residual (rotation/scale).
                 let has_residual = cols[0][0] != 1.0
                     || cols[0][1] != 0.0
                     || cols[1][0] != 0.0
                     || cols[1][1] != 1.0;
 
                 if has_residual {
-                    let _ = self
-                        .composition
-                        .set_transform(layer_id, &residual_to_matrix3x2(&t));
+                    self.check(
+                        self.composition
+                            .set_transform(layer_id, &residual_to_matrix3x2(&t)),
+                    );
                 } else {
-                    let _ = self.composition.clear_transform(layer_id);
+                    self.check(self.composition.clear_transform(layer_id));
                 }
             }
         }
 
         // ── Opacities ──────────────────────────────────────────────
-        // Use local opacity: DComp composes parent opacity via the
-        // visual tree hierarchy.
         for &idx in &changes.opacities {
+            if self.device_lost {
+                return;
+            }
             if let Some(layer_id) = self.mapped_id(idx) {
                 let opacity = store.local_opacity_at(idx);
-                let _ = self.composition.set_opacity(layer_id, opacity);
+                self.check(self.composition.set_opacity(layer_id, opacity));
             }
         }
 
         // ── Clips ──────────────────────────────────────────────────
         for &idx in &changes.clips {
+            if self.device_lost {
+                return;
+            }
             if let Some(layer_id) = self.mapped_id(idx) {
-                if let Some(clip) = store.clip_at(idx) {
-                    let _ = apply_clip(&mut self.composition, layer_id, &clip);
+                let r = if let Some(clip) = store.clip_at(idx) {
+                    apply_clip(&mut self.composition, layer_id, &clip)
                 } else {
-                    let _ = self.composition.clear_clip(layer_id);
-                }
+                    self.composition.clear_clip(layer_id)
+                };
+                self.check(r);
             }
         }
 
         // ── Visibility ─────────────────────────────────────────────
         for &idx in &changes.hidden {
+            if self.device_lost {
+                return;
+            }
             if let Some(layer_id) = self.mapped_id(idx) {
                 let parent = self.layer_parents[idx as usize].flatten();
-                let _ = self.composition.set_visible(layer_id, parent, false);
+                self.check(self.composition.set_visible(layer_id, parent, false));
             }
         }
         for &idx in &changes.unhidden {
+            if self.device_lost {
+                return;
+            }
             if let Some(layer_id) = self.mapped_id(idx) {
                 let parent = self.layer_parents[idx as usize].flatten();
-                let _ = self.composition.set_visible(layer_id, parent, true);
+                self.check(self.composition.set_visible(layer_id, parent, true));
             }
         }
 
         // ── Commit all visual tree changes atomically ──────────────
-        let _ = self.composition.commit();
+        self.check(self.composition.commit());
     }
 }

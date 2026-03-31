@@ -76,6 +76,8 @@ impl TickSource {
                 std::thread::sleep(Duration::from_millis(16));
             }
             unsafe {
+                // Failure means the hwnd is gone or the queue is full — either
+                // way the tick is harmlessly skipped; the next VSync retries.
                 let _ = PostMessageW(Some(hwnd), WM_APP_TICK, WPARAM(0), LPARAM(0));
             }
         }
@@ -85,6 +87,8 @@ impl TickSource {
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
+            // Thread panic during shutdown — nothing to recover; propagating
+            // from Drop would abort.
             let _ = h.join();
         }
     }
@@ -149,6 +153,8 @@ impl FrameEventTickSource {
                 std::thread::sleep(Duration::from_millis(16));
             }
             unsafe {
+                // Failure means the hwnd is gone or the queue is full — either
+                // way the tick is harmlessly skipped; the next VSync retries.
                 let _ = PostMessageW(Some(hwnd), WM_APP_TICK, WPARAM(0), LPARAM(0));
             }
         }
@@ -158,6 +164,8 @@ impl FrameEventTickSource {
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
+            // Thread panic during shutdown — nothing to recover; propagating
+            // from Drop would abort.
             let _ = h.join();
         }
     }

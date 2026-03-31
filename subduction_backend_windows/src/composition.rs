@@ -744,7 +744,10 @@ fn rebuild_effect_chain(layer: &CompositionLayer) -> Result<()> {
     // Each subsequent effect reads from the previous one's output.
     for i in 1..len {
         unsafe {
-            active[i].as_ref().unwrap().SetInput(0, active[i - 1].as_ref().unwrap(), 0)?;
+            active[i]
+                .as_ref()
+                .unwrap()
+                .SetInput(0, active[i - 1].as_ref().unwrap(), 0)?;
         };
     }
 

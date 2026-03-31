@@ -38,11 +38,6 @@ pub struct LayerId(pub(crate) usize);
 /// Per-layer state in the composition tree.
 struct CompositionLayer {
     visual: IDCompositionVisual,
-    /// Cached effect group — reused across transform/opacity updates
-    /// to avoid allocating a new COM object every frame.
-    effect_group: Option<IDCompositionEffectGroup>,
-    /// Cached 3D transform object — reused when updating the matrix.
-    transform_3d: Option<IDCompositionMatrixTransform3D>,
     /// Cached rounded-rectangle clip — reused across clip updates.
     rounded_clip: Option<IDCompositionRectangleClip>,
     /// Cached blur effect — reused across blur updates.
@@ -155,8 +150,6 @@ impl CompositionManager {
 
         let id = self.alloc_slot(CompositionLayer {
             visual,
-            effect_group: None,
-            transform_3d: None,
             rounded_clip: None,
             cached_blur: None,
         });
@@ -192,57 +185,18 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Set a 3D transform (column-major 4×4). Does **not** inherit to children.
-    pub fn set_transform_3d(&mut self, id: LayerId, matrix: &[[f32; 4]; 4]) -> Result<()> {
-        let device2: IDCompositionDevice2 = self.device.cast()?;
-        let layer = self.layer_mut(id);
-
-        if layer.effect_group.is_none() {
-            let eg = unsafe { device2.CreateEffectGroup()? };
-            unsafe { layer.visual.SetEffect(&eg)? };
-            layer.effect_group = Some(eg);
-        }
-        let effect_group = layer.effect_group.as_ref().unwrap();
-
-        let m = windows_numerics::Matrix4x4 {
-            M11: matrix[0][0],
-            M12: matrix[0][1],
-            M13: matrix[0][2],
-            M14: matrix[0][3],
-            M21: matrix[1][0],
-            M22: matrix[1][1],
-            M23: matrix[1][2],
-            M24: matrix[1][3],
-            M31: matrix[2][0],
-            M32: matrix[2][1],
-            M33: matrix[2][2],
-            M34: matrix[2][3],
-            M41: matrix[3][0],
-            M42: matrix[3][1],
-            M43: matrix[3][2],
-            M44: matrix[3][3],
-        };
-
-        if layer.transform_3d.is_none() {
-            let t3d = unsafe { device2.CreateMatrixTransform3D()? };
-            unsafe { effect_group.SetTransform3D(&t3d)? };
-            layer.transform_3d = Some(t3d);
-        }
-
-        let t3d = layer.transform_3d.as_ref().unwrap();
-        unsafe { t3d.SetMatrix(&m)? };
+    /// Set a 2D affine transform on the visual. Inherits to children through
+    /// the visual tree, composing correctly with parent transforms.
+    pub fn set_transform(&self, id: LayerId, matrix: &windows_numerics::Matrix3x2) -> Result<()> {
+        let v = &self.layer(id).visual;
+        unsafe { v.SetTransform2(matrix)? };
         Ok(())
     }
 
-    /// Clear a layer's 3D transform (revert to identity).
-    pub fn clear_transform_3d(&mut self, id: LayerId) -> Result<()> {
-        let layer = self.layer_mut(id);
-        if layer.transform_3d.is_some() {
-            layer.transform_3d = None;
-            if let Some(eg) = &layer.effect_group {
-                unsafe { eg.SetTransform3D(None)? };
-            }
-        }
+    /// Clear a layer's transform (revert to identity).
+    pub fn clear_transform(&self, id: LayerId) -> Result<()> {
+        let v = &self.layer(id).visual;
+        unsafe { v.SetTransform(None)? };
         Ok(())
     }
 
@@ -400,14 +354,8 @@ impl CompositionManager {
         if sigma <= 0.0 {
             layer.cached_blur = None;
             let visual3: IDCompositionVisual3 = layer.visual.cast()?;
-            if let Some(eg) = &layer.effect_group {
-                unsafe {
-                    visual3.SetEffect(eg)?;
-                }
-            } else {
-                unsafe {
-                    visual3.SetEffect(None)?;
-                }
+            unsafe {
+                visual3.SetEffect(None)?;
             }
             return Ok(());
         }
@@ -493,8 +441,6 @@ impl CompositionManager {
         unsafe {
             visual3.SetEffect(None)?;
         }
-        layer.effect_group = None;
-        layer.transform_3d = None;
         Ok(())
     }
 

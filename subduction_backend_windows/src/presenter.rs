@@ -24,8 +24,8 @@ use windows::Win32::Graphics::DirectComposition::{
 ///
 /// Uses **local** transforms and opacity — `DComp` composes parent
 /// values through the visual tree automatically. Translation goes
-/// through `SetOffset` (inherits), rotation/scale through an
-/// `EffectGroup` 3D transform (does not inherit).
+/// through `SetOffset`, rotation/scale through the visual's own
+/// `SetTransform` — both inherit through the visual tree.
 pub struct DCompPresenter {
     composition: CompositionManager,
     /// Maps subduction layer slot index → composition [`LayerId`].
@@ -250,14 +250,24 @@ impl DCompPresenter {
     }
 }
 
-/// Convert `Transform3d` (f64) to f32 4×4 for [`CompositionManager::set_transform_3d`].
+/// Extract the 2D rotation/scale residual from a `Transform3d` as a `Matrix3x2`.
+/// Translation is omitted — `SetOffset` handles it separately.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "f64 → f32 truncation is intentional for DirectComposition"
 )]
-fn transform_to_f32(t: &subduction_core::transform::Transform3d) -> [[f32; 4]; 4] {
+fn residual_to_matrix3x2(
+    t: &subduction_core::transform::Transform3d,
+) -> windows_numerics::Matrix3x2 {
     let cols = t.to_cols_array_2d();
-    core::array::from_fn(|col| core::array::from_fn(|row| cols[col][row] as f32))
+    windows_numerics::Matrix3x2 {
+        M11: cols[0][0] as f32,
+        M12: cols[0][1] as f32,
+        M21: cols[1][0] as f32,
+        M22: cols[1][1] as f32,
+        M31: 0.0,
+        M32: 0.0,
+    }
 }
 
 /// Apply a [`ClipShape`] to a layer via the composition manager.
@@ -355,7 +365,7 @@ impl Presenter for DCompPresenter {
         // ── Transforms ─────────────────────────────────────────────
         // Decompose each local transform into:
         //   - Translation → SetOffsetX/Y (inherits through visual tree)
-        //   - Residual (rotation/scale) → EffectGroup 3D transform
+        //   - Residual (rotation/scale) → SetTransform (inherits through visual tree)
         for &idx in &changes.transforms {
             if let Some(layer_id) = self.mapped_id(idx) {
                 let t = store.local_transform_at(idx);
@@ -371,23 +381,15 @@ impl Presenter for DCompPresenter {
                 // Check if there's a non-identity residual (rotation/scale).
                 let has_residual = cols[0][0] != 1.0
                     || cols[0][1] != 0.0
-                    || cols[0][2] != 0.0
                     || cols[1][0] != 0.0
-                    || cols[1][1] != 1.0
-                    || cols[1][2] != 0.0
-                    || cols[2][0] != 0.0
-                    || cols[2][1] != 0.0
-                    || cols[2][2] != 1.0;
+                    || cols[1][1] != 1.0;
 
                 if has_residual {
-                    let mut residual = transform_to_f32(&t);
-                    // Zero out translation — offset handles it.
-                    residual[3][0] = 0.0;
-                    residual[3][1] = 0.0;
-                    residual[3][2] = 0.0;
-                    let _ = self.composition.set_transform_3d(layer_id, &residual);
+                    let _ = self
+                        .composition
+                        .set_transform(layer_id, &residual_to_matrix3x2(&t));
                 } else {
-                    let _ = self.composition.clear_transform_3d(layer_id);
+                    let _ = self.composition.clear_transform(layer_id);
                 }
             }
         }

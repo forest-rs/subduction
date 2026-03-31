@@ -26,6 +26,8 @@ members = [
   "examples/wayland_wgpu",
   "examples/wgpu_layers",
   "examples/wgpu_lotta_layers",
+  "examples/windows_layers",
+  "examples/windows_lotta_layers",
 ]
 
 # Only cross-platform crates are built by default. Platform-specific backends
@@ -40,8 +42,6 @@ default-members = [
   "examples/trace_demo",
   "examples/wgpu_layers",
   "examples/wgpu_lotta_layers",
-  "examples/windows_layers",
-  "examples/windows_lotta_layers",
 ]
 
 [workspace.package]

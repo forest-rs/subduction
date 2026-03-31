@@ -9,7 +9,9 @@
 //! [`LayerStore`]: subduction_core::layer::LayerStore
 
 use subduction_core::backend::Presenter;
-use subduction_core::layer::{ClipShape, FrameChanges, LayerStore};
+use std::collections::HashMap;
+
+use subduction_core::layer::{ClipShape, FrameChanges, LayerStore, SurfaceId};
 
 use crate::composition::{CompositionManager, LayerId};
 
@@ -41,6 +43,10 @@ pub struct DCompPresenter {
     /// Tracks last-set parent for each layer (indexed by subduction slot).
     /// Used for topology reconciliation and reparenting.
     layer_parents: Vec<Option<Option<LayerId>>>,
+    /// Maps [`SurfaceId`] → subduction slot index.
+    surface_to_slot: HashMap<SurfaceId, u32>,
+    /// Maps subduction slot index → [`SurfaceId`].
+    slot_to_surface: HashMap<u32, SurfaceId>,
 }
 
 impl std::fmt::Debug for DCompPresenter {
@@ -63,6 +69,8 @@ impl DCompPresenter {
             composition,
             layer_map: Vec::new(),
             layer_parents: Vec::new(),
+            surface_to_slot: HashMap::new(),
+            slot_to_surface: HashMap::new(),
         }
     }
 
@@ -190,6 +198,45 @@ impl DCompPresenter {
         self.composition.set_scroll_offset(id, dx, dy)
     }
 
+    /// Get the [`IDCompositionVisual`] for a [`SurfaceId`].
+    ///
+    /// Returns `None` if the content ID has no mapping or the mapped slot
+    /// has no realized visual.
+    pub fn visual_for_content(&self, id: SurfaceId) -> Option<&IDCompositionVisual> {
+        let &slot = self.surface_to_slot.get(&id)?;
+        self.visual_for(slot)
+    }
+
+    /// Get the composition [`LayerId`] for a [`SurfaceId`].
+    #[must_use]
+    pub fn mapped_id_for_content(&self, id: SurfaceId) -> Option<LayerId> {
+        let &slot = self.surface_to_slot.get(&id)?;
+        self.mapped_id(slot)
+    }
+
+    /// Remove the bidirectional `SurfaceId ↔ slot` mapping for `slot`.
+    ///
+    /// Called when a layer is removed or its content changes to keep both
+    /// maps consistent.
+    fn remove_surface_mapping_for_slot(&mut self, slot: u32) {
+        if let Some(sid) = self.slot_to_surface.remove(&slot) {
+            self.surface_to_slot.remove(&sid);
+        }
+    }
+
+    /// Insert a bidirectional `SurfaceId ↔ slot` mapping.
+    ///
+    /// If `id` was previously mapped to a different slot, the stale
+    /// reverse entry is removed so both directions stay consistent.
+    fn set_surface_mapping(&mut self, id: SurfaceId, slot: u32) {
+        if let Some(old_slot) = self.surface_to_slot.insert(id, slot)
+            && old_slot != slot
+        {
+            self.slot_to_surface.remove(&old_slot);
+        }
+        self.slot_to_surface.insert(slot, id);
+    }
+
     /// Ensure the maps have enough slots for the given index.
     fn ensure_slot(&mut self, idx: u32) {
         let needed = idx as usize + 1;
@@ -292,11 +339,20 @@ impl Presenter for DCompPresenter {
 
         // ── Structural: removed layers ──────────────────────────────
         for &idx in &changes.removed {
+            self.remove_surface_mapping_for_slot(idx);
             if let Some(layer_id) = self.mapped_id(idx) {
                 let parent = self.layer_parents[idx as usize].flatten();
                 let _ = self.composition.destroy_layer(layer_id, parent, true);
                 self.layer_map[idx as usize] = None;
                 self.layer_parents[idx as usize] = None;
+            }
+        }
+
+        // ── Content mapping (SurfaceId ↔ slot) ────────────────────
+        for &idx in &changes.content {
+            self.remove_surface_mapping_for_slot(idx);
+            if let Some(id) = store.content_at(idx) {
+                self.set_surface_mapping(id, idx);
             }
         }
 

@@ -52,16 +52,16 @@ struct CompositionLayer {
 /// Which property an animation targets (for completion snapping).
 #[derive(Debug, Clone)]
 pub enum AnimationProperty {
-    /// Opacity animation with target value.
+    /// Opacity animation.
     Opacity {
-        /// Final opacity value (0.0–1.0).
+        /// Final value.
         target: f32,
     },
-    /// Offset animation with target X/Y.
+    /// Offset animation.
     Offset {
-        /// Final X offset in pixels.
+        /// Final X.
         target_x: f32,
-        /// Final Y offset in pixels.
+        /// Final Y.
         target_y: f32,
     },
 }
@@ -69,20 +69,18 @@ pub enum AnimationProperty {
 /// A pending `DComp` animation with timer-based completion tracking.
 #[derive(Debug, Clone)]
 pub struct PendingAnimation {
-    /// Layer this animation applies to.
+    /// Target layer.
     pub layer_id: LayerId,
-    /// Which property is being animated.
+    /// Animated property.
     pub property: AnimationProperty,
-    /// Absolute time (in seconds) when the animation completes.
+    /// Absolute time (seconds) when the animation completes.
     pub end_time: f64,
 }
 
 /// `DirectComposition` visual tree manager.
 ///
-/// Owns the composition device, target, and root visual. Layers are
-/// property-only visuals (no swapchain or surface backing). Applications
-/// attach GPU content by calling [`visual`](Self::visual) and then
-/// `IDCompositionVisual::SetContent`.
+/// Layers are property-only visuals. Applications attach GPU content
+/// via [`visual`](Self::visual) + `SetContent`.
 pub struct CompositionManager {
     device: IDCompositionDevice,
     #[expect(
@@ -112,42 +110,23 @@ impl CompositionManager {
     /// Create a composition manager bound to a window.
     ///
     /// The HWND must have `WS_EX_NOREDIRECTIONBITMAP`.
-    ///
-    /// `dxgi_device` enables GPU-backed content to be attached to visuals
-    /// later. Pass a device obtained from `ID3D11Device::cast::<IDXGIDevice2>()`.
     pub fn with_device(dxgi_device: &IDXGIDevice2, hwnd: HWND) -> Result<Self> {
-        // SAFETY: `DCompositionCreateDevice` creates a composition device
-        // from the provided DXGI device. The returned device is valid for
-        // the lifetime of the DXGI device.
         let device: IDCompositionDevice = unsafe { DCompositionCreateDevice(dxgi_device)? };
         Self::from_device(device, hwnd)
     }
 
-    /// Create a composition manager without a DXGI device.
-    ///
-    /// Visuals will be property-only (transforms, opacity, clips). GPU
-    /// content cannot be attached until a DXGI device is provided
-    /// externally via `visual.SetContent(...)`.
-    ///
-    /// Useful for tests or lightweight composition without D3D11.
+    /// Create a composition manager without a DXGI device (property-only visuals).
     pub fn new(hwnd: HWND) -> Result<Self> {
-        // SAFETY: Passing `None` creates a device without a rendering device.
         let device: IDCompositionDevice = unsafe { DCompositionCreateDevice(None)? };
         Self::from_device(device, hwnd)
     }
 
-    /// Create a composition manager for a window using an existing
-    /// composition device.
-    ///
-    /// Use this for multi-window setups where all windows share one device.
-    /// Obtain the device from another `CompositionManager` via
-    /// [`device()`](Self::device).
+    /// Create a composition manager sharing an existing device (multi-window).
     pub fn for_window(device: &IDCompositionDevice, hwnd: HWND) -> Result<Self> {
         Self::from_device(device.clone(), hwnd)
     }
 
     fn from_device(device: IDCompositionDevice, hwnd: HWND) -> Result<Self> {
-        // SAFETY: COM calls to set up the composition target and root visual.
         let target = unsafe { device.CreateTargetForHwnd(hwnd, true)? };
         let root_visual = unsafe { device.CreateVisual()? };
         unsafe {
@@ -168,15 +147,10 @@ impl CompositionManager {
 
     // ── Layer lifecycle ────────────────────────────────────────
 
-    /// Create a property-only layer visual and attach it to a parent.
-    ///
-    /// If `parent` is `None`, the layer is a child of the root visual.
+    /// Create a layer and attach it to `parent` (or the root if `None`).
     pub fn create_layer(&mut self, parent: Option<LayerId>) -> Result<LayerId> {
-        // SAFETY: `CreateVisual` creates a new visual in the composition device.
         let visual = unsafe { self.device.CreateVisual()? };
-
         let parent_visual = self.parent_visual(parent);
-        // SAFETY: `AddVisual` attaches the visual to its parent.
         unsafe { parent_visual.AddVisual(&visual, false, None)? };
 
         let id = self.alloc_slot(CompositionLayer {
@@ -190,11 +164,7 @@ impl CompositionManager {
         Ok(id)
     }
 
-    /// Destroy a layer: detach from parent and return the slot for reuse.
-    ///
-    /// The caller must provide `parent` and `is_attached` — the manager
-    /// does not track these. If the layer has children the caller must
-    /// reparent them first.
+    /// Destroy a layer: detach from parent and recycle the slot.
     pub fn destroy_layer(
         &mut self,
         id: LayerId,
@@ -212,13 +182,9 @@ impl CompositionManager {
 
     // ── Transforms ─────────────────────────────────────────────
 
-    /// Set a layer's pixel offset (translation).
-    ///
-    /// This inherits through the visual tree — child visuals move with
-    /// their parent.
+    /// Set a layer's pixel offset (inherits to children).
     pub fn set_offset(&self, id: LayerId, x: f32, y: f32) -> Result<()> {
         let v = &self.layer(id).visual;
-        // SAFETY: COM property setters on the visual.
         unsafe {
             v.SetOffsetX2(x)?;
             v.SetOffsetY2(y)?;
@@ -226,21 +192,12 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Set a 3D transform from a column-major 4×4 matrix.
-    ///
-    /// Applied via an [`IDCompositionEffectGroup`] — this transforms the
-    /// visual's bitmap but does **not** affect child visual positions
-    /// (use [`set_offset`](Self::set_offset) for positional inheritance).
-    ///
-    /// Lazily creates the effect group and transform COM objects; reuses
-    /// them on subsequent calls.
+    /// Set a 3D transform (column-major 4×4). Does **not** inherit to children.
     pub fn set_transform_3d(&mut self, id: LayerId, matrix: &[[f32; 4]; 4]) -> Result<()> {
         let device2: IDCompositionDevice2 = self.device.cast()?;
         let layer = self.layer_mut(id);
 
-        // Lazily create the effect group and bind it to the visual once.
         if layer.effect_group.is_none() {
-            // SAFETY: COM object creation and property setting.
             let eg = unsafe { device2.CreateEffectGroup()? };
             unsafe { layer.visual.SetEffect(&eg)? };
             layer.effect_group = Some(eg);
@@ -266,27 +223,23 @@ impl CompositionManager {
             M44: matrix[3][3],
         };
 
-        // Lazily create the transform object and bind it once.
         if layer.transform_3d.is_none() {
-            // SAFETY: COM object creation and binding.
             let t3d = unsafe { device2.CreateMatrixTransform3D()? };
             unsafe { effect_group.SetTransform3D(&t3d)? };
             layer.transform_3d = Some(t3d);
         }
 
         let t3d = layer.transform_3d.as_ref().unwrap();
-        // SAFETY: `SetMatrix` sets the transform matrix.
         unsafe { t3d.SetMatrix(&m)? };
         Ok(())
     }
 
-    /// Clear a layer's 3D transform, reverting to identity.
+    /// Clear a layer's 3D transform (revert to identity).
     pub fn clear_transform_3d(&mut self, id: LayerId) -> Result<()> {
         let layer = self.layer_mut(id);
         if layer.transform_3d.is_some() {
             layer.transform_3d = None;
             if let Some(eg) = &layer.effect_group {
-                // SAFETY: `SetTransform3D(None)` clears the transform.
                 unsafe { eg.SetTransform3D(None)? };
             }
         }
@@ -296,17 +249,14 @@ impl CompositionManager {
     // ── Opacity ────────────────────────────────────────────────
 
     /// Set a layer's opacity (0.0–1.0).
-    ///
-    /// Applied directly on the visual via [`IDCompositionVisual3::SetOpacity2`].
     pub fn set_opacity(&self, id: LayerId, opacity: f32) -> Result<()> {
         let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        // SAFETY: COM property setter.
         unsafe { visual3.SetOpacity2(opacity) }
     }
 
     // ── Clips ──────────────────────────────────────────────────
 
-    /// Set an axis-aligned clip rectangle (local coordinates).
+    /// Set an axis-aligned clip rectangle.
     pub fn set_clip(
         &mut self,
         id: LayerId,
@@ -315,7 +265,6 @@ impl CompositionManager {
         right: f32,
         bottom: f32,
     ) -> Result<()> {
-        // Drop any cached rounded clip — `SetClip2` with a rect replaces it.
         self.layer_mut(id).rounded_clip = None;
         let rect = D2D_RECT_F {
             left,
@@ -323,14 +272,10 @@ impl CompositionManager {
             right,
             bottom,
         };
-        // SAFETY: `SetClip2` sets an axis-aligned clip rectangle.
         unsafe { self.layer(id).visual.SetClip2(&rect) }
     }
 
-    /// Set a rounded-rectangle clip with per-corner radii (local coordinates).
-    ///
-    /// Uses a cached [`IDCompositionRectangleClip`] — created lazily on
-    /// first call and reused afterwards.
+    /// Set a rounded-rectangle clip with per-corner radii.
     pub fn set_rounded_clip(
         &mut self,
         id: LayerId,
@@ -346,7 +291,6 @@ impl CompositionManager {
         let layer = self.layer_mut(id);
 
         if layer.rounded_clip.is_none() {
-            // SAFETY: COM object creation and binding.
             let clip = unsafe { self.device.CreateRectangleClip()? };
             let layer = self.layer_mut(id);
             unsafe { layer.visual.SetClip(&clip)? };
@@ -354,7 +298,6 @@ impl CompositionManager {
         }
 
         let clip = self.layer(id).rounded_clip.as_ref().unwrap();
-        // SAFETY: COM property setters on the clip object.
         unsafe {
             clip.SetLeft2(left)?;
             clip.SetTop2(top)?;
@@ -372,23 +315,19 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Remove any clip from a layer, restoring it to unclipped.
+    /// Remove any clip from a layer.
     pub fn clear_clip(&mut self, id: LayerId) -> Result<()> {
         self.layer_mut(id).rounded_clip = None;
         let clip: Option<&IDCompositionClip> = None;
-        // SAFETY: `SetClip(None)` clears the clip.
         unsafe { self.layer(id).visual.SetClip(clip) }
     }
 
     // ── Visibility ─────────────────────────────────────────────
 
-    /// Show or hide a layer by attaching/detaching its visual.
-    ///
-    /// Both operations are DWM-level — zero GPU cost.
+    /// Show or hide a layer (DWM-level attach/detach, zero GPU cost).
     pub fn set_visible(&self, id: LayerId, parent: Option<LayerId>, visible: bool) -> Result<()> {
         let parent_visual = self.parent_visual(parent);
         let layer = self.layer(id);
-        // SAFETY: `AddVisual`/`RemoveVisual` attach/detach the visual.
         if visible {
             unsafe { parent_visual.AddVisual(&layer.visual, false, None)? };
         } else {
@@ -398,9 +337,6 @@ impl CompositionManager {
     }
 
     /// Move a layer to a new parent.
-    ///
-    /// The caller must provide the old parent and whether the visual is
-    /// currently attached.
     pub fn reparent(
         &self,
         id: LayerId,
@@ -416,13 +352,11 @@ impl CompositionManager {
 
         if is_attached {
             let old_pv = self.parent_visual(old_parent);
-            // SAFETY: `RemoveVisual` detaches from the old parent.
             unsafe { old_pv.RemoveVisual(visual)? };
         }
 
         if is_attached {
             let new_pv = self.parent_visual(new_parent);
-            // SAFETY: `AddVisual` attaches to the new parent.
             unsafe { new_pv.AddVisual(visual, false, None)? };
         }
 
@@ -432,19 +366,13 @@ impl CompositionManager {
     // ── Commit ─────────────────────────────────────────────────
 
     /// Commit all pending changes atomically.
-    ///
-    /// The DWM sees all visual tree updates in one transaction — no
-    /// tearing between layers.
     pub fn commit(&self) -> Result<()> {
-        // SAFETY: `Commit` flushes all pending composition changes.
         unsafe { self.device.Commit() }
     }
 
     // ── Scroll offset ───────────────────────────────────────
 
-    /// DWM-level scroll: shift the visual's content without re-rendering.
-    ///
-    /// Negates the offsets so positive (dx, dy) scrolls content up/left.
+    /// DWM-level scroll offset (positive = content moves up/left).
     pub fn set_scroll_offset(&self, id: LayerId, dx: f32, dy: f32) -> Result<()> {
         let v = &self.layer(id).visual;
         unsafe {
@@ -456,7 +384,7 @@ impl CompositionManager {
 
     // ── Effects (IDCompositionDevice3, Windows 10 1607+) ──
 
-    /// Lazily acquire `IDCompositionDevice3` for effect creation.
+    /// Lazily acquire `IDCompositionDevice3`.
     fn device3(&mut self) -> Result<IDCompositionDevice3> {
         if self.device3.is_none() {
             self.device3 = Some(self.device.cast()?);
@@ -464,9 +392,7 @@ impl CompositionManager {
         Ok(self.device3.as_ref().unwrap().clone())
     }
 
-    /// Apply a Gaussian blur effect to a layer.
-    ///
-    /// `sigma` <= 0 removes the blur.
+    /// Apply a Gaussian blur (`sigma` <= 0 removes it).
     pub fn set_blur(&mut self, id: LayerId, sigma: f32) -> Result<()> {
         let device3 = self.device3()?;
         let layer = self.layer_mut(id);
@@ -502,9 +428,7 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Apply a saturation effect.
-    ///
-    /// `amount`: 0.0 = grayscale, 1.0 = identity, >1.0 = oversaturated.
+    /// Apply a saturation effect (0.0 = grayscale, 1.0 = identity).
     pub fn set_saturation(&mut self, id: LayerId, amount: f32) -> Result<()> {
         let device3 = self.device3()?;
         let effect = unsafe { device3.CreateSaturationEffect()? };
@@ -519,7 +443,7 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Apply a 5x4 color matrix effect (20 floats, row-major).
+    /// Apply a 5×4 color matrix effect (row-major).
     pub fn set_color_matrix(&mut self, id: LayerId, matrix: &[f32; 20]) -> Result<()> {
         let device3 = self.device3()?;
         let effect = unsafe { device3.CreateColorMatrixEffect()? };
@@ -576,10 +500,7 @@ impl CompositionManager {
 
     // ── Animations (DComp-driven, zero per-frame app cost) ──
 
-    /// Animate opacity from `from` to `to` over `duration_s` seconds.
-    ///
-    /// The DWM runs the animation at compositor refresh rate. Call
-    /// [`tick_animations`](Self::tick_animations) each frame to detect completion.
+    /// Animate opacity linearly. Call [`tick_animations`](Self::tick_animations) to detect completion.
     pub fn animate_opacity(
         &mut self,
         id: LayerId,
@@ -612,7 +533,7 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Animate offset from `(from_x, from_y)` to `(to_x, to_y)` over `duration_s`.
+    /// Animate offset linearly.
     pub fn animate_offset(
         &mut self,
         id: LayerId,
@@ -753,10 +674,7 @@ impl CompositionManager {
         Ok(())
     }
 
-    /// Check for completed animations. Returns the number that completed.
-    ///
-    /// Call once per frame. `DComp`'s `End()` already snaps values;
-    /// this just cleans up tracking state.
+    /// Drain completed animations. Returns the count.
     pub fn tick_animations(&mut self, now: f64) -> usize {
         let before = self.active_animations.len();
         self.active_animations.retain(|anim| now < anim.end_time);
@@ -791,29 +709,17 @@ impl CompositionManager {
         &self.root_visual
     }
 
-    /// Returns a reference to the [`IDCompositionDevice`].
-    ///
-    /// Applications use this to create surfaces, animations, or other
-    /// device-owned objects.
+    /// Returns the [`IDCompositionDevice`].
     pub fn device(&self) -> &IDCompositionDevice {
         &self.device
     }
 
-    /// Returns DWM composition frame statistics.
-    ///
-    /// Provides the last composition time, current composition rate,
-    /// and next estimated frame time — all in QPC ticks.
+    /// Returns DWM composition frame statistics (QPC ticks).
     pub fn frame_statistics(&self) -> Result<DCOMPOSITION_FRAME_STATISTICS> {
-        // SAFETY: COM call to query DWM composition timing.
         unsafe { self.device.GetFrameStatistics() }
     }
 
-    /// Returns the QPC time of the last DWM composition frame as a
-    /// [`HostTime`].
-    ///
-    /// This is the actual present time of the most recently composed
-    /// frame, suitable for feeding into
-    /// [`PendingFeedback::resolve()`](subduction_core::timing::PendingFeedback::resolve).
+    /// Actual present time of the last DWM composition frame.
     #[expect(
         clippy::cast_sign_loss,
         reason = "QPC values from DWM are always non-negative"

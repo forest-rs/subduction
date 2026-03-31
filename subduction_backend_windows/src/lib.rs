@@ -67,13 +67,7 @@ pub fn timebase() -> Timebase {
     timing::timebase()
 }
 
-/// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
-///
-/// The desired present time is the tick's predicted present, and the
-/// latest commit is the predicted present minus the safety margin.
-///
-/// This mirrors the Apple backend's hint computation but uses nanosecond
-/// safety margins (matching the Windows timing model).
+/// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin (nanoseconds).
 #[must_use]
 pub fn compute_present_hints(tick: &FrameTick, safety_margin_ns: u64) -> PresentHints {
     compute_hints(tick, safety_margin_ns)

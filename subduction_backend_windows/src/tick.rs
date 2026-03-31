@@ -47,9 +47,7 @@ impl std::fmt::Debug for TickSource {
 }
 
 impl TickSource {
-    /// Start the tick source thread.
-    ///
-    /// * `hwnd` — the window to receive `WM_APP_TICK` messages.
+    /// Start the tick source thread for `hwnd`.
     pub fn start(hwnd: HWND) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -74,14 +72,9 @@ impl TickSource {
 
     fn thread_main(hwnd: HWND, running: &AtomicBool) {
         while running.load(Ordering::Relaxed) {
-            // Block until the next DWM VSync. On Remote Desktop / no DWM,
-            // fall back to ~16 ms sleep.
-            // SAFETY: `DwmFlush` is a blocking call with no preconditions.
             if unsafe { DwmFlush() }.is_err() {
                 std::thread::sleep(Duration::from_millis(16));
             }
-            // Non-blocking post — safe from a non-GUI thread.
-            // SAFETY: `PostMessageW` is thread-safe for posted messages.
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_APP_TICK, WPARAM(0), LPARAM(0));
             }
@@ -125,11 +118,8 @@ impl std::fmt::Debug for FrameEventTickSource {
 }
 
 impl FrameEventTickSource {
-    /// Start the tick source thread.
-    ///
-    /// * `hwnd` — the window to receive `WM_APP_TICK` messages.
-    /// * `frame_event` — waitable handle from
-    ///   `IDXGISwapChain2::GetFrameLatencyWaitableObject`.
+    /// Start the tick source thread for `hwnd`, paced by `frame_event`
+    /// (`IDXGISwapChain2::GetFrameLatencyWaitableObject`).
     pub fn start(hwnd: HWND, frame_event: HANDLE) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -154,17 +144,12 @@ impl FrameEventTickSource {
 
     fn thread_main(hwnd: HWND, frame_event: HANDLE, running: &AtomicBool) {
         while running.load(Ordering::Relaxed) {
-            // Wait up to 32ms for the swapchain to signal frame availability.
-            // SAFETY: `WaitForSingleObject` blocks until the event signals
-            // or the timeout expires.
             let result = unsafe { WaitForSingleObject(frame_event, 32) };
-            if result != WAIT_OBJECT_0 {
-                // SAFETY: Fallback to DwmFlush for pacing.
-                if unsafe { DwmFlush() }.is_err() {
-                    std::thread::sleep(Duration::from_millis(16));
-                }
+            if result != WAIT_OBJECT_0
+                && unsafe { DwmFlush() }.is_err()
+            {
+                std::thread::sleep(Duration::from_millis(16));
             }
-            // SAFETY: `PostMessageW` is thread-safe for posted messages.
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_APP_TICK, WPARAM(0), LPARAM(0));
             }
@@ -186,17 +171,7 @@ impl Drop for FrameEventTickSource {
     }
 }
 
-/// Build a [`FrameTick`] from the current QPC time.
-///
-/// Call this inside the `WM_APP_TICK` handler. The caller must persist
-/// `frame_index` and `prev_present_time` across frames.
-///
-/// * `refresh_interval_ns` — display refresh interval in nanoseconds
-///   (e.g. `16_666_667` for 60 Hz). Use `0` if unknown.
-/// * `frame_index` — monotonically increasing counter (start at 0,
-///   increment before calling).
-/// * `prev_present_time` — the `tick.now` returned by the previous call,
-///   used to extrapolate the next predicted present.
+/// Build a [`FrameTick`] from QPC. Call inside the `WM_APP_TICK` handler.
 #[must_use]
 pub fn make_tick(
     refresh_interval_ns: u64,
@@ -237,10 +212,7 @@ pub fn make_tick(
     }
 }
 
-/// Compute presentation hints from a tick.
-///
-/// `safety_margin_ns` — how far before the predicted present to set the
-/// commit deadline (start with ~2,000,000 = 2 ms).
+/// Compute presentation hints from a tick and safety margin (nanoseconds).
 #[must_use]
 pub fn compute_hints(tick: &FrameTick, safety_margin_ns: u64) -> PresentHints {
     let timebase = crate::timing::timebase();

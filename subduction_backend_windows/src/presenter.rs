@@ -22,22 +22,10 @@ use windows::Win32::Graphics::DirectComposition::{
 
 /// `DirectComposition` presenter for subduction.
 ///
-/// Manages the mapping between subduction's layer tree and
-/// `DirectComposition` visuals. Visuals are property-only — applications
-/// attach GPU content via [`visual_for`](Self::visual_for).
-///
-/// # Transforms
-///
-/// Uses **local** transforms (not world transforms) because
-/// `DirectComposition` composes parent transforms automatically through
-/// the visual tree hierarchy. Translation goes through `SetOffsetX/Y`
-/// (inherits to children), while rotation/scale goes through an
-/// `IDCompositionEffectGroup` 3D transform (does **not** inherit).
-///
-/// # Opacity
-///
-/// Uses **local** opacity for the same reason — `DComp` multiplies parent
-/// opacity into children automatically.
+/// Uses **local** transforms and opacity — `DComp` composes parent
+/// values through the visual tree automatically. Translation goes
+/// through `SetOffset` (inherits), rotation/scale through an
+/// `EffectGroup` 3D transform (does not inherit).
 pub struct DCompPresenter {
     composition: CompositionManager,
     /// Maps subduction layer slot index → composition [`LayerId`].

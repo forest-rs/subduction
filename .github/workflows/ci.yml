@@ -54,6 +54,7 @@ env:
     --exclude subduction_backend_apple
     --exclude subduction_backend_wayland
     --exclude subduction_backend_web
+    --exclude subduction_backend_windows
     --exclude wayland_example_common
     --exclude wayland_layers
     --exclude wayland_lotta_layers

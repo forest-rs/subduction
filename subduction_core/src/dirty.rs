@@ -3,7 +3,7 @@
 
 //! Dirty-tracking channel constants.
 //!
-//! Subduction uses multi-channel dirty tracking (via [`understory_dirty`]) to
+//! Subduction uses multi-channel dirty tracking (via [`invalidation`]) to
 //! efficiently propagate invalidation through the layer tree. Each channel
 //! represents an independent category of change.
 //!
@@ -12,7 +12,7 @@
 //! Channels differ in whether dirtiness propagates to descendants:
 //!
 //! - **Propagating** — [`TRANSFORM`] and [`OPACITY`] use
-//!   [`EagerPolicy`](understory_dirty::EagerPolicy) and have dependency
+//!   [`EagerPolicy`](invalidation::EagerPolicy) and have dependency
 //!   edges from child to parent. Marking a parent dirty automatically marks
 //!   all descendants, because world transforms, effective opacities, and
 //!   effective hidden state are inherited properties. (Hidden-flag changes
@@ -36,7 +36,7 @@
 //! [`FrameChanges`](crate::layer::FrameChanges), which backends
 //! [consume](crate::backend::Presenter::apply) to apply incremental updates.
 
-use understory_dirty::Channel;
+use invalidation::Channel;
 
 /// Transform or hidden flag changed — requires world transform and effective
 /// hidden recomputation for descendants.

@@ -54,8 +54,8 @@ repository = "https://github.com/forest-rs/subduction"
 [workspace.dependencies]
 subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
+invalidation = "0.1.0"
 kurbo = { version = "0.13", default-features = false, features = ["libm"] }
-understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "e66fecdc521b57b76bb3b28ddc70ce3944926664" }
 wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"

@@ -5,8 +5,8 @@
 
 use alloc::vec::Vec;
 
+use invalidation::{CycleHandling, EagerPolicy, InvalidationTracker};
 use kurbo::Size;
-use understory_dirty::{CycleHandling, DirtyTracker, EagerPolicy};
 
 use crate::transform::Transform3d;
 
@@ -58,7 +58,7 @@ pub struct LayerStore {
     pub(crate) len: u32,
 
     // -- Dirty tracking --
-    pub(crate) dirty: DirtyTracker<u32>,
+    pub(crate) dirty: InvalidationTracker<u32>,
 
     // -- Traversal cache --
     pub(crate) traversal_order: Vec<u32>,
@@ -96,7 +96,7 @@ impl LayerStore {
             generation: Vec::new(),
             free_list: Vec::new(),
             len: 0,
-            dirty: DirtyTracker::with_cycle_handling(CycleHandling::Error),
+            dirty: InvalidationTracker::with_cycle_handling(CycleHandling::Error),
             traversal_order: Vec::new(),
             traversal_dirty: true,
             pending_added: Vec::new(),

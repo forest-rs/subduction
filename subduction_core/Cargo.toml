@@ -21,4 +21,4 @@ workspace = true
 
 [dependencies]
 kurbo = { workspace = true }
-understory_dirty = { workspace = true }
+invalidation = { workspace = true }

@@ -47,8 +47,14 @@ pub fn now() -> HostTime {
 /// out-of-range values, in which case the caller should keep the current
 /// clock and degrade gracefully.
 pub(crate) fn clock_from_presentation_clk_id(clk_id: u32) -> Option<Clock> {
-    let raw: i32 = i32::try_from(clk_id).ok()?;
-    let posix_id = PosixClockId::try_from(raw).ok()?;
+    // `PosixClockId` is `u32` on Apple platforms, `i32` elsewhere
+    #[cfg(not(target_vendor = "apple"))]
+    let posix_id = {
+        let raw = i32::try_from(clk_id).ok()?;
+        PosixClockId::try_from(raw).ok()?
+    };
+    #[cfg(target_vendor = "apple")]
+    let posix_id = PosixClockId::try_from(clk_id).ok()?;
     Some(Clock::Presentation(posix_id))
 }
 
@@ -127,6 +133,7 @@ mod tests {
         assert!(now_for_clock(clock).ticks() > 0);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn clock_from_known_monotonic_raw_id() {
         let clk_id = PosixClockId::MonotonicRaw as u32;

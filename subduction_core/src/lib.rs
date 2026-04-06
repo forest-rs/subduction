@@ -32,7 +32,7 @@
 //! Properties (transform, opacity, clip, content) are set by the caller;
 //! world transforms and effective opacities are computed by evaluation.
 //!
-//! **[`dirty`]** — Multi-channel dirty tracking via `understory_dirty`.
+//! **[`dirty`]** — Multi-channel dirty tracking via `invalidation`.
 //! Property mutations automatically mark the appropriate channel. TRANSFORM
 //! and OPACITY propagate to descendants; CLIP and CONTENT are local-only;
 //! TOPOLOGY triggers a traversal rebuild.

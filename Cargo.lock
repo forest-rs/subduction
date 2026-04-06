@@ -627,6 +627,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "invalidation"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "802752dcc4e541091165438496b1efb4086dddf3ae787950f3451e16d6649f97"
+dependencies = [
+ "hashbrown 0.16.1",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1844,8 +1853,8 @@ dependencies = [
 name = "subduction_core"
 version = "0.0.1"
 dependencies = [
+ "invalidation",
  "kurbo",
- "understory_dirty",
 ]
 
 [[package]]
@@ -2014,14 +2023,6 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
-
-[[package]]
-name = "understory_dirty"
-version = "0.1.0"
-source = "git+https://github.com/endoli/understory.git?rev=e66fecdc521b57b76bb3b28ddc70ce3944926664#e66fecdc521b57b76bb3b28ddc70ce3944926664"
-dependencies = [
- "hashbrown 0.16.1",
-]
 
 [[package]]
 name = "unicode-ident"

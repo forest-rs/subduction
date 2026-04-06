@@ -5,8 +5,8 @@
 
 use alloc::vec::Vec;
 
-use kurbo::{Rect, Size};
 use invalidation::{CycleHandling, EagerPolicy, InvalidationTracker};
+use kurbo::{Rect, Size};
 
 use crate::transform::Transform3d;
 

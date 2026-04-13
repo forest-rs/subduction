@@ -249,12 +249,20 @@ impl Scheduler {
         }
 
         // Adapt pipeline depth according to degradation policy.
+        //
+        // `missed_deadline` is the strong signal: the backend believes it can
+        // classify the frame as a real hit or miss.
+        // `pacing_overrun` is weaker: it only says we ran past a pacing
+        // boundary. We still use it, but more conservatively, so pacing-only
+        // backends can apply pressure without pretending they know actual
+        // presentation truth.
         match self.config.degradation_policy {
             DegradationPolicy::Adaptive {
                 miss_threshold,
                 recovery_threshold,
             } => match feedback.missed_deadline {
                 Some(true) => {
+                    // Real miss: react using the normal threshold.
                     self.consecutive_misses += 1;
                     self.consecutive_hits = 0;
                     if self.consecutive_misses >= miss_threshold
@@ -265,6 +273,7 @@ impl Scheduler {
                     }
                 }
                 Some(false) => {
+                    // Real hit: count toward recovery.
                     self.consecutive_hits += 1;
                     self.consecutive_misses = 0;
                     if self.consecutive_hits >= recovery_threshold
@@ -274,10 +283,28 @@ impl Scheduler {
                         self.consecutive_hits = 0;
                     }
                 }
-                None => {
-                    self.consecutive_misses = 0;
-                    self.consecutive_hits = 0;
-                }
+                None => match feedback.pacing_overrun {
+                    Some(true) => {
+                        // Pacing-only overrun is weaker than a real miss, so
+                        // require more repeated evidence before raising depth.
+                        self.consecutive_misses += 1;
+                        self.consecutive_hits = 0;
+                        let pacing_threshold = miss_threshold.saturating_mul(2).max(1);
+                        if self.consecutive_misses >= pacing_threshold
+                            && self.pipeline_depth < self.config.max_depth
+                        {
+                            self.pipeline_depth += 1;
+                            self.consecutive_misses = 0;
+                        }
+                    }
+                    Some(false) | None => {
+                        // Unknown or clear pacing feedback should not pretend
+                        // to be a hit. Reset adaptation counters and continue
+                        // using the build-cost EMA for safety-margin training.
+                        self.consecutive_misses = 0;
+                        self.consecutive_hits = 0;
+                    }
+                },
             },
             DegradationPolicy::Fixed => {}
         }
@@ -364,6 +391,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
 
         sched.observe(&feedback);
@@ -385,6 +413,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
         let hit = PresentFeedback {
             missed_deadline: Some(false),
@@ -413,6 +442,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(false),
+            pacing_overrun: None,
         };
 
         for _ in 0..9 {
@@ -436,6 +466,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
 
         for _ in 0..10 {
@@ -462,6 +493,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
 
         for _ in 0..4 {
@@ -488,6 +520,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(false),
+            pacing_overrun: None,
         };
 
         // 2 hits → decrease to 1 (min_depth).
@@ -527,9 +560,11 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
         let unknown = PresentFeedback {
             missed_deadline: None,
+            pacing_overrun: None,
             ..miss
         };
 
@@ -549,6 +584,31 @@ mod tests {
     }
 
     #[test]
+    fn pacing_only_unknown_feedback_does_not_raise_depth() {
+        let config = SchedulerConfig::web();
+        let mut sched = Scheduler::new(config);
+
+        let unknown = PresentFeedback {
+            submitted_at: HostTime(2_000),
+            build_start: HostTime(1_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: None,
+            pacing_overrun: None,
+        };
+
+        for _ in 0..8 {
+            sched.observe(&unknown);
+        }
+
+        assert_eq!(sched.pipeline_depth(), 2);
+        assert!(
+            sched.safety_margin_ticks() > 0,
+            "unknown deadline feedback should still train build-cost EMA"
+        );
+    }
+
+    #[test]
     fn depth_clamped_at_max() {
         let mut config = SchedulerConfig::macos();
         config.max_depth = 3;
@@ -565,6 +625,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: None,
         };
 
         // Many consecutive misses should not exceed max_depth.
@@ -586,6 +647,7 @@ mod tests {
             expected_present: None,
             actual_present: None,
             missed_deadline: Some(false),
+            pacing_overrun: None,
         };
 
         sched.observe(&feedback);
@@ -593,5 +655,59 @@ mod tests {
             sched.safety_margin_ticks() > 0,
             "safety margin should increase after observing build cost"
         );
+    }
+
+    #[test]
+    fn pacing_overrun_raises_depth_more_conservatively() {
+        let config = SchedulerConfig::web();
+        let mut sched = Scheduler::new(config);
+
+        let overrun = PresentFeedback {
+            submitted_at: HostTime(2_000),
+            build_start: HostTime(1_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: None,
+            pacing_overrun: Some(true),
+        };
+
+        for _ in 0..5 {
+            sched.observe(&overrun);
+        }
+        assert_eq!(sched.pipeline_depth(), 2);
+
+        sched.observe(&overrun);
+        assert_eq!(sched.pipeline_depth(), 3);
+    }
+
+    #[test]
+    fn pacing_overrun_counters_reset_on_clear_tick() {
+        let config = SchedulerConfig::web();
+        let mut sched = Scheduler::new(config);
+
+        let overrun = PresentFeedback {
+            submitted_at: HostTime(2_000),
+            build_start: HostTime(1_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: None,
+            pacing_overrun: Some(true),
+        };
+        let clear = PresentFeedback {
+            pacing_overrun: Some(false),
+            ..overrun
+        };
+
+        for _ in 0..3 {
+            sched.observe(&overrun);
+        }
+        sched.observe(&clear);
+        for _ in 0..5 {
+            sched.observe(&overrun);
+        }
+
+        assert_eq!(sched.pipeline_depth(), 2);
+        sched.observe(&overrun);
+        assert_eq!(sched.pipeline_depth(), 3);
     }
 }

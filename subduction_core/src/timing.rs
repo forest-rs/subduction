@@ -108,6 +108,17 @@ pub struct PresentHints {
 ///
 /// Fed back to the [`Scheduler`](crate::scheduler::Scheduler) so it can adapt
 /// pipeline depth and safety margins.
+///
+/// This type intentionally separates two different claims:
+///
+/// - [`PresentFeedback::missed_deadline`] answers "do we know this frame
+///   missed a real presentation deadline?"
+/// - [`PresentFeedback::pacing_overrun`] answers "did frame building run past
+///   the pacing boundary exposed by this backend?"
+///
+/// Pacing-only backends often know the second thing but not the first. Keeping
+/// those signals separate avoids laundering weak timing evidence into false
+/// deadline truth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PresentFeedback {
     /// Host time when the frame was submitted/committed.
@@ -120,21 +131,39 @@ pub struct PresentFeedback {
     pub actual_present: Option<HostTime>,
     /// Whether the commit deadline was missed, if determinable.
     pub missed_deadline: Option<bool>,
+    /// Whether frame building overran the pacing tick budget.
+    ///
+    /// This is a weaker signal than [`missed_deadline`]: it says only that the
+    /// frame was submitted after the backend's pacing boundary, not that the
+    /// compositor actually presented it late.
+    ///
+    /// [`missed_deadline`]: Self::missed_deadline
+    pub pacing_overrun: Option<bool>,
 }
 
 impl PresentFeedback {
     /// Constructs feedback from timing observations and [`PresentHints`].
     ///
-    /// Determines `missed_deadline` using a best-effort heuristic:
+    /// This derives both the strict deadline signal and the weaker pacing
+    /// signal.
+    ///
+    /// `missed_deadline` should only answer "the frame was late" when the
+    /// backend has enough information to support that claim.
+    /// `pacing_overrun` answers the weaker question "we ran long relative to
+    /// the pacing tick budget" for backends that only expose pacing.
+    ///
+    /// The derivation rules are:
     ///
     /// - If both `actual_present` and `hints.desired_present` are known, a
     ///   frame is missed when `actual_present > desired_present`.
-    /// - Otherwise, falls back to commit timing: missed when
-    ///   `submitted_at > hints.latest_commit`.
+    /// - Otherwise, if `hints.desired_present` is known, fall back to commit
+    ///   timing: missed when `submitted_at > hints.latest_commit`.
+    /// - Otherwise, the result is `None`: pacing-only backends without real
+    ///   presentation feedback do not have enough information to classify the
+    ///   frame as hit or miss honestly.
     ///
-    /// This always produces `Some(bool)` for `missed_deadline`. Callers that
-    /// need an explicit "unknown" outcome can construct the struct directly
-    /// with `missed_deadline: None`.
+    /// When `hints.desired_present` is `None`, [`PresentFeedback::pacing_overrun`]
+    /// is populated from commit timing as the weaker pacing-only signal.
     #[must_use]
     pub fn new(
         hints: &PresentHints,
@@ -143,9 +172,19 @@ impl PresentFeedback {
         actual_present: Option<HostTime>,
     ) -> Self {
         let expected_present = hints.desired_present;
+        // Pacing-only backends still expose a useful "we ran long relative to
+        // the pacing boundary" signal. Keep that distinct from real deadline
+        // truth.
+        let pacing_overrun = if expected_present.is_none() {
+            Some(submitted_at > hints.latest_commit)
+        } else {
+            None
+        };
+        // Only report deadline truth when the backend can honestly support it.
         let missed_deadline = match (actual_present, expected_present) {
             (Some(actual), Some(expected)) => Some(actual > expected),
-            _ => Some(submitted_at > hints.latest_commit),
+            (None, Some(_expected)) => Some(submitted_at > hints.latest_commit),
+            (_, None) => None,
         };
 
         Self {
@@ -154,6 +193,7 @@ impl PresentFeedback {
             expected_present,
             actual_present,
             missed_deadline,
+            pacing_overrun,
         }
     }
 }
@@ -218,6 +258,7 @@ mod tests {
         assert_eq!(fb.missed_deadline, Some(true));
         assert_eq!(fb.expected_present, Some(HostTime(2_000_000)));
         assert_eq!(fb.actual_present, Some(HostTime(2_100_000)));
+        assert_eq!(fb.pacing_overrun, None);
 
         // On time.
         let fb = PresentFeedback::new(
@@ -227,6 +268,7 @@ mod tests {
             Some(HostTime(1_999_000)),
         );
         assert_eq!(fb.missed_deadline, Some(false));
+        assert_eq!(fb.pacing_overrun, None);
     }
 
     #[test]
@@ -238,21 +280,41 @@ mod tests {
         // submitted_at > latest_commit → missed
         let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
         assert_eq!(fb.missed_deadline, Some(true));
+        assert_eq!(fb.pacing_overrun, None);
 
         // submitted_at <= latest_commit → not missed
         let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_750_000), None);
         assert_eq!(fb.missed_deadline, Some(false));
+        assert_eq!(fb.pacing_overrun, None);
     }
 
     #[test]
-    fn new_without_desired_present_uses_commit_deadline() {
+    fn new_without_desired_present_is_unknown() {
         let hints = PresentHints {
             desired_present: None,
             latest_commit: HostTime(1_000_000),
         };
         let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(1_100_000), None);
-        assert_eq!(fb.missed_deadline, Some(true));
+        assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.expected_present, None);
+        assert_eq!(fb.pacing_overrun, Some(true));
+    }
+
+    #[test]
+    fn new_with_actual_present_but_no_expected_present_is_unknown() {
+        let hints = PresentHints {
+            desired_present: None,
+            latest_commit: HostTime(1_000_000),
+        };
+        let fb = PresentFeedback::new(
+            &hints,
+            HostTime(900_000),
+            HostTime(1_100_000),
+            Some(HostTime(1_200_000)),
+        );
+        assert_eq!(fb.missed_deadline, None);
+        assert_eq!(fb.actual_present, Some(HostTime(1_200_000)));
+        assert_eq!(fb.pacing_overrun, Some(true));
     }
 
     #[test]
@@ -270,11 +332,13 @@ mod tests {
         let fb = pending.resolve(Some(HostTime(2_100_000)));
         assert_eq!(fb.missed_deadline, Some(true));
         assert_eq!(fb.actual_present, Some(HostTime(2_100_000)));
+        assert_eq!(fb.pacing_overrun, None);
 
         // Actual present on time → not missed.
         let fb = pending.resolve(Some(HostTime(1_999_000)));
         assert_eq!(fb.missed_deadline, Some(false));
         assert_eq!(fb.actual_present, Some(HostTime(1_999_000)));
+        assert_eq!(fb.pacing_overrun, None);
     }
 
     #[test]
@@ -292,5 +356,34 @@ mod tests {
         let fb = pending.resolve(None);
         assert_eq!(fb.missed_deadline, Some(false));
         assert_eq!(fb.actual_present, None);
+        assert_eq!(fb.pacing_overrun, None);
+    }
+
+    #[test]
+    fn pending_feedback_without_expected_present_stays_unknown() {
+        let pending = PendingFeedback {
+            hints: PresentHints {
+                desired_present: None,
+                latest_commit: HostTime(1_800_000),
+            },
+            build_start: HostTime(1_700_000),
+            submitted_at: HostTime(1_950_000),
+        };
+
+        let fb = pending.resolve(None);
+        assert_eq!(fb.missed_deadline, None);
+        assert_eq!(fb.actual_present, None);
+        assert_eq!(fb.pacing_overrun, Some(true));
+    }
+
+    #[test]
+    fn pacing_only_on_time_submission_reports_no_overrun() {
+        let hints = PresentHints {
+            desired_present: None,
+            latest_commit: HostTime(1_000_000),
+        };
+        let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(950_000), None);
+        assert_eq!(fb.missed_deadline, None);
+        assert_eq!(fb.pacing_overrun, Some(false));
     }
 }

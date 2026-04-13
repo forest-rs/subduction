@@ -163,6 +163,7 @@ fn main() {
             expected_present: plan.present_time,
             actual_present: plan.present_time,
             missed_deadline: Some(missed),
+            pacing_overrun: None,
         };
         scheduler.observe(&feedback);
 

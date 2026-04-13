@@ -309,7 +309,7 @@ impl ApplicationHandler for App {
 
                 for (i, &layer_id) in s.layer_ids.iter().enumerate() {
                     let surface_id = SurfaceId(i as u32);
-                    let Some(view) = s.presenter.texture_for_surface(surface_id) else {
+                    let Some(target) = s.presenter.target_for_surface(surface_id) else {
                         continue;
                     };
 
@@ -318,7 +318,7 @@ impl ApplicationHandler for App {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("fill pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view,
+                            view: target.view(),
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),

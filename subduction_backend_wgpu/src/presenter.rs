@@ -30,7 +30,6 @@ struct LayerUniforms {
 
 /// GPU state for a single layer: its texture, view, and texture bind group.
 struct LayerEntry {
-    #[expect(dead_code, reason = "kept alive so the texture view remains valid")]
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
@@ -52,6 +51,29 @@ struct UniformCache {
     bind_group: wgpu::BindGroup,
     /// Current buffer capacity in bytes.
     capacity: u64,
+}
+
+/// Borrowed render target for a presenter-owned layer texture.
+///
+/// This exposes both the underlying texture and the default texture view so
+/// host renderers can choose the API they need. Backends such as Vello render
+/// through the view, while Skia/Ganesh needs the texture handle itself.
+#[derive(Clone, Copy, Debug)]
+pub struct WgpuLayerTarget<'a> {
+    texture: &'a wgpu::Texture,
+    view: &'a wgpu::TextureView,
+}
+
+impl<'a> WgpuLayerTarget<'a> {
+    /// Returns the presenter-owned wgpu texture for this layer.
+    pub fn texture(self) -> &'a wgpu::Texture {
+        self.texture
+    }
+
+    /// Returns the default texture view for this layer.
+    pub fn view(self) -> &'a wgpu::TextureView {
+        self.view
+    }
 }
 
 /// A wgpu-based fallback compositor.
@@ -78,8 +100,8 @@ struct UniformCache {
 ///
 /// // App renders content into each layer's texture.
 /// for (surface_id, draw_fn) in &my_surfaces {
-///     if let Some(view) = presenter.texture_for_surface(*surface_id) {
-///         draw_fn(&device, &queue, view);
+///     if let Some(target) = presenter.target_for_surface(*surface_id) {
+///         draw_fn(&device, &queue, target.view());
 ///     }
 /// }
 ///
@@ -255,21 +277,24 @@ impl WgpuPresenter {
         self
     }
 
-    /// Returns the texture view for a [`SurfaceId`] so the app can render into it.
+    /// Returns the layer target for a [`SurfaceId`] so the app can render into it.
     ///
-    /// The returned view uses [`WgpuPresenter::layer_format`] and the
+    /// The returned target uses [`WgpuPresenter::layer_format`] and the
     /// corresponding texture was allocated with [`WgpuPresenter::layer_usage`].
-    pub fn texture_for_surface(&self, surface_id: SurfaceId) -> Option<&wgpu::TextureView> {
+    pub fn target_for_surface(&self, surface_id: SurfaceId) -> Option<WgpuLayerTarget<'_>> {
         let slot = self.surface_to_slot.get(&surface_id.0)?;
-        self.layer_entries.get(slot).map(|e| &e.view)
+        self.target_for_slot(*slot)
     }
 
-    /// Returns the texture view for a raw slot index.
+    /// Returns the layer target for a raw slot index.
     ///
-    /// The returned view uses [`WgpuPresenter::layer_format`] and the
+    /// The returned target uses [`WgpuPresenter::layer_format`] and the
     /// corresponding texture was allocated with [`WgpuPresenter::layer_usage`].
-    pub fn texture_for_slot(&self, idx: u32) -> Option<&wgpu::TextureView> {
-        self.layer_entries.get(&idx).map(|e| &e.view)
+    pub fn target_for_slot(&self, idx: u32) -> Option<WgpuLayerTarget<'_>> {
+        self.layer_entries.get(&idx).map(|entry| WgpuLayerTarget {
+            texture: &entry.texture,
+            view: &entry.view,
+        })
     }
 
     /// Returns the texture format used for presenter-owned layer textures.

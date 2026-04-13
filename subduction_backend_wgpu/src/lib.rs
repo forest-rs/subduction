@@ -16,4 +16,4 @@ mod pipeline;
 mod presenter;
 mod shader;
 
-pub use presenter::{WgpuPresenter, WgpuPresenterConfig};
+pub use presenter::{WgpuLayerTarget, WgpuPresenter, WgpuPresenterConfig};

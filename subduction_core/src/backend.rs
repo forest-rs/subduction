@@ -23,7 +23,9 @@
 //!   changes to a platform-native tree (e.g. `CALayer`, DOM elements).
 //!
 //! - **Feedback** — Uses [`PresentFeedback::new`] to report timing
-//!   observations back to the [`Scheduler`](crate::scheduler::Scheduler).
+//!   observations back to the [`Scheduler`](crate::scheduler::Scheduler),
+//!   preserving `missed_deadline: None` when the backend lacks enough timing
+//!   information to classify a frame honestly.
 //!
 //! # Crate boundaries
 //!

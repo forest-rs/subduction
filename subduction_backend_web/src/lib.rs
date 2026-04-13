@@ -50,7 +50,7 @@ pub fn timebase() -> Timebase {
 ///
 /// The web provides no predicted present time, so `desired_present` is always
 /// `None` and `latest_commit` is simply the tick's `now`. The safety margin is
-/// accepted for API compatibility but unused. Pipeline depth is always 1.
+/// accepted for API compatibility but unused.
 #[must_use]
 pub fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> PresentHints {
     PresentHints {

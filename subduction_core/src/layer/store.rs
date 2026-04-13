@@ -10,6 +10,7 @@ use kurbo::{Rect, Size};
 
 use crate::transform::Transform3d;
 
+use super::blend::BlendMode;
 use super::clip::ClipShape;
 use super::id::{INVALID, LayerId, SurfaceId};
 use super::traverse::Children;
@@ -47,6 +48,7 @@ pub struct LayerStore {
     pub(crate) flags: Vec<LayerFlags>,
     pub(crate) bounds: Vec<Size>,
     pub(crate) hit_rect: Vec<Option<Rect>>,
+    pub(crate) blend_mode: Vec<BlendMode>,
 
     // -- Computed properties (written by evaluate) --
     pub(crate) world_transform: Vec<Transform3d>,
@@ -92,6 +94,7 @@ impl LayerStore {
             flags: Vec::new(),
             bounds: Vec::new(),
             hit_rect: Vec::new(),
+            blend_mode: Vec::new(),
             world_transform: Vec::new(),
             effective_opacity: Vec::new(),
             effective_hidden: Vec::new(),
@@ -127,6 +130,7 @@ impl LayerStore {
             self.flags[idx as usize] = LayerFlags::default();
             self.bounds[idx as usize] = Size::ZERO;
             self.hit_rect[idx as usize] = None;
+            self.blend_mode[idx as usize] = BlendMode::default();
             self.world_transform[idx as usize] = Transform3d::IDENTITY;
             self.effective_opacity[idx as usize] = 1.0;
             self.effective_hidden[idx as usize] = false;
@@ -146,6 +150,7 @@ impl LayerStore {
             self.flags.push(LayerFlags::default());
             self.bounds.push(Size::ZERO);
             self.hit_rect.push(None);
+            self.blend_mode.push(BlendMode::default());
             self.world_transform.push(Transform3d::IDENTITY);
             self.effective_opacity.push(1.0);
             self.effective_hidden.push(false);
@@ -444,6 +449,13 @@ impl LayerStore {
         self.hit_rect[id.idx as usize]
     }
 
+    /// Returns the blend mode of a layer.
+    #[must_use]
+    pub fn blend_mode(&self, id: LayerId) -> BlendMode {
+        self.validate(id);
+        self.blend_mode[id.idx as usize]
+    }
+
     /// Returns the computed world transform of a layer.
     ///
     /// Only valid after [`evaluate`](Self::evaluate) has been called.
@@ -531,6 +543,13 @@ impl LayerStore {
     pub fn set_hit_rect(&mut self, id: LayerId, hit_rect: Option<Rect>) {
         self.validate(id);
         self.hit_rect[id.idx as usize] = hit_rect;
+    }
+
+    /// Sets the blend mode of a layer.
+    pub fn set_blend_mode(&mut self, id: LayerId, mode: BlendMode) {
+        self.validate(id);
+        self.blend_mode[id.idx as usize] = mode;
+        self.dirty.mark(id.idx, dirty::BLEND_MODE);
     }
 
     // -- Raw-index accessors for backends --
@@ -687,6 +706,21 @@ impl LayerStore {
             self.len
         );
         self.hit_rect[idx as usize]
+    }
+
+    /// Returns the blend mode at raw slot `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.len`.
+    #[must_use]
+    pub fn blend_mode_at(&self, idx: u32) -> BlendMode {
+        assert!(
+            idx < self.len,
+            "slot index {idx} out of range (len {})",
+            self.len
+        );
+        self.blend_mode[idx as usize]
     }
 
     /// Returns the raw parent slot index at raw slot `idx`, or `None` if
@@ -1063,5 +1097,49 @@ mod tests {
         let id = store.create_layer();
         store.set_opacity(id, 0.42);
         assert!((store.local_opacity_at(id.idx) - 0.42).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn blend_mode_default_is_source_over() {
+        use crate::layer::BlendMode;
+
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        assert_eq!(store.blend_mode(id), BlendMode::SourceOver);
+        assert_eq!(store.blend_mode_at(id.idx), BlendMode::SourceOver);
+    }
+
+    #[test]
+    fn set_blend_mode_marks_dirty() {
+        use crate::layer::BlendMode;
+
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        let _ = store.evaluate();
+
+        store.set_blend_mode(id, BlendMode::Multiply);
+        let changes = store.evaluate();
+        assert!(
+            changes.blend_modes.contains(&id.idx),
+            "blend_mode channel should contain the layer"
+        );
+    }
+
+    #[test]
+    fn blend_mode_reset_on_slot_reuse() {
+        use crate::layer::BlendMode;
+
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        store.set_blend_mode(id, BlendMode::Multiply);
+        store.destroy_layer(id);
+
+        let id2 = store.create_layer();
+        assert_eq!(id.idx, id2.idx, "should reuse the same slot");
+        assert_eq!(
+            store.blend_mode(id2),
+            BlendMode::SourceOver,
+            "blend mode should be reset on reuse"
+        );
     }
 }

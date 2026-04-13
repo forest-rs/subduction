@@ -29,8 +29,8 @@
 //! ```
 //!
 //! **[`layer`]** — Struct-of-arrays layer tree with generational handles.
-//! Properties (transform, opacity, clip, content) are set by the caller;
-//! world transforms and effective opacities are computed by evaluation.
+//! Properties (transform, opacity, clip, content, blend mode) are set by the
+//! caller; world transforms and effective opacities are computed by evaluation.
 //!
 //! **[`dirty`]** — Multi-channel dirty tracking via `invalidation`.
 //! Property mutations automatically mark the appropriate channel. TRANSFORM

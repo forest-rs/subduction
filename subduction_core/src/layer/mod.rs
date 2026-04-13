@@ -11,7 +11,7 @@
 //! - **Local properties** set by the caller: [`transform`](LayerStore::set_transform),
 //!   [`opacity`](LayerStore::set_opacity), [`clip`](LayerStore::set_clip),
 //!   [`content`](LayerStore::set_content), [`bounds`](LayerStore::set_bounds),
-//!   and [`flags`](LayerStore::set_flags).
+//!   [`blend_mode`](LayerStore::set_blend_mode), and [`flags`](LayerStore::set_flags).
 //! - **Computed properties** produced by [`evaluate`](LayerStore::evaluate):
 //!   `world_transform` (product of ancestor local transforms) and
 //!   `effective_opacity` (product of ancestor local opacities).
@@ -26,10 +26,11 @@
 //!
 //! - **TRANSFORM** / **OPACITY** — propagate to all descendants, since
 //!   world transforms and effective opacities are inherited.
-//! - **CLIP** / **CONTENT** / **BOUNDS** — local-only; only the modified layer is marked.
+//! - **CLIP** / **CONTENT** / **BOUNDS** / **`BLEND_MODE`** — local-only; only the modified layer is marked.
 //! - **TOPOLOGY** — structural changes (add/remove child, create/destroy
 //!   layer) that trigger a traversal-order rebuild.
 
+mod blend;
 mod clip;
 mod evaluate;
 mod hit_test;
@@ -37,6 +38,7 @@ mod id;
 mod store;
 mod traverse;
 
+pub use blend::BlendMode;
 pub use clip::ClipShape;
 pub use evaluate::FrameChanges;
 pub use hit_test::HitEntry;

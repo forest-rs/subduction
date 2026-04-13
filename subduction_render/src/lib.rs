@@ -22,5 +22,6 @@ mod plan;
 mod resource;
 
 pub use damage::DamageRegion;
-pub use plan::{BlendMode, RenderItem, RenderPlan};
+pub use plan::{RenderItem, RenderPlan};
 pub use resource::ResourceKey;
+pub use subduction_core::layer::BlendMode;

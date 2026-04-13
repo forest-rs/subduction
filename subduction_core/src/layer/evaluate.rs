@@ -10,8 +10,9 @@
 //!    `effective_hidden` as `parent_effective_hidden || flags.hidden`.
 //! 2. **OPACITY** — Drain dirty indices, recompute each layer's
 //!    `effective_opacity` as `parent_effective * local_opacity`.
-//! 3. **CLIP** / **CONTENT** — Drain dirty indices (no recomputation;
-//!    backends read the current values directly from the store).
+//! 3. **CLIP** / **CONTENT** / **BOUNDS** / **`BLEND_MODE`** — Drain dirty
+//!    indices (no recomputation; backends read the current values directly
+//!    from the store).
 //! 4. **TOPOLOGY** — Drain and discard (the traversal order was already
 //!    rebuilt at the start of evaluation if needed).
 //!
@@ -45,6 +46,8 @@ pub struct FrameChanges {
     pub content: Vec<u32>,
     /// Layers whose bounds changed.
     pub bounds: Vec<u32>,
+    /// Layers whose blend mode changed.
+    pub blend_modes: Vec<u32>,
     /// Layers that transitioned from visible to effectively hidden.
     pub hidden: Vec<u32>,
     /// Layers that transitioned from effectively hidden to visible.
@@ -65,6 +68,7 @@ impl FrameChanges {
         self.clips.clear();
         self.content.clear();
         self.bounds.clear();
+        self.blend_modes.clear();
         self.hidden.clear();
         self.unhidden.clear();
         self.added.clear();
@@ -177,6 +181,14 @@ impl LayerStore {
             .run()
             .collect();
 
+        // Drain BLEND_MODE channel — no recomputation, just collect.
+        changes.blend_modes = self
+            .dirty
+            .drain(dirty::BLEND_MODE)
+            .deterministic()
+            .run()
+            .collect();
+
         // Drain TOPOLOGY channel (just consume, changes are structural).
         let _: Vec<u32> = self
             .dirty
@@ -279,6 +291,7 @@ mod tests {
         assert!(changes.clips.is_empty());
         assert!(changes.content.is_empty());
         assert!(changes.bounds.is_empty());
+        assert!(changes.blend_modes.is_empty());
         assert!(changes.added.is_empty());
         assert!(changes.removed.is_empty());
         assert!(!changes.topology_changed);

@@ -5,20 +5,8 @@
 
 use alloc::vec::Vec;
 
-use subduction_core::layer::{ClipShape, LayerId, SurfaceId};
+use subduction_core::layer::{BlendMode, ClipShape, LayerId, SurfaceId};
 use subduction_core::output::OutputId;
-
-/// Blend mode for compositing a render item.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum BlendMode {
-    /// Standard source-over alpha compositing.
-    #[default]
-    SourceOver,
-    /// Multiply blend.
-    Multiply,
-    /// Screen blend.
-    Screen,
-}
 
 /// A single draw command in the render plan.
 ///

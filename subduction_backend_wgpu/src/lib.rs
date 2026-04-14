@@ -10,10 +10,12 @@
 //! The output surface format can differ from the format used for presenter-
 //! owned layer textures.
 //!
-//! See [`WgpuPresenter`] for usage.
+//! [`LayerRoot`] describes the final compositing target, while
+//! [`WgpuPresenter`] owns per-layer textures and composites into that root.
 
 mod pipeline;
 mod presenter;
 mod shader;
 
-pub use presenter::{WgpuLayerTarget, WgpuPresenter, WgpuPresenterConfig};
+pub use presenter::{LayerRoot, WgpuLayerTarget, WgpuPresenter, WgpuPresenterConfig};
+pub use subduction_core::backend::Presenter;

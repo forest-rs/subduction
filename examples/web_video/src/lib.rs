@@ -31,7 +31,7 @@ use core::cell::RefCell;
 use core::f64::consts::TAU;
 
 use subduction_backend_web::RafLoop;
-use subduction_backend_web::{DomPresenter, Presenter as _};
+use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::clock::AffineClock;
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::output::OutputId;
@@ -293,7 +293,8 @@ pub fn main() -> Result<(), JsValue> {
     store.add_child(root, tooltip_id);
 
     let initial = store.evaluate();
-    let mut presenter = DomPresenter::new(overlay_host);
+    let root = LayerRoot::new(overlay_host);
+    let mut presenter = DomPresenter::new(root);
     presenter.apply(&store, &initial);
 
     if let Some(sweep_el) = presenter.get_element(sweep_id.index()) {

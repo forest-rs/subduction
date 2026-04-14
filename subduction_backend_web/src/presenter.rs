@@ -10,48 +10,125 @@
 //! [`FrameChanges`]: subduction_core::layer::FrameChanges
 
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use subduction_core::backend::Presenter;
 use subduction_core::layer::{ClipShape, FrameChanges, LayerStore};
+use subduction_core::output::{Backdrop, Color};
 use subduction_core::transform::Transform3d;
 use wasm_bindgen::JsCast as _;
 use web_sys::HtmlElement;
 
+/// Root DOM container for a presented scene.
+pub struct LayerRoot {
+    container: HtmlElement,
+    backdrop: Backdrop,
+}
+
+impl core::fmt::Debug for LayerRoot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LayerRoot")
+            .field("container", &"HtmlElement")
+            .field("backdrop", &self.backdrop)
+            .finish()
+    }
+}
+
+impl LayerRoot {
+    /// Creates a new layer root backed by `container`.
+    #[must_use]
+    pub fn new(container: HtmlElement) -> Self {
+        let root = Self {
+            container,
+            backdrop: Backdrop::None,
+        };
+        apply_root_backdrop(&root.container, root.backdrop);
+        root
+    }
+
+    /// Returns this root configured with the given backdrop.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Backdrop) -> Self {
+        self.set_backdrop(backdrop);
+        self
+    }
+
+    /// Returns this root configured with a solid backdrop color.
+    #[must_use]
+    pub fn with_backdrop_color(mut self, color: Color) -> Self {
+        self.set_backdrop_color(color);
+        self
+    }
+
+    /// Returns the underlying container element.
+    #[must_use]
+    pub fn container(&self) -> &HtmlElement {
+        &self.container
+    }
+
+    /// Returns the configured backdrop policy.
+    #[must_use]
+    pub fn backdrop(&self) -> Backdrop {
+        self.backdrop
+    }
+
+    /// Updates the backdrop policy.
+    pub fn set_backdrop(&mut self, backdrop: Backdrop) {
+        self.backdrop = backdrop;
+        apply_root_backdrop(&self.container, backdrop);
+    }
+
+    /// Updates the backdrop to a solid color.
+    pub fn set_backdrop_color(&mut self, color: Color) {
+        self.set_backdrop(Backdrop::Color(color));
+    }
+
+    /// Removes any explicit backdrop.
+    pub fn remove_backdrop(&mut self) {
+        self.set_backdrop(Backdrop::None);
+    }
+}
+
 /// Maps a [`LayerStore`] to live DOM elements, applying incremental updates
 /// from [`FrameChanges`].
 ///
-/// The presenter owns a container `HtmlElement` to which child `<div>` elements
-/// are added and removed. Call [`apply`](Self::apply) each frame with the
-/// latest `FrameChanges` to synchronize the DOM with the store.
+/// The presenter owns a [`LayerRoot`] whose container receives child `<div>`
+/// elements. Call [`apply`](Self::apply) each frame with the latest
+/// `FrameChanges` to synchronize the DOM with the store.
 pub struct DomPresenter {
-    container: HtmlElement,
+    root: LayerRoot,
     elements: Vec<Option<HtmlElement>>,
 }
 
 impl core::fmt::Debug for DomPresenter {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DomPresenter")
-            .field("container", &"HtmlElement")
+            .field("root", &self.root)
             .field("elements_len", &self.elements.len())
             .finish()
     }
 }
 
 impl DomPresenter {
-    /// Creates a new presenter that manages child elements of `container`.
+    /// Creates a new presenter that manages child elements of `root`.
     #[must_use]
-    pub fn new(container: HtmlElement) -> Self {
+    pub fn new(root: LayerRoot) -> Self {
         Self {
-            container,
+            root,
             elements: Vec::new(),
         }
     }
 
-    /// Returns a reference to the container element.
+    /// Returns the scene root.
     #[must_use]
-    pub fn container(&self) -> &HtmlElement {
-        &self.container
+    pub fn root(&self) -> &LayerRoot {
+        &self.root
+    }
+
+    /// Returns a mutable reference to the scene root.
+    pub fn root_mut(&mut self) -> &mut LayerRoot {
+        &mut self.root
     }
 
     /// Returns the DOM element for the given slot index, if it exists.
@@ -89,7 +166,11 @@ impl Presenter for DomPresenter {
 
         // 2. Additions
         for &idx in &changes.added {
-            let doc = self.container.owner_document().expect("no owner document");
+            let doc = self
+                .root
+                .container()
+                .owner_document()
+                .expect("no owner document");
             let el: HtmlElement = doc
                 .create_element("div")
                 .expect("create_element failed")
@@ -102,7 +183,7 @@ impl Presenter for DomPresenter {
             if store.effective_hidden_at(idx) {
                 let _ = s.set_property("display", "none");
             }
-            let _ = self.container.append_child(&el);
+            let _ = self.root.container().append_child(&el);
             self.put_element(idx, el);
         }
 
@@ -162,9 +243,36 @@ impl Presenter for DomPresenter {
             for &idx in store.traversal_order() {
                 if let Some(el) = self.get_element(idx) {
                     // DOM re-append moves an existing child, reordering it.
-                    let _ = self.container.append_child(el);
+                    let _ = self.root.container().append_child(el);
                 }
             }
+        }
+    }
+}
+
+/// Applies layer-root backdrop policy to the presenter container.
+fn apply_root_backdrop(container: &HtmlElement, backdrop: Backdrop) {
+    let container_style = container.style();
+    match backdrop_css_value(backdrop) {
+        None => {
+            let _ = container_style.remove_property("background");
+        }
+        Some(background) => {
+            let _ = container_style.set_property("background", &background);
+        }
+    }
+}
+
+fn backdrop_css_value(backdrop: Backdrop) -> Option<String> {
+    match backdrop {
+        Backdrop::None => None,
+        Backdrop::Color(color) => {
+            let rgba = color.to_rgba8();
+            let alpha = f64::from(rgba.a) / 255.0;
+            Some(format!(
+                "rgba({}, {}, {}, {:.6})",
+                rgba.r, rgba.g, rgba.b, alpha
+            ))
         }
     }
 }
@@ -229,5 +337,25 @@ fn apply_css_clip(el: &HtmlElement, clip: Option<ClipShape>) {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backdrop_none_has_no_css_background() {
+        assert_eq!(backdrop_css_value(Backdrop::None), None);
+    }
+
+    #[test]
+    fn backdrop_color_serializes_to_css_rgba() {
+        let backdrop = Backdrop::Color(Color::from_rgba8(0x1f, 0x1f, 0x26, 0xff));
+
+        assert_eq!(
+            backdrop_css_value(backdrop),
+            Some(String::from("rgba(31, 31, 38, 1.000000)"))
+        );
     }
 }

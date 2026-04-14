@@ -32,10 +32,11 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Document, HtmlElement};
 
 use subduction_backend_web::DomPresenter;
+use subduction_backend_web::LayerRoot;
 use subduction_backend_web::Presenter as _;
 use subduction_backend_web::RafLoop;
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::output::OutputId;
+use subduction_core::output::{Color, OutputId};
 use subduction_core::scheduler::{Scheduler, SchedulerConfig};
 use subduction_core::time::Duration;
 use subduction_core::timing::{FrameTick, PresentFeedback};
@@ -118,7 +119,9 @@ pub fn main() -> Result<(), JsValue> {
 
     // Initial evaluate.
     let initial = store.evaluate();
-    let mut presenter = DomPresenter::new(container.clone());
+    let backdrop_color = Color::from_rgba8(0x1a, 0x1a, 0x24, 0xff);
+    let root = LayerRoot::new(container.clone()).with_backdrop_color(backdrop_color);
+    let mut presenter = DomPresenter::new(root);
     presenter.apply(&store, &initial);
 
     // --- Style child layers ---
@@ -192,7 +195,6 @@ fn create_container(doc: &Document) -> Result<HtmlElement, JsValue> {
     s.set_property("height", &format!("{CONTAINER_H}px"))?;
     s.set_property("position", "relative")?;
     s.set_property("overflow", "hidden")?;
-    s.set_property("background", "#1a1a24")?;
     s.set_property("border-radius", "16px")?;
     s.set_property("box-shadow", "0 8px 32px rgba(0,0,0,0.5)")?;
     Ok(el)

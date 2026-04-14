@@ -6,6 +6,7 @@
 //! This crate provides composable building blocks for driving a subduction
 //! layer tree on Apple platforms (macOS, iOS, tvOS, visionOS):
 //!
+//! - [`LayerRoot`]: root `CALayer` container for a scene
 //! - [`DisplayLink`]: Tick source (`CADisplayLink` or legacy `CVDisplayLink`)
 //! - [`LayerPresenter`]: `CALayer` tree presenter
 //! - [`MetalLayerPresenter`]: `CAMetalLayer` presenter
@@ -32,7 +33,7 @@ mod threading;
 #[cfg(feature = "ca-display-link")]
 mod ca_display_link;
 
-pub use calayer::LayerPresenter;
+pub use calayer::{LayerPresenter, LayerRoot};
 pub use cametal::MetalLayerPresenter;
 pub use subduction_core::backend::Presenter;
 

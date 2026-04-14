@@ -17,6 +17,7 @@ workspace = true
 subduction_core = { workspace = true, features = ["std"] }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
+color = { workspace = true }
 
 [dev-dependencies]
 kurbo = { workspace = true }

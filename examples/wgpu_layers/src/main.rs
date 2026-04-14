@@ -17,9 +17,9 @@
 
 use std::sync::Arc;
 
-use subduction_backend_wgpu::WgpuPresenter;
-use subduction_core::backend::Presenter as _;
+use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter};
 use subduction_core::layer::{LayerId, LayerStore, SurfaceId};
+use subduction_core::output::Color;
 use subduction_core::transform::Transform3d;
 
 use kurbo::Size;
@@ -215,13 +215,11 @@ impl ApplicationHandler for App {
         }
 
         // Create the presenter and do the initial apply.
-        let presenter = WgpuPresenter::new(
-            device,
-            queue,
-            output_format,
-            (WINDOW_W, WINDOW_H),
-            (LAYER_SIZE, LAYER_SIZE),
-        );
+        // Define the final compositing root, then build the presenter against it.
+        let backdrop_color = Color::from_rgba8(0x1e, 0x1e, 0x2e, 0xff);
+        let root =
+            LayerRoot::new(output_format, (WINDOW_W, WINDOW_H)).with_backdrop_color(backdrop_color);
+        let presenter = WgpuPresenter::new(device, queue, root, (LAYER_SIZE, LAYER_SIZE));
 
         let changes = store.evaluate();
         let mut presenter = presenter;
@@ -261,7 +259,8 @@ impl ApplicationHandler for App {
                 s.surface_config.height = new_size.height.max(1);
                 s.surface.configure(s.presenter.device(), &s.surface_config);
                 s.presenter
-                    .resize_output(s.surface_config.width, s.surface_config.height);
+                    .root_mut()
+                    .resize(s.surface_config.width, s.surface_config.height);
             }
             WindowEvent::RedrawRequested => {
                 s.frame_count += 1;

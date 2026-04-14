@@ -27,10 +27,10 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::{CALayer, CAMetalLayer};
 use subduction_backend_apple::{
-    DisplayLink, LayerPresenter, Presenter as _, compute_present_hints,
+    DisplayLink, LayerPresenter, LayerRoot, Presenter as _, compute_present_hints,
 };
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::output::OutputId;
+use subduction_core::output::{Color, OutputId};
 use subduction_core::scheduler::{Scheduler, SchedulerConfig};
 use subduction_core::time::Duration;
 use subduction_core::timing::{FrameTick, PendingFeedback};
@@ -541,14 +541,15 @@ fn setup_window(mtm: MainThreadMarker) {
     content_view.setWantsLayer(true);
 
     let root_layer = content_view.layer().expect("content view has no layer");
-    set_layer_bg_color(&root_layer, 0.12, 0.12, 0.15, 1.0);
 
     // --- Build the subduction layer tree ---
     let mut store = LayerStore::new();
     let root_id = store.create_layer();
 
     let mut sub_ids: Vec<LayerId> = Vec::new();
-    let mut presenter = LayerPresenter::new(root_layer);
+    let backdrop_color = Color::from_rgba8(0x1f, 0x1f, 0x26, 0xff);
+    let root = LayerRoot::new(root_layer).with_backdrop_color(backdrop_color);
+    let mut presenter = LayerPresenter::new(root);
 
     for _ in 0..NUM_LAYERS {
         let layer_id = store.create_layer();

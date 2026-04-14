@@ -42,9 +42,14 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
   "CATransaction",
   "CATransform3D",
   "objc2-core-foundation",
+  "objc2-core-graphics",
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
   "CFCGTypes",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+  "CGColor",
+  "objc2",
 ] }
 
 # cv-display-link feature deps (legacy macOS only)

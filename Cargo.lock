@@ -246,6 +246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "color"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a18ef4657441fb193b65f34dc39b3781f0dfec23d3bd94d0eeb4e88cde421edb"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1804,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -1826,6 +1836,7 @@ name = "subduction_backend_wgpu"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "color",
  "kurbo",
  "subduction_core",
  "wgpu",
@@ -1853,6 +1864,7 @@ dependencies = [
 name = "subduction_core"
 version = "0.0.1"
 dependencies = [
+ "color",
  "invalidation",
  "kurbo",
 ]

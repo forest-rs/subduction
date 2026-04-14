@@ -6,6 +6,7 @@
 //! This crate provides integration with browser APIs:
 //!
 //! - [`RafLoop`]: `requestAnimationFrame` tick source (pacing-only timing)
+//! - [`LayerRoot`]: root DOM container for a scene
 //! - [`DomPresenter`]: DOM element management
 
 #![no_std]
@@ -15,7 +16,7 @@ extern crate alloc;
 mod presenter;
 mod raf;
 
-pub use presenter::DomPresenter;
+pub use presenter::{DomPresenter, LayerRoot};
 pub use raf::RafLoop;
 pub use subduction_core::backend::Presenter;
 

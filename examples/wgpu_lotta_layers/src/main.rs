@@ -18,9 +18,9 @@
 use std::sync::Arc;
 
 use lotta_layers_common::LAYER_SIZE;
-use subduction_backend_wgpu::WgpuPresenter;
-use subduction_core::backend::Presenter as _;
+use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter};
 use subduction_core::layer::{LayerId, LayerStore, SurfaceId};
+use subduction_core::output::Color;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -225,13 +225,10 @@ impl ApplicationHandler for App {
 
         // Layer textures are LAYER_SIZE × LAYER_SIZE pixels.
         let layer_px = LAYER_SIZE as u32;
-        let mut presenter = WgpuPresenter::new(
-            device,
-            queue,
-            output_format,
-            (WINDOW_W, WINDOW_H),
-            (layer_px, layer_px),
-        );
+        let backdrop_color = Color::from_rgba8(0x1a, 0x1a, 0x24, 0xff);
+        let root =
+            LayerRoot::new(output_format, (WINDOW_W, WINDOW_H)).with_backdrop_color(backdrop_color);
+        let mut presenter = WgpuPresenter::new(device, queue, root, (layer_px, layer_px));
 
         let changes = store.evaluate();
         presenter.apply(&store, &changes);
@@ -272,7 +269,8 @@ impl ApplicationHandler for App {
                 s.surface_config.height = new_size.height.max(1);
                 s.surface.configure(s.presenter.device(), &s.surface_config);
                 s.presenter
-                    .resize_output(s.surface_config.width, s.surface_config.height);
+                    .root_mut()
+                    .resize(s.surface_config.width, s.surface_config.height);
             }
             WindowEvent::RedrawRequested => {
                 s.frame_count += 1;

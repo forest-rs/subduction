@@ -16,7 +16,9 @@ use core::fmt;
 
 use objc2::rc::Retained;
 use objc2_core_foundation::CGSize;
+use objc2_core_graphics::CGColor;
 use objc2_quartz_core::CAMetalLayer;
+use subduction_core::output::{Backdrop, Color};
 
 /// Manages a `CAMetalLayer` for GPU-rendered content.
 ///
@@ -82,6 +84,33 @@ impl MetalLayerPresenter {
     pub fn as_raw(&self) -> *mut c_void {
         let ptr: *const CAMetalLayer = &*self.metal_layer;
         ptr as *mut c_void
+    }
+
+    /// Updates the backdrop policy of the underlying metal layer.
+    pub fn set_backdrop(&mut self, backdrop: Backdrop) {
+        match backdrop {
+            Backdrop::None => self.metal_layer.setBackgroundColor(None),
+            Backdrop::Color(color) => {
+                let [r, g, b, a] = color.components;
+                let cg_color = CGColor::new_generic_rgb(
+                    f64::from(r),
+                    f64::from(g),
+                    f64::from(b),
+                    f64::from(a),
+                );
+                self.metal_layer.setBackgroundColor(Some(&cg_color));
+            }
+        }
+    }
+
+    /// Updates the backdrop to a solid color.
+    pub fn set_backdrop_color(&mut self, color: Color) {
+        self.set_backdrop(Backdrop::Color(color));
+    }
+
+    /// Removes any explicit backdrop.
+    pub fn remove_backdrop(&mut self) {
+        self.set_backdrop(Backdrop::None);
     }
 }
 

@@ -51,6 +51,9 @@
 //!
 //! **[`transform`]** — 3D affine transform type for layer positioning.
 //!
+//! **[`output`]** — Output identification plus layer-root presentation policy
+//! such as the backdrop style.
+//!
 //! **[`trace`]** — [`TraceSink`](trace::TraceSink) trait and event types for
 //! frame-loop instrumentation, with zero-overhead [`Tracer`](trace::Tracer)
 //! wrapper.

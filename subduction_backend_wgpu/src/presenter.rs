@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 
+use color::LinearSrgb;
 use subduction_core::backend::Presenter;
 use subduction_core::layer::{ClipShape, FrameChanges, LayerStore, SurfaceId};
+use subduction_core::output::{Backdrop, Color};
 use subduction_core::transform::Transform3d;
 
 use crate::pipeline::CompositorPipeline;
@@ -76,6 +78,78 @@ impl<'a> WgpuLayerTarget<'a> {
     }
 }
 
+/// Final compositing root for a wgpu-presented scene.
+#[derive(Debug, PartialEq)]
+pub struct LayerRoot {
+    output_format: wgpu::TextureFormat,
+    size: (u32, u32),
+    backdrop: Backdrop,
+}
+
+impl LayerRoot {
+    /// Creates a new layer root for a final compositing target.
+    #[must_use]
+    pub fn new(output_format: wgpu::TextureFormat, size: (u32, u32)) -> Self {
+        Self {
+            output_format,
+            size,
+            backdrop: Backdrop::None,
+        }
+    }
+
+    /// Returns this root configured with the given backdrop.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Backdrop) -> Self {
+        self.set_backdrop(backdrop);
+        self
+    }
+
+    /// Returns this root configured with a solid backdrop color.
+    #[must_use]
+    pub fn with_backdrop_color(mut self, color: Color) -> Self {
+        self.set_backdrop_color(color);
+        self
+    }
+
+    /// Returns the composited output format.
+    #[must_use]
+    pub fn output_format(&self) -> wgpu::TextureFormat {
+        self.output_format
+    }
+
+    /// Returns the output size in pixels.
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Updates the output size in pixels.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.size = (width, height);
+    }
+
+    /// Returns the configured backdrop policy.
+    #[must_use]
+    pub fn backdrop(&self) -> Backdrop {
+        self.backdrop
+    }
+
+    /// Updates the backdrop policy.
+    pub fn set_backdrop(&mut self, backdrop: Backdrop) {
+        self.backdrop = backdrop;
+    }
+
+    /// Updates the backdrop to a solid color.
+    pub fn set_backdrop_color(&mut self, color: Color) {
+        self.set_backdrop(Backdrop::Color(color));
+    }
+
+    /// Removes any explicit backdrop.
+    pub fn remove_backdrop(&mut self) {
+        self.set_backdrop(Backdrop::None);
+    }
+}
+
 /// A wgpu-based fallback compositor.
 ///
 /// Allocates one texture per layer and composites them in traversal order
@@ -95,6 +169,10 @@ impl<'a> WgpuLayerTarget<'a> {
 /// # Usage
 ///
 /// ```rust,ignore
+/// let root = LayerRoot::new(surface_format, (width, height))
+///     .with_backdrop_color(scene_backdrop);
+/// let mut presenter = WgpuPresenter::new(device, queue, root, (256, 256));
+///
 /// let changes = store.evaluate();
 /// presenter.apply(&store, &changes);
 ///
@@ -117,6 +195,7 @@ pub struct WgpuPresenter {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: CompositorPipeline,
+    root: LayerRoot,
 
     /// Per-layer GPU state, keyed by slot index.
     layer_entries: HashMap<u32, LayerEntry>,
@@ -127,10 +206,6 @@ pub struct WgpuPresenter {
 
     /// Default size for new layer textures.
     default_layer_size: (u32, u32),
-    /// Size (width, height) of the output surface in pixels.
-    output_size: (u32, u32),
-    /// Texture format of the output surface.
-    output_format: wgpu::TextureFormat,
     /// Texture format of presenter-owned layer textures.
     layer_format: wgpu::TextureFormat,
     /// Texture usages of presenter-owned layer textures.
@@ -143,8 +218,8 @@ pub struct WgpuPresenter {
 /// Texture allocation policy for [`WgpuPresenter`].
 ///
 /// This config controls the contract for presenter-owned layer textures:
-/// their size, format, and usage flags. The compositor output remains in
-/// `output_format`, which is typically the surface format.
+/// their size, format, and usage flags. The final compositing target is owned
+/// separately by [`LayerRoot`].
 ///
 /// # Migration note
 ///
@@ -156,10 +231,6 @@ pub struct WgpuPresenter {
 /// directly into presenter-owned layer textures.
 #[derive(Clone, Copy, Debug)]
 pub struct WgpuPresenterConfig {
-    /// Texture format of the composited output surface.
-    pub output_format: wgpu::TextureFormat,
-    /// `(width, height)` of the output surface in pixels.
-    pub output_size: (u32, u32),
     /// Default `(width, height)` for newly allocated layer textures.
     pub default_layer_size: (u32, u32),
     /// Texture format of presenter-owned layer textures.
@@ -174,14 +245,8 @@ pub struct WgpuPresenterConfig {
 impl WgpuPresenterConfig {
     /// Creates a presenter config with defaults suitable for host-rendered
     /// layer textures.
-    pub fn new(
-        output_format: wgpu::TextureFormat,
-        output_size: (u32, u32),
-        default_layer_size: (u32, u32),
-    ) -> Self {
+    pub fn new(default_layer_size: (u32, u32)) -> Self {
         Self {
-            output_format,
-            output_size,
             default_layer_size,
             layer_format: wgpu::TextureFormat::Rgba8Unorm,
             layer_usage: wgpu::TextureUsages::TEXTURE_BINDING
@@ -212,8 +277,7 @@ impl WgpuPresenter {
     /// Creates a new wgpu presenter.
     ///
     /// - `device` / `queue`: the wgpu device and queue to use.
-    /// - `output_format`: the texture format of the composited output.
-    /// - `output_size`: `(width, height)` of the output surface in pixels.
+    /// - `root`: the final compositing root.
     /// - `default_layer_size`: default `(width, height)` for new layer textures.
     ///
     /// Layer textures default to `Rgba8Unorm` with texture binding, render
@@ -222,14 +286,14 @@ impl WgpuPresenter {
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
-        output_format: wgpu::TextureFormat,
-        output_size: (u32, u32),
+        root: LayerRoot,
         default_layer_size: (u32, u32),
     ) -> Self {
         Self::new_with_config(
             device,
             queue,
-            WgpuPresenterConfig::new(output_format, output_size, default_layer_size),
+            root,
+            WgpuPresenterConfig::new(default_layer_size),
         )
     }
 
@@ -237,20 +301,20 @@ impl WgpuPresenter {
     pub fn new_with_config(
         device: wgpu::Device,
         queue: wgpu::Queue,
+        root: LayerRoot,
         config: WgpuPresenterConfig,
     ) -> Self {
-        let pipeline = CompositorPipeline::new(&device, config.output_format);
+        let pipeline = CompositorPipeline::new(&device, root.output_format());
 
         Self {
             device,
             queue,
             pipeline,
+            root,
             layer_entries: HashMap::new(),
             surface_to_slot: HashMap::new(),
             slot_to_surface: HashMap::new(),
             default_layer_size: config.default_layer_size,
-            output_size: config.output_size,
-            output_format: config.output_format,
             layer_format: config.layer_format,
             layer_usage: config.layer_usage | REQUIRED_LAYER_USAGE,
             uniform_cache: None,
@@ -302,19 +366,19 @@ impl WgpuPresenter {
         self.layer_format
     }
 
-    /// Returns the texture format used for the composited output surface.
-    pub fn output_format(&self) -> wgpu::TextureFormat {
-        self.output_format
-    }
-
     /// Returns the texture usage flags used for presenter-owned layer textures.
     pub fn layer_usage(&self) -> wgpu::TextureUsages {
         self.layer_usage
     }
 
-    /// Updates the output surface size (call after reconfiguring the surface).
-    pub fn resize_output(&mut self, width: u32, height: u32) {
-        self.output_size = (width, height);
+    /// Returns the scene root.
+    pub fn root(&self) -> &LayerRoot {
+        &self.root
+    }
+
+    /// Returns a mutable reference to the scene root.
+    pub fn root_mut(&mut self) -> &mut LayerRoot {
+        &mut self.root
     }
 
     /// Returns a reference to the wgpu device.
@@ -356,7 +420,8 @@ impl WgpuPresenter {
         )]
         let mut uniform_data = vec![0_u8; required_size as usize];
 
-        let ortho = ortho_projection(self.output_size.0, self.output_size.1);
+        let output_size = self.root.size();
+        let ortho = ortho_projection(output_size.0, output_size.1);
 
         for (i, &idx) in visible.iter().enumerate() {
             let entry = &self.layer_entries[&idx];
@@ -437,7 +502,7 @@ impl WgpuPresenter {
                     view: output,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(backdrop_clear_color(self.root.backdrop())),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -463,11 +528,10 @@ impl WgpuPresenter {
 
                 // Apply scissor clip if present.
                 if let Some(clip) = store.clip_at(idx) {
-                    let rect =
-                        clip_to_scissor(clip, &store.world_transform_at(idx), self.output_size);
+                    let rect = clip_to_scissor(clip, &store.world_transform_at(idx), output_size);
                     pass.set_scissor_rect(rect.0, rect.1, rect.2, rect.3);
                 } else {
-                    pass.set_scissor_rect(0, 0, self.output_size.0, self.output_size.1);
+                    pass.set_scissor_rect(0, 0, output_size.0, output_size.1);
                 }
 
                 pass.draw(0..6, 0..1);
@@ -580,6 +644,23 @@ fn uniform_stride() -> u64 {
     let raw = size_of::<LayerUniforms>() as u64;
     // Round up to UNIFORM_ALIGN.
     (raw + UNIFORM_ALIGN - 1) & !(UNIFORM_ALIGN - 1)
+}
+
+/// Converts output backdrop policy into a premultiplied clear color.
+fn backdrop_clear_color(backdrop: Backdrop) -> wgpu::Color {
+    match backdrop {
+        Backdrop::None => wgpu::Color::TRANSPARENT,
+        Backdrop::Color(color) => {
+            let premultiplied = color.convert::<LinearSrgb>().premultiply();
+            let [r, g, b, a] = premultiplied.components;
+            wgpu::Color {
+                r: f64::from(r),
+                g: f64::from(g),
+                b: f64::from(b),
+                a: f64::from(a),
+            }
+        }
+    }
 }
 
 /// Builds an orthographic projection matrix mapping pixel coords to clip space.
@@ -698,13 +779,28 @@ fn clip_to_scissor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use subduction_core::output::Color;
+
+    #[test]
+    fn layer_root_mutates_in_place() {
+        let mut root = LayerRoot::new(wgpu::TextureFormat::Bgra8Unorm, (640, 480));
+        let backdrop_color = Color::from_rgba8(0x1e, 0x1e, 0x2e, 0xff);
+
+        root.resize(800, 600);
+        root.set_backdrop_color(backdrop_color);
+
+        assert_eq!(root.size(), (800, 600));
+        assert_eq!(root.backdrop(), Backdrop::Color(backdrop_color));
+
+        root.remove_backdrop();
+
+        assert_eq!(root.backdrop(), Backdrop::None);
+    }
 
     #[test]
     fn presenter_config_defaults_to_vello_compatible_layers() {
-        let config =
-            WgpuPresenterConfig::new(wgpu::TextureFormat::Bgra8Unorm, (800, 600), (256, 256));
+        let config = WgpuPresenterConfig::new((256, 256));
 
-        assert_eq!(config.output_format, wgpu::TextureFormat::Bgra8Unorm);
         assert_eq!(config.layer_format, wgpu::TextureFormat::Rgba8Unorm);
         assert!(
             config
@@ -725,10 +821,9 @@ mod tests {
 
     #[test]
     fn presenter_config_preserves_required_sampling_usage() {
-        let config =
-            WgpuPresenterConfig::new(wgpu::TextureFormat::Bgra8Unorm, (800, 600), (256, 256))
-                .with_layer_format(wgpu::TextureFormat::Bgra8Unorm)
-                .with_layer_usage(wgpu::TextureUsages::STORAGE_BINDING);
+        let config = WgpuPresenterConfig::new((256, 256))
+            .with_layer_format(wgpu::TextureFormat::Bgra8Unorm)
+            .with_layer_usage(wgpu::TextureUsages::STORAGE_BINDING);
 
         assert_eq!(config.layer_format, wgpu::TextureFormat::Bgra8Unorm);
         assert!(
@@ -741,6 +836,16 @@ mod tests {
                 .layer_usage
                 .contains(wgpu::TextureUsages::STORAGE_BINDING)
         );
+    }
+
+    #[test]
+    fn solid_backdrop_clears_with_premultiplied_linear_color() {
+        let clear = backdrop_clear_color(Backdrop::Color(Color::new([0.5, 0.25, 0.75, 0.5])));
+
+        assert!((clear.r - 0.107_020_57).abs() < 1e-6);
+        assert!((clear.g - 0.025_438_04).abs() < 1e-6);
+        assert!((clear.b - 0.261_260_78).abs() < 1e-6);
+        assert!((clear.a - 0.5).abs() < 1e-6);
     }
 
     #[test]

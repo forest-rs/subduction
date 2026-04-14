@@ -14,45 +14,114 @@ use hashbrown::HashMap;
 
 use objc2::rc::Retained;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::CGColor;
 use objc2_foundation::NSArray;
 use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
 use subduction_core::backend::Presenter;
 use subduction_core::layer::{ClipShape, FrameChanges, LayerStore};
+use subduction_core::output::{Backdrop, Color};
 use subduction_core::transform::Transform3d;
 
 #[cfg(feature = "appkit")]
 use objc2_app_kit::NSView;
 
+/// Root `CALayer` container for a presented scene.
+#[derive(Debug)]
+pub struct LayerRoot {
+    layer: Retained<CALayer>,
+    backdrop: Backdrop,
+}
+
+impl LayerRoot {
+    /// Creates a new layer root backed by `layer`.
+    #[must_use]
+    pub fn new(layer: Retained<CALayer>) -> Self {
+        let root = Self {
+            layer,
+            backdrop: Backdrop::None,
+        };
+        apply_root_backdrop(&root.layer, root.backdrop);
+        root
+    }
+
+    /// Returns this root configured with the given backdrop.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Backdrop) -> Self {
+        self.set_backdrop(backdrop);
+        self
+    }
+
+    /// Returns this root configured with a solid backdrop color.
+    #[must_use]
+    pub fn with_backdrop_color(mut self, color: Color) -> Self {
+        self.set_backdrop_color(color);
+        self
+    }
+
+    /// Returns the underlying root `CALayer`.
+    #[must_use]
+    pub fn layer(&self) -> &CALayer {
+        &self.layer
+    }
+
+    /// Returns the configured backdrop policy.
+    #[must_use]
+    pub fn backdrop(&self) -> Backdrop {
+        self.backdrop
+    }
+
+    /// Updates the backdrop policy.
+    pub fn set_backdrop(&mut self, backdrop: Backdrop) {
+        self.backdrop = backdrop;
+        apply_root_backdrop(&self.layer, backdrop);
+    }
+
+    /// Updates the backdrop to a solid color.
+    pub fn set_backdrop_color(&mut self, color: Color) {
+        self.set_backdrop(Backdrop::Color(color));
+    }
+
+    /// Removes any explicit backdrop.
+    pub fn remove_backdrop(&mut self) {
+        self.set_backdrop(Backdrop::None);
+    }
+}
+
 /// Maps a [`LayerStore`] to a live `CALayer` tree, applying incremental
 /// updates from [`FrameChanges`].
 ///
-/// The presenter owns a root `CALayer` to which child layers are added and
+/// The presenter owns a [`LayerRoot`] to which child layers are added and
 /// removed. Call [`apply`](Self::apply) each frame with the latest
 /// `FrameChanges` to synchronize the `CALayer` tree with the store.
 #[derive(Debug)]
 pub struct LayerPresenter {
-    root_layer: Retained<CALayer>,
+    root: LayerRoot,
     layers: HashMap<u32, Retained<CALayer>>,
     #[cfg(feature = "appkit")]
     views: HashMap<u32, Retained<NSView>>,
 }
 
 impl LayerPresenter {
-    /// Creates a new presenter that manages sublayers of `root_layer`.
+    /// Creates a new presenter that manages sublayers of `root`.
     #[must_use]
-    pub fn new(root_layer: Retained<CALayer>) -> Self {
+    pub fn new(root: LayerRoot) -> Self {
         Self {
-            root_layer,
+            root,
             layers: HashMap::new(),
             #[cfg(feature = "appkit")]
             views: HashMap::new(),
         }
     }
 
-    /// Returns a reference to the root `CALayer`.
+    /// Returns the scene root.
     #[must_use]
-    pub fn root_layer(&self) -> &CALayer {
-        &self.root_layer
+    pub fn root(&self) -> &LayerRoot {
+        &self.root
+    }
+
+    /// Returns a mutable reference to the scene root.
+    pub fn root_mut(&mut self) -> &mut LayerRoot {
+        &mut self.root
     }
 
     /// Returns the `CALayer` for the given slot index, if it exists.
@@ -111,8 +180,8 @@ impl LayerPresenter {
         // Build an NSArray of the ordered layers and set as sublayers.
         let array = NSArray::from_slice(&ordered);
         // SAFETY: the layers in the array are valid CALayers owned by this
-        // presenter and already sublayers of root_layer.
-        unsafe { self.root_layer.setSublayers(Some(&array)) };
+        // presenter and already sublayers of the root layer.
+        unsafe { self.root.layer().setSublayers(Some(&array)) };
     }
 }
 
@@ -145,7 +214,7 @@ impl Presenter for LayerPresenter {
             if store.effective_hidden_at(idx) {
                 layer.setHidden(true);
             }
-            self.root_layer.addSublayer(&layer);
+            self.root.layer().addSublayer(&layer);
             self.layers.insert(idx, layer);
         }
 
@@ -271,6 +340,19 @@ fn apply_clip(layer: &CALayer, clip: Option<ClipShape>) {
     }
 }
 
+/// Applies layer-root backdrop policy to the root layer.
+fn apply_root_backdrop(layer: &CALayer, backdrop: Backdrop) {
+    match backdrop {
+        Backdrop::None => layer.setBackgroundColor(None),
+        Backdrop::Color(color) => {
+            let [r, g, b, a] = color.components;
+            let cg_color =
+                CGColor::new_generic_rgb(f64::from(r), f64::from(g), f64::from(b), f64::from(a));
+            layer.setBackgroundColor(Some(&cg_color));
+        }
+    }
+}
+
 /// Returns the maximum corner radius from a `kurbo::RoundedRectRadii`.
 fn radii_max(radii: &kurbo::RoundedRectRadii) -> f64 {
     radii
@@ -303,5 +385,57 @@ fn transform3d_to_ca(m: &Transform3d) -> CATransform3D {
         m42: c3[1],
         m43: c3[2],
         m44: c3[3],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::slice;
+
+    use super::*;
+
+    #[test]
+    fn layer_root_new_clears_existing_background() {
+        let layer = CALayer::new();
+        let existing = CGColor::new_generic_rgb(0.9, 0.1, 0.2, 0.8);
+        layer.setBackgroundColor(Some(&existing));
+
+        let root = LayerRoot::new(layer);
+
+        assert_eq!(root.backdrop(), Backdrop::None);
+        assert!(root.layer().backgroundColor().is_none());
+    }
+
+    #[test]
+    fn presenter_root_mut_updates_calayer_background() {
+        let backdrop_color = Color::from_rgba8(0x1f, 0x1f, 0x26, 0xff);
+        let root = LayerRoot::new(CALayer::new());
+        let mut presenter = LayerPresenter::new(root);
+
+        presenter.root_mut().set_backdrop_color(backdrop_color);
+
+        let background = presenter
+            .root()
+            .layer()
+            .backgroundColor()
+            .expect("background color should be installed");
+        let expected = [31.0 / 255.0, 31.0 / 255.0, 38.0 / 255.0, 1.0];
+        for (actual, expected) in cg_color_components(&background).into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        presenter.root_mut().remove_backdrop();
+
+        assert_eq!(presenter.root().backdrop(), Backdrop::None);
+        assert!(presenter.root().layer().backgroundColor().is_none());
+    }
+
+    fn cg_color_components(color: &CGColor) -> [f64; 4] {
+        let count = CGColor::number_of_components(Some(color));
+        assert_eq!(count, 4, "expected RGBA color");
+        let components = CGColor::components(Some(color));
+        // SAFETY: CoreGraphics reports the component count for this borrowed color.
+        let components = unsafe { slice::from_raw_parts(components, count) };
+        [components[0], components[1], components[2], components[3]]
     }
 }

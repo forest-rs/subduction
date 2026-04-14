@@ -22,3 +22,4 @@ workspace = true
 [dependencies]
 kurbo = { workspace = true }
 invalidation = { workspace = true }
+color = { workspace = true }

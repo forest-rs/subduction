@@ -22,7 +22,7 @@ workspace = true
 [dependencies]
 subduction_core = { workspace = true }
 
-hashbrown = { version = "0.16.1", default-features = false, features = [
+hashbrown = { version = "0.17.0", default-features = false, features = [
   "alloc",
   "default-hasher",
 ] }

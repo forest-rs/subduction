@@ -20,9 +20,10 @@
 //!   recomputes both world transforms and `effective_hidden`.)
 //!
 //! - **Local-only** — [`CLIP`], [`CONTENT`], and [`BOUNDS`] are marked with
-//!   the default policy. Only the explicitly marked layer appears in the drain
-//!   output, since clip shapes, surface content, and bounds are per-layer
-//!   properties.
+//!   [`InvalidationTracker::mark`](invalidation::InvalidationTracker::mark).
+//!   Only the explicitly marked layer appears in the drain output, since clip
+//!   shapes, surface content, and bounds are per-layer properties. `mark` does
+//!   not follow graph dependents or cross-channel edges.
 //!
 //! - **Structural** — [`TOPOLOGY`] is marked on topology mutations
 //!   (add/remove child, create/destroy layer). It triggers a traversal-order

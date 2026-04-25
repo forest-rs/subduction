@@ -106,6 +106,11 @@ impl LayerStore {
         }
     }
 
+    fn mark_inherited_dirty(&mut self, idx: u32) {
+        self.dirty.mark_with(idx, dirty::TRANSFORM, &EagerPolicy);
+        self.dirty.mark_with(idx, dirty::OPACITY, &EagerPolicy);
+    }
+
     // -- Allocation API --
 
     /// Creates a new layer and returns its handle.
@@ -240,6 +245,7 @@ impl LayerStore {
         let _ = self.dirty.add_dependency(c, p, dirty::OPACITY);
 
         self.traversal_dirty = true;
+        self.mark_inherited_dirty(c);
         self.dirty.mark(p, dirty::TOPOLOGY);
     }
 
@@ -261,6 +267,7 @@ impl LayerStore {
         self.dirty.remove_dependency(c, p, dirty::OPACITY);
 
         self.traversal_dirty = true;
+        self.mark_inherited_dirty(c);
         self.dirty.mark(p, dirty::TOPOLOGY);
     }
 
@@ -307,6 +314,7 @@ impl LayerStore {
         let _ = self.dirty.add_dependency(c, p, dirty::OPACITY);
 
         self.traversal_dirty = true;
+        self.mark_inherited_dirty(c);
         self.dirty.mark(p, dirty::TOPOLOGY);
     }
 
@@ -346,6 +354,7 @@ impl LayerStore {
         let _ = self.dirty.add_dependency(c, p, dirty::OPACITY);
 
         self.traversal_dirty = true;
+        self.mark_inherited_dirty(c);
         self.dirty.mark(p, dirty::TOPOLOGY);
     }
 

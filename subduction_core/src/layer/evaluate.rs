@@ -368,6 +368,99 @@ mod tests {
     }
 
     #[test]
+    fn attaching_clean_child_recomputes_inherited_state() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let child = store.create_layer();
+
+        let parent_xf = Transform3d::from_translation(10.0, 0.0, 0.0);
+        let child_xf = Transform3d::from_translation(0.0, 5.0, 0.0);
+        store.set_transform(parent, parent_xf);
+        store.set_transform(child, child_xf);
+        store.set_opacity(parent, 0.5);
+        store.set_opacity(child, 0.8);
+        let _ = store.evaluate();
+
+        store.add_child(parent, child);
+        let changes = store.evaluate();
+
+        assert_eq!(store.world_transform(child), parent_xf * child_xf);
+        assert!((store.effective_opacity(child) - 0.4).abs() < 1e-6);
+        assert!(
+            changes.transforms.contains(&child.idx),
+            "attaching a child should dirty inherited transform state"
+        );
+        assert!(
+            changes.opacities.contains(&child.idx),
+            "attaching a child should dirty inherited opacity state"
+        );
+    }
+
+    #[test]
+    fn reparenting_clean_child_recomputes_inherited_state() {
+        let mut store = LayerStore::new();
+        let old_parent = store.create_layer();
+        let new_parent = store.create_layer();
+        let child = store.create_layer();
+
+        let old_parent_xf = Transform3d::from_translation(10.0, 0.0, 0.0);
+        let new_parent_xf = Transform3d::from_translation(30.0, 0.0, 0.0);
+        let child_xf = Transform3d::from_translation(0.0, 5.0, 0.0);
+        store.set_transform(old_parent, old_parent_xf);
+        store.set_transform(new_parent, new_parent_xf);
+        store.set_transform(child, child_xf);
+        store.set_opacity(old_parent, 0.5);
+        store.set_opacity(new_parent, 0.25);
+        store.set_opacity(child, 0.8);
+        store.add_child(old_parent, child);
+        let _ = store.evaluate();
+
+        store.reparent(child, new_parent);
+        let changes = store.evaluate();
+
+        assert_eq!(store.world_transform(child), new_parent_xf * child_xf);
+        assert!((store.effective_opacity(child) - 0.2).abs() < 1e-6);
+        assert!(
+            changes.transforms.contains(&child.idx),
+            "reparenting should dirty inherited transform state"
+        );
+        assert!(
+            changes.opacities.contains(&child.idx),
+            "reparenting should dirty inherited opacity state"
+        );
+    }
+
+    #[test]
+    fn removing_clean_child_recomputes_inherited_state_as_root() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let child = store.create_layer();
+
+        let parent_xf = Transform3d::from_translation(10.0, 0.0, 0.0);
+        let child_xf = Transform3d::from_translation(0.0, 5.0, 0.0);
+        store.set_transform(parent, parent_xf);
+        store.set_transform(child, child_xf);
+        store.set_opacity(parent, 0.5);
+        store.set_opacity(child, 0.8);
+        store.add_child(parent, child);
+        let _ = store.evaluate();
+
+        store.remove_from_parent(child);
+        let changes = store.evaluate();
+
+        assert_eq!(store.world_transform(child), child_xf);
+        assert!((store.effective_opacity(child) - 0.8).abs() < 1e-6);
+        assert!(
+            changes.transforms.contains(&child.idx),
+            "removing a child should dirty inherited transform state"
+        );
+        assert!(
+            changes.opacities.contains(&child.idx),
+            "removing a child should dirty inherited opacity state"
+        );
+    }
+
+    #[test]
     fn evaluate_added_and_removed_lifecycle() {
         let mut store = LayerStore::new();
         let id = store.create_layer();

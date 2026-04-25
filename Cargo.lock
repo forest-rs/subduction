@@ -610,6 +610,15 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+dependencies = [
+ "foldhash 0.2.0",
  "rustc-std-workspace-alloc",
 ]
 
@@ -637,11 +646,11 @@ dependencies = [
 
 [[package]]
 name = "invalidation"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "802752dcc4e541091165438496b1efb4086dddf3ae787950f3451e16d6649f97"
+checksum = "d2217040acf2f123ec9ed6c37c368ba66d1e5a9f2048478c1fdd861bb5cfdecd"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.0",
 ]
 
 [[package]]
@@ -1799,7 +1808,7 @@ name = "subduction_backend_apple"
 version = "0.0.1"
 dependencies = [
  "dispatch2",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.0",
  "kurbo",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",

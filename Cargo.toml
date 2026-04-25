@@ -56,7 +56,7 @@ repository = "https://github.com/forest-rs/subduction"
 [workspace.dependencies]
 subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
-invalidation = "0.1.0"
+invalidation = "0.2.0"
 kurbo = { version = "0.13", default-features = false, features = ["libm"] }
 color = { version = "0.3.2", default-features = false, features = ["libm"] }
 wgpu = "28"

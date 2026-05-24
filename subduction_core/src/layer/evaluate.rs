@@ -58,6 +58,21 @@ pub struct FrameChanges {
 }
 
 impl FrameChanges {
+    /// Returns whether this change set contains no layer or topology changes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.transforms.is_empty()
+            && self.opacities.is_empty()
+            && self.clips.is_empty()
+            && self.content.is_empty()
+            && self.bounds.is_empty()
+            && self.hidden.is_empty()
+            && self.unhidden.is_empty()
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && !self.topology_changed
+    }
+
     /// Clears all change lists.
     pub fn clear(&mut self) {
         self.transforms.clear();
@@ -616,5 +631,20 @@ mod tests {
             !changes.opacities.contains(&b.idx),
             "unchanged layer should not appear"
         );
+    }
+
+    #[test]
+    fn frame_changes_is_empty_checks_all_channels() {
+        let mut changes = FrameChanges::default();
+        assert!(changes.is_empty());
+
+        changes.transforms.push(1);
+        assert!(!changes.is_empty());
+
+        changes.clear();
+        assert!(changes.is_empty());
+
+        changes.topology_changed = true;
+        assert!(!changes.is_empty());
     }
 }

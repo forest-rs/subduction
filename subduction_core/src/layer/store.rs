@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use invalidation::{CycleHandling, EagerPolicy, InvalidationTracker};
-use kurbo::{Rect, Size};
+use kurbo::{Point, Rect, RoundedRect, Size};
 
 use crate::transform::Transform3d;
 
@@ -24,6 +24,67 @@ use crate::dirty;
 pub struct LayerFlags {
     /// Whether the layer (and its subtree) is hidden.
     pub hidden: bool,
+}
+
+/// Controls whether a layer participates in coarse hit testing.
+///
+/// Hit policy only controls participation. A hittable layer must still be
+/// effectively visible, have an invertible world transform, contain the query
+/// point within its hit rect or bounds, and pass its own and ancestor clips.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum HitPolicy {
+    /// Hit test the layer only when it has attached content.
+    ///
+    /// This is the default and preserves the historical behavior where
+    /// contentless grouping layers are skipped.
+    #[default]
+    Content,
+    /// Hit test the layer's geometric hit region regardless of attached
+    /// content.
+    ///
+    /// Use this for transparent layers, grouping layers, or compositor-level
+    /// interaction regions.
+    Region,
+    /// Exclude the layer from hit testing even when it has content.
+    Disabled,
+}
+
+/// A local-space geometric region used for coarse hit testing.
+///
+/// This is intentionally a closed, concrete set of common UI regions rather
+/// than an arbitrary shape trait. Use `None` as the layer hit region to hit
+/// test against the layer's full bounds.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HitRegion {
+    /// An axis-aligned rectangle in layer-local coordinates.
+    Rect(Rect),
+    /// An axis-aligned rounded rectangle in layer-local coordinates.
+    RoundedRect(RoundedRect),
+}
+
+impl HitRegion {
+    /// Returns whether `point` lies inside this hit region.
+    #[must_use]
+    pub fn contains(&self, point: Point) -> bool {
+        match self {
+            Self::Rect(rect) => rect.contains(point),
+            Self::RoundedRect(rounded) => {
+                use kurbo::Shape;
+                rounded.contains(point)
+            }
+        }
+    }
+
+    /// Returns whether this region has zero or negative extent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Rect(rect) => rect.width() <= 0.0 || rect.height() <= 0.0,
+            Self::RoundedRect(rounded) => rounded.width() <= 0.0 || rounded.height() <= 0.0,
+        }
+    }
 }
 
 /// Struct-of-arrays storage for all layers.
@@ -46,7 +107,8 @@ pub struct LayerStore {
     pub(crate) content: Vec<Option<SurfaceId>>,
     pub(crate) flags: Vec<LayerFlags>,
     pub(crate) bounds: Vec<Size>,
-    pub(crate) hit_rect: Vec<Option<Rect>>,
+    pub(crate) hit_region: Vec<Option<HitRegion>>,
+    pub(crate) hit_policy: Vec<HitPolicy>,
 
     // -- Computed properties (written by evaluate) --
     pub(crate) world_transform: Vec<Transform3d>,
@@ -91,7 +153,8 @@ impl LayerStore {
             content: Vec::new(),
             flags: Vec::new(),
             bounds: Vec::new(),
-            hit_rect: Vec::new(),
+            hit_region: Vec::new(),
+            hit_policy: Vec::new(),
             world_transform: Vec::new(),
             effective_opacity: Vec::new(),
             effective_hidden: Vec::new(),
@@ -131,7 +194,7 @@ impl LayerStore {
     /// Creates a new layer and returns its handle.
     ///
     /// The layer starts with an identity transform, full opacity, no clip,
-    /// no content, and no parent.
+    /// no content, content-gated hit testing, and no parent.
     pub fn create_layer(&mut self) -> LayerId {
         let idx = if let Some(idx) = self.free_list.pop() {
             // Reuse a freed slot.
@@ -146,7 +209,8 @@ impl LayerStore {
             self.content[idx as usize] = None;
             self.flags[idx as usize] = LayerFlags::default();
             self.bounds[idx as usize] = Size::ZERO;
-            self.hit_rect[idx as usize] = None;
+            self.hit_region[idx as usize] = None;
+            self.hit_policy[idx as usize] = HitPolicy::default();
             self.world_transform[idx as usize] = Transform3d::IDENTITY;
             self.effective_opacity[idx as usize] = 1.0;
             self.effective_hidden[idx as usize] = false;
@@ -165,7 +229,8 @@ impl LayerStore {
             self.content.push(None);
             self.flags.push(LayerFlags::default());
             self.bounds.push(Size::ZERO);
-            self.hit_rect.push(None);
+            self.hit_region.push(None);
+            self.hit_policy.push(HitPolicy::default());
             self.world_transform.push(Transform3d::IDENTITY);
             self.effective_opacity.push(1.0);
             self.effective_hidden.push(false);
@@ -586,15 +651,22 @@ impl LayerStore {
         self.bounds[id.idx as usize]
     }
 
-    /// Returns the optional hit-test rect of a layer.
+    /// Returns the optional hit-test region of a layer.
     ///
     /// When `Some`, [`hit_test`](Self::hit_test) checks containment against
-    /// this rect instead of the layer's full bounds. When `None` (the
+    /// this region instead of the layer's full bounds. When `None` (the
     /// default), the full bounds are used.
     #[must_use]
-    pub fn hit_rect(&self, id: LayerId) -> Option<Rect> {
+    pub fn hit_region(&self, id: LayerId) -> Option<HitRegion> {
         self.validate(id);
-        self.hit_rect[id.idx as usize]
+        self.hit_region[id.idx as usize]
+    }
+
+    /// Returns the hit-test participation policy of a layer.
+    #[must_use]
+    pub fn hit_policy(&self, id: LayerId) -> HitPolicy {
+        self.validate(id);
+        self.hit_policy[id.idx as usize]
     }
 
     /// Returns the computed world transform of a layer.
@@ -674,16 +746,27 @@ impl LayerStore {
         self.dirty.mark(id.idx, dirty::BOUNDS);
     }
 
-    /// Sets an optional hit-test rect for a layer (in local coordinates).
+    /// Sets an optional hit-test region for a layer (in local coordinates).
     ///
     /// When set, [`hit_test`](Self::hit_test) checks containment against this
-    /// rect instead of the full bounds. Use this when the layer's surface is
-    /// larger than its interactive area (e.g. to accommodate shadows or glow).
+    /// region instead of the full bounds. Use this when the layer's surface is
+    /// larger than its interactive area, or when its interaction region is
+    /// rounded independently from its render clip.
     ///
     /// No dirty channel is marked — hit testing is a read-only query.
-    pub fn set_hit_rect(&mut self, id: LayerId, hit_rect: Option<Rect>) {
+    pub fn set_hit_region(&mut self, id: LayerId, hit_region: Option<HitRegion>) {
         self.validate(id);
-        self.hit_rect[id.idx as usize] = hit_rect;
+        self.hit_region[id.idx as usize] = hit_region;
+    }
+
+    /// Sets the hit-test participation policy of a layer.
+    ///
+    /// No dirty channel is marked — hit testing is a read-only query, and
+    /// presenters do not consume hit policy through
+    /// [`FrameChanges`](crate::layer::FrameChanges).
+    pub fn set_hit_policy(&mut self, id: LayerId, hit_policy: HitPolicy) {
+        self.validate(id);
+        self.hit_policy[id.idx as usize] = hit_policy;
     }
 
     // -- Raw-index accessors for backends --
@@ -827,19 +910,19 @@ impl LayerStore {
         self.bounds[idx as usize]
     }
 
-    /// Returns the hit-test rect at raw slot `idx`.
+    /// Returns the hit-test region at raw slot `idx`.
     ///
     /// # Panics
     ///
     /// Panics if `idx >= self.len`.
     #[must_use]
-    pub fn hit_rect_at(&self, idx: u32) -> Option<Rect> {
+    pub fn hit_region_at(&self, idx: u32) -> Option<HitRegion> {
         assert!(
             idx < self.len,
             "slot index {idx} out of range (len {})",
             self.len
         );
-        self.hit_rect[idx as usize]
+        self.hit_region[idx as usize]
     }
 
     /// Returns the raw parent slot index at raw slot `idx`, or `None` if
@@ -1336,6 +1419,32 @@ mod tests {
             changes.content.contains(&id.idx),
             "content channel should contain the layer"
         );
+    }
+
+    #[test]
+    fn hit_policy_defaults_and_resets_on_slot_reuse() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        assert_eq!(store.hit_policy(id), HitPolicy::Content);
+
+        store.set_hit_policy(id, HitPolicy::Region);
+        assert_eq!(store.hit_policy(id), HitPolicy::Region);
+
+        store.destroy_layer(id);
+        let reused = store.create_layer();
+        assert_eq!(store.hit_policy(reused), HitPolicy::Content);
+    }
+
+    #[test]
+    fn set_hit_policy_does_not_mark_frame_changes() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        let _ = store.evaluate();
+
+        store.set_hit_policy(id, HitPolicy::Region);
+        let changes = store.evaluate();
+
+        assert!(changes.is_empty());
     }
 
     #[test]

@@ -13,7 +13,8 @@
 //! - **Local properties** set by the caller: [`transform`](LayerStore::set_transform),
 //!   [`opacity`](LayerStore::set_opacity), [`clip`](LayerStore::set_clip),
 //!   [`content`](LayerStore::set_content), [`bounds`](LayerStore::set_bounds),
-//!   and [`flags`](LayerStore::set_flags).
+//!   [`hit region`](LayerStore::set_hit_region),
+//!   [`hit policy`](LayerStore::set_hit_policy), and [`flags`](LayerStore::set_flags).
 //! - **Computed properties** produced by [`evaluate`](LayerStore::evaluate):
 //!   `world_transform` (product of ancestor local transforms) and
 //!   `effective_opacity` (product of ancestor local opacities).
@@ -43,5 +44,5 @@ pub use clip::ClipShape;
 pub use evaluate::FrameChanges;
 pub use hit_test::HitEntry;
 pub use id::{INVALID, LayerId, SurfaceId};
-pub use store::{LayerFlags, LayerStore};
+pub use store::{HitPolicy, HitRegion, LayerFlags, LayerStore};
 pub use traverse::Children;

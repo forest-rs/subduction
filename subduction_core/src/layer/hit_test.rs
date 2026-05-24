@@ -7,13 +7,15 @@
 //! front-to-back and respecting transforms, bounds, clips, and hidden state.
 //! Frameworks use the returned [`HitEntry`] results for coarse hit detection,
 //! then perform their own widget-level testing within each hit layer.
+//! [`HitPolicy`] controls whether a layer participates in this coarse query;
+//! it does not model UI event routing, focus, capture, or bubbling.
 
 use alloc::vec::Vec;
 
 use kurbo::{Point, Rect};
 
 use super::id::{INVALID, LayerId};
-use super::store::LayerStore;
+use super::store::{HitPolicy, HitRegion, LayerStore};
 
 /// A layer intersected by a point query.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,7 +25,7 @@ pub struct HitEntry {
     /// The query point in this layer's local coordinate space.
     ///
     /// Frameworks use this directly for widget-level hit testing within
-    /// the layer's content surface.
+    /// the layer's hit region or content surface.
     pub local_point: Point,
 }
 
@@ -33,10 +35,10 @@ impl LayerStore {
     ///
     /// A layer is hittable when:
     /// - it is not effectively hidden,
-    /// - it has content (`content` is `Some`),
+    /// - its [`HitPolicy`] allows participation,
     /// - its world transform is invertible,
-    /// - the point (in local space) falls within the layer's hit rect
-    ///   (or bounds, if no hit rect is set),
+    /// - the point (in local space) falls within the layer's hit region
+    ///   (or bounds, if no hit region is set),
     /// - the point is not excluded by the layer's own clip shape, and
     /// - the point is not excluded by any ancestor's clip shape.
     ///
@@ -60,19 +62,21 @@ impl LayerStore {
                 continue;
             }
 
-            if self.content[i].is_none() {
-                continue;
+            match self.hit_policy[i] {
+                HitPolicy::Content if self.content[i].is_none() => continue,
+                HitPolicy::Disabled => continue,
+                HitPolicy::Content | HitPolicy::Region => {}
             }
 
-            // Hit area: explicit hit_rect if set, otherwise full bounds.
-            let hit_area = match self.hit_rect[i] {
-                Some(r) => r,
+            // Hit region: explicit region if set, otherwise full bounds.
+            let hit_region = match self.hit_region[i] {
+                Some(region) => region,
                 None => {
                     let b = self.bounds[i];
-                    Rect::new(0.0, 0.0, b.width, b.height)
+                    HitRegion::Rect(Rect::new(0.0, 0.0, b.width, b.height))
                 }
             };
-            if hit_area.width() <= 0.0 || hit_area.height() <= 0.0 {
+            if hit_region.is_empty() {
                 continue;
             }
 
@@ -86,7 +90,7 @@ impl LayerStore {
                 None => continue,
             };
 
-            if !hit_area.contains(local_point) {
+            if !hit_region.contains(local_point) {
                 continue;
             }
 
@@ -138,7 +142,7 @@ impl LayerStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layer::{ClipShape, LayerFlags, SurfaceId};
+    use crate::layer::{ClipShape, HitPolicy, HitRegion, LayerFlags, SurfaceId};
     use crate::transform::Transform3d;
     use kurbo::{RoundedRect, Size};
 
@@ -207,6 +211,32 @@ mod tests {
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
         // No set_content — remains None.
+        store.evaluate();
+
+        assert!(store.hit_test(Point::new(50.0, 50.0)).is_empty());
+    }
+
+    #[test]
+    fn region_hit_policy_includes_contentless_layer() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        store.set_bounds(id, Size::new(100.0, 100.0));
+        store.set_hit_policy(id, HitPolicy::Region);
+        store.evaluate();
+
+        let hits = store.hit_test(Point::new(50.0, 50.0));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].layer, id);
+        assert_eq!(hits[0].local_point, Point::new(50.0, 50.0));
+    }
+
+    #[test]
+    fn disabled_hit_policy_excludes_content_layer() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        store.set_bounds(id, Size::new(100.0, 100.0));
+        store.set_content(id, Some(SurfaceId(1)));
+        store.set_hit_policy(id, HitPolicy::Disabled);
         store.evaluate();
 
         assert!(store.hit_test(Point::new(50.0, 50.0)).is_empty());
@@ -439,32 +469,35 @@ mod tests {
         assert!(store.hit_test(Point::new(50.0, 50.0)).is_empty());
     }
 
-    // ── hit_rect tests ───────────────────────────────────────────────
+    // ── hit_region tests ─────────────────────────────────────────────
 
     #[test]
-    fn hit_rect_restricts_hit_area() {
+    fn hit_region_restricts_hit_area() {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         // Surface is 200×200, but only the inset region is interactive.
         store.set_bounds(id, Size::new(200.0, 200.0));
         store.set_content(id, Some(SurfaceId(1)));
-        store.set_hit_rect(id, Some(Rect::new(30.0, 30.0, 170.0, 170.0)));
+        store.set_hit_region(
+            id,
+            Some(HitRegion::Rect(Rect::new(30.0, 30.0, 170.0, 170.0))),
+        );
         store.evaluate();
 
-        // Inside hit_rect — hit.
+        // Inside hit region — hit.
         assert_eq!(store.hit_test(Point::new(100.0, 100.0)).len(), 1);
-        // Inside bounds but outside hit_rect (shadow area) — miss.
+        // Inside bounds but outside hit region (shadow area) — miss.
         assert!(store.hit_test(Point::new(10.0, 10.0)).is_empty());
         assert!(store.hit_test(Point::new(180.0, 180.0)).is_empty());
     }
 
     #[test]
-    fn hit_rect_none_falls_back_to_bounds() {
+    fn hit_region_none_falls_back_to_bounds() {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 80.0));
         store.set_content(id, Some(SurfaceId(1)));
-        // No hit_rect set — should use full bounds.
+        // No hit region set — should use full bounds.
         store.evaluate();
 
         assert_eq!(store.hit_test(Point::new(50.0, 40.0)).len(), 1);
@@ -472,49 +505,55 @@ mod tests {
     }
 
     #[test]
-    fn hit_rect_with_transform() {
+    fn hit_region_with_transform() {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(220.0, 180.0));
         store.set_content(id, Some(SurfaceId(1)));
         store.set_transform(id, Transform3d::from_translation(100.0, 100.0, 0.0));
-        // Inset hit_rect: only (30,25)-(190,155) in local space.
-        store.set_hit_rect(id, Some(Rect::new(30.0, 25.0, 190.0, 155.0)));
+        // Inset hit region: only (30,25)-(190,155) in local space.
+        store.set_hit_region(
+            id,
+            Some(HitRegion::Rect(Rect::new(30.0, 25.0, 190.0, 155.0))),
+        );
         store.evaluate();
 
-        // Screen (140, 130) → local (40, 30) — inside hit_rect.
+        // Screen (140, 130) → local (40, 30) — inside hit region.
         let hits = store.hit_test(Point::new(140.0, 130.0));
         assert_eq!(hits.len(), 1);
 
-        // Screen (110, 110) → local (10, 10) — inside bounds, outside hit_rect.
+        // Screen (110, 110) → local (10, 10) — inside bounds, outside hit region.
         assert!(store.hit_test(Point::new(110.0, 110.0)).is_empty());
     }
 
     #[test]
-    fn hit_rect_cleared_restores_bounds() {
+    fn hit_region_cleared_restores_bounds() {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
         store.set_content(id, Some(SurfaceId(1)));
-        store.set_hit_rect(id, Some(Rect::new(40.0, 40.0, 60.0, 60.0)));
+        store.set_hit_region(id, Some(HitRegion::Rect(Rect::new(40.0, 40.0, 60.0, 60.0))));
         store.evaluate();
 
-        // (10, 10) is outside hit_rect.
+        // (10, 10) is outside hit region.
         assert!(store.hit_test(Point::new(10.0, 10.0)).is_empty());
 
-        // Clear hit_rect — falls back to full bounds.
-        store.set_hit_rect(id, None);
+        // Clear hit region — falls back to full bounds.
+        store.set_hit_region(id, None);
         assert_eq!(store.hit_test(Point::new(10.0, 10.0)).len(), 1);
     }
 
     #[test]
-    fn hit_rect_local_point_is_in_layer_space() {
+    fn hit_region_local_point_is_in_layer_space() {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(200.0, 200.0));
         store.set_content(id, Some(SurfaceId(1)));
         store.set_transform(id, Transform3d::from_translation(50.0, 50.0, 0.0));
-        store.set_hit_rect(id, Some(Rect::new(20.0, 20.0, 180.0, 180.0)));
+        store.set_hit_region(
+            id,
+            Some(HitRegion::Rect(Rect::new(20.0, 20.0, 180.0, 180.0))),
+        );
         store.evaluate();
 
         // Screen (100, 100) → local (50, 50).
@@ -523,5 +562,24 @@ mod tests {
         let eps = 1e-10;
         assert!((hits[0].local_point.x - 50.0).abs() < eps);
         assert!((hits[0].local_point.y - 50.0).abs() < eps);
+    }
+
+    #[test]
+    fn rounded_hit_region_rejects_corner() {
+        let mut store = LayerStore::new();
+        let id = store.create_layer();
+        store.set_bounds(id, Size::new(100.0, 100.0));
+        store.set_content(id, Some(SurfaceId(1)));
+        store.set_hit_region(
+            id,
+            Some(HitRegion::RoundedRect(RoundedRect::from_rect(
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                20.0,
+            ))),
+        );
+        store.evaluate();
+
+        assert_eq!(store.hit_test(Point::new(50.0, 50.0)).len(), 1);
+        assert!(store.hit_test(Point::new(2.0, 2.0)).is_empty());
     }
 }

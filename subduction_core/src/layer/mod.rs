@@ -8,6 +8,8 @@
 //! - An identity ([`LayerId`]) — a generational handle that becomes stale when
 //!   the layer is destroyed, preventing use-after-free bugs at the API level.
 //! - Topology — parent, first-child, and sibling links forming an ordered tree.
+//!   Sibling order is back-to-front: later siblings render in front of earlier
+//!   siblings, and hit testing walks the evaluated traversal order in reverse.
 //! - **Local properties** set by the caller: [`transform`](LayerStore::set_transform),
 //!   [`opacity`](LayerStore::set_opacity), [`clip`](LayerStore::set_clip),
 //!   [`content`](LayerStore::set_content), [`bounds`](LayerStore::set_bounds),

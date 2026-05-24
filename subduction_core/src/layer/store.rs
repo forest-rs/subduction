@@ -106,6 +106,21 @@ impl LayerStore {
         }
     }
 
+    /// Returns the number of live layers in the store.
+    ///
+    /// Destroyed layers are not counted, even though their slots may remain
+    /// allocated internally for reuse.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len as usize - self.free_list.len()
+    }
+
+    /// Returns whether the store contains no live layers.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn mark_inherited_dirty(&mut self, idx: u32) {
         self.dirty.mark_with(idx, dirty::TRANSFORM, &EagerPolicy);
         self.dirty.mark_with(idx, dirty::OPACITY, &EagerPolicy);
@@ -211,6 +226,9 @@ impl LayerStore {
 
     /// Adds `child` as the last child of `parent`.
     ///
+    /// Sibling order is back-to-front, so the appended child is the front-most
+    /// child of `parent`.
+    ///
     /// # Panics
     ///
     /// Panics if either handle is stale, or if `child` already has a parent.
@@ -249,6 +267,108 @@ impl LayerStore {
         self.dirty.mark(p, dirty::TOPOLOGY);
     }
 
+    /// Moves `layer` directly before `sibling` in their parent's child list.
+    ///
+    /// Sibling order is back-to-front, so this places `layer` immediately
+    /// behind `sibling`. This is a same-parent reorder operation; it does not
+    /// change inherited transform or opacity state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either handle is stale, either layer has no parent, or the
+    /// layers do not share the same parent.
+    pub fn move_before(&mut self, layer: LayerId, sibling: LayerId) {
+        self.validate(layer);
+        self.validate(sibling);
+        if layer == sibling {
+            return;
+        }
+
+        let layer_idx = layer.idx;
+        let sibling_idx = sibling.idx;
+        if self.next_sibling[layer_idx as usize] == sibling_idx {
+            return;
+        }
+
+        let parent = self.shared_reorder_parent(layer_idx, sibling_idx);
+        self.unlink_from_parent(layer_idx);
+        self.insert_unlinked_before(layer_idx, sibling_idx, parent);
+        self.mark_topology_reordered(parent);
+    }
+
+    /// Moves `layer` directly after `sibling` in their parent's child list.
+    ///
+    /// Sibling order is back-to-front, so this places `layer` immediately in
+    /// front of `sibling`. This is a same-parent reorder operation; it does not
+    /// change inherited transform or opacity state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either handle is stale, either layer has no parent, or the
+    /// layers do not share the same parent.
+    pub fn move_after(&mut self, layer: LayerId, sibling: LayerId) {
+        self.validate(layer);
+        self.validate(sibling);
+        if layer == sibling {
+            return;
+        }
+
+        let layer_idx = layer.idx;
+        let sibling_idx = sibling.idx;
+        if self.prev_sibling[layer_idx as usize] == sibling_idx {
+            return;
+        }
+
+        let parent = self.shared_reorder_parent(layer_idx, sibling_idx);
+        self.unlink_from_parent(layer_idx);
+        self.insert_unlinked_after(layer_idx, sibling_idx, parent);
+        self.mark_topology_reordered(parent);
+    }
+
+    /// Moves `layer` to the front of its parent's child list.
+    ///
+    /// Sibling order is back-to-front, so the front-most child is the last
+    /// sibling visited during normal traversal and the first sibling considered
+    /// during hit testing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle is stale or the layer has no parent.
+    pub fn move_to_front(&mut self, layer: LayerId) {
+        self.validate(layer);
+        let layer_idx = layer.idx;
+        let parent = self.reorder_parent(layer_idx);
+        if self.next_sibling[layer_idx as usize] == INVALID {
+            return;
+        }
+
+        self.unlink_from_parent(layer_idx);
+        self.append_unlinked_child(parent, layer_idx);
+        self.mark_topology_reordered(parent);
+    }
+
+    /// Moves `layer` to the back of its parent's child list.
+    ///
+    /// Sibling order is back-to-front, so the back-most child is the first
+    /// sibling visited during normal traversal and the last sibling considered
+    /// during hit testing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle is stale or the layer has no parent.
+    pub fn move_to_back(&mut self, layer: LayerId) {
+        self.validate(layer);
+        let layer_idx = layer.idx;
+        let parent = self.reorder_parent(layer_idx);
+        if self.prev_sibling[layer_idx as usize] == INVALID {
+            return;
+        }
+
+        self.unlink_from_parent(layer_idx);
+        self.prepend_unlinked_child(parent, layer_idx);
+        self.mark_topology_reordered(parent);
+    }
+
     /// Removes `child` from its current parent.
     ///
     /// # Panics
@@ -269,6 +389,30 @@ impl LayerStore {
         self.traversal_dirty = true;
         self.mark_inherited_dirty(c);
         self.dirty.mark(p, dirty::TOPOLOGY);
+    }
+
+    /// Destroys `root` and all descendants in postorder.
+    ///
+    /// Descendants are destroyed before their parents, using the current
+    /// back-to-front child order. This preserves the same generation
+    /// invalidation and lifecycle reporting semantics as repeated
+    /// [`destroy_layer`](Self::destroy_layer) calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `root` is stale.
+    pub fn destroy_subtree(&mut self, root: LayerId) {
+        self.validate(root);
+
+        let mut postorder = Vec::new();
+        self.collect_subtree_postorder(root.idx, &mut postorder);
+
+        for idx in postorder {
+            self.destroy_layer(LayerId {
+                idx,
+                generation: self.generation[idx as usize],
+            });
+        }
     }
 
     /// Moves `child` to be a child of `new_parent`.
@@ -730,6 +874,87 @@ impl LayerStore {
         );
     }
 
+    fn reorder_parent(&self, idx: u32) -> u32 {
+        let parent = self.parent[idx as usize];
+        assert!(parent != INVALID, "layer has no parent");
+        parent
+    }
+
+    fn shared_reorder_parent(&self, layer: u32, sibling: u32) -> u32 {
+        let parent = self.reorder_parent(layer);
+        let sibling_parent = self.reorder_parent(sibling);
+        assert_eq!(parent, sibling_parent, "layers must share a parent");
+        parent
+    }
+
+    fn mark_topology_reordered(&mut self, parent: u32) {
+        self.traversal_dirty = true;
+        self.dirty.mark(parent, dirty::TOPOLOGY);
+    }
+
+    fn prepend_unlinked_child(&mut self, parent: u32, child: u32) {
+        self.parent[child as usize] = parent;
+        self.prev_sibling[child as usize] = INVALID;
+        self.next_sibling[child as usize] = self.first_child[parent as usize];
+
+        if self.first_child[parent as usize] != INVALID {
+            self.prev_sibling[self.first_child[parent as usize] as usize] = child;
+        }
+        self.first_child[parent as usize] = child;
+    }
+
+    fn append_unlinked_child(&mut self, parent: u32, child: u32) {
+        self.parent[child as usize] = parent;
+        self.prev_sibling[child as usize] = INVALID;
+        self.next_sibling[child as usize] = INVALID;
+
+        if self.first_child[parent as usize] == INVALID {
+            self.first_child[parent as usize] = child;
+            return;
+        }
+
+        let mut last = self.first_child[parent as usize];
+        while self.next_sibling[last as usize] != INVALID {
+            last = self.next_sibling[last as usize];
+        }
+        self.next_sibling[last as usize] = child;
+        self.prev_sibling[child as usize] = last;
+    }
+
+    fn insert_unlinked_before(&mut self, child: u32, sibling: u32, parent: u32) {
+        self.parent[child as usize] = parent;
+        self.next_sibling[child as usize] = sibling;
+        self.prev_sibling[child as usize] = self.prev_sibling[sibling as usize];
+
+        if self.prev_sibling[sibling as usize] != INVALID {
+            self.next_sibling[self.prev_sibling[sibling as usize] as usize] = child;
+        } else {
+            self.first_child[parent as usize] = child;
+        }
+        self.prev_sibling[sibling as usize] = child;
+    }
+
+    fn insert_unlinked_after(&mut self, child: u32, sibling: u32, parent: u32) {
+        self.parent[child as usize] = parent;
+        self.prev_sibling[child as usize] = sibling;
+        self.next_sibling[child as usize] = self.next_sibling[sibling as usize];
+
+        if self.next_sibling[sibling as usize] != INVALID {
+            self.prev_sibling[self.next_sibling[sibling as usize] as usize] = child;
+        }
+        self.next_sibling[sibling as usize] = child;
+    }
+
+    fn collect_subtree_postorder(&self, idx: u32, out: &mut Vec<u32>) {
+        let mut child = self.first_child[idx as usize];
+        while child != INVALID {
+            let next = self.next_sibling[child as usize];
+            self.collect_subtree_postorder(child, out);
+            child = next;
+        }
+        out.push(idx);
+    }
+
     /// Removes `idx` from its parent's child list without touching dirty state.
     fn unlink_from_parent(&mut self, idx: u32) {
         let p = self.parent[idx as usize];
@@ -759,6 +984,10 @@ mod tests {
 
     use super::*;
 
+    fn child_order(store: &LayerStore, parent: LayerId) -> Vec<LayerId> {
+        store.children(parent).collect()
+    }
+
     #[test]
     fn create_and_destroy() {
         let mut store = LayerStore::new();
@@ -766,6 +995,31 @@ mod tests {
         assert!(store.is_alive(id));
         store.destroy_layer(id);
         assert!(!store.is_alive(id));
+    }
+
+    #[test]
+    fn len_counts_live_layers() {
+        let mut store = LayerStore::new();
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
+
+        let first = store.create_layer();
+        let second = store.create_layer();
+        assert_eq!(store.len(), 2);
+        assert!(!store.is_empty());
+
+        store.destroy_layer(first);
+        assert_eq!(store.len(), 1);
+        assert!(!store.is_empty());
+
+        let reused = store.create_layer();
+        assert_eq!(store.len(), 2);
+        assert_ne!(first.generation(), reused.generation());
+
+        store.destroy_layer(second);
+        store.destroy_layer(reused);
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 
     #[test]
@@ -831,6 +1085,98 @@ mod tests {
     }
 
     #[test]
+    fn reorder_apis_update_child_order() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let a = store.create_layer();
+        let b = store.create_layer();
+        let c = store.create_layer();
+
+        store.add_child(parent, a);
+        store.add_child(parent, b);
+        store.add_child(parent, c);
+        assert_eq!(child_order(&store, parent), vec![a, b, c]);
+
+        store.move_to_front(a);
+        assert_eq!(child_order(&store, parent), vec![b, c, a]);
+
+        store.move_to_back(a);
+        assert_eq!(child_order(&store, parent), vec![a, b, c]);
+
+        store.move_after(a, c);
+        assert_eq!(child_order(&store, parent), vec![b, c, a]);
+
+        store.move_before(a, b);
+        assert_eq!(child_order(&store, parent), vec![a, b, c]);
+
+        store.move_before(c, a);
+        assert_eq!(child_order(&store, parent), vec![c, a, b]);
+
+        store.move_after(c, b);
+        assert_eq!(child_order(&store, parent), vec![a, b, c]);
+    }
+
+    #[test]
+    fn reorder_marks_topology_without_inherited_dirty() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let a = store.create_layer();
+        let b = store.create_layer();
+
+        store.add_child(parent, a);
+        store.add_child(parent, b);
+        let _ = store.evaluate();
+
+        store.move_to_front(a);
+        let changes = store.evaluate();
+        assert!(changes.topology_changed);
+        assert!(changes.transforms.is_empty());
+        assert!(changes.opacities.is_empty());
+    }
+
+    #[test]
+    fn redundant_reorder_does_not_mark_topology() {
+        let mut store = LayerStore::new();
+        let parent = store.create_layer();
+        let a = store.create_layer();
+        let b = store.create_layer();
+
+        store.add_child(parent, a);
+        store.add_child(parent, b);
+        let _ = store.evaluate();
+
+        store.move_before(a, b);
+        store.move_after(b, a);
+        store.move_to_back(a);
+        store.move_to_front(b);
+
+        let changes = store.evaluate();
+        assert!(!changes.topology_changed);
+    }
+
+    #[test]
+    #[should_panic(expected = "layers must share a parent")]
+    fn move_before_requires_shared_parent() {
+        let mut store = LayerStore::new();
+        let first_parent = store.create_layer();
+        let second_parent = store.create_layer();
+        let a = store.create_layer();
+        let b = store.create_layer();
+
+        store.add_child(first_parent, a);
+        store.add_child(second_parent, b);
+        store.move_before(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "layer has no parent")]
+    fn move_to_front_requires_parent() {
+        let mut store = LayerStore::new();
+        let root = store.create_layer();
+        store.move_to_front(root);
+    }
+
+    #[test]
     fn reparent_works() {
         let mut store = LayerStore::new();
         let p1 = store.create_layer();
@@ -868,6 +1214,33 @@ mod tests {
         let child = store.create_layer();
         store.add_child(parent, child);
         store.destroy_layer(parent);
+    }
+
+    #[test]
+    fn destroy_subtree_unlinks_from_parent_and_reports_postorder() {
+        let mut store = LayerStore::new();
+        let root = store.create_layer();
+        let branch = store.create_layer();
+        let sibling = store.create_layer();
+        let leaf = store.create_layer();
+
+        store.add_child(root, branch);
+        store.add_child(root, sibling);
+        store.add_child(branch, leaf);
+        let _ = store.evaluate();
+
+        store.destroy_subtree(branch);
+
+        assert!(store.is_alive(root));
+        assert!(store.is_alive(sibling));
+        assert!(!store.is_alive(branch));
+        assert!(!store.is_alive(leaf));
+        assert_eq!(store.len(), 2);
+        assert_eq!(child_order(&store, root), vec![sibling]);
+
+        let changes = store.evaluate();
+        assert_eq!(changes.removed, vec![leaf.idx, branch.idx]);
+        assert!(changes.topology_changed);
     }
 
     #[test]

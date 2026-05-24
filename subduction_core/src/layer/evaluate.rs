@@ -192,6 +192,9 @@ impl LayerStore {
 
     /// Returns the current traversal order (depth-first pre-order).
     ///
+    /// Siblings appear in back-to-front order. Hit testing walks this order in
+    /// reverse so front-most layers are reported first.
+    ///
     /// Only valid after [`evaluate`](Self::evaluate) has been called at least
     /// once (or if the traversal has been manually rebuilt).
     #[must_use]

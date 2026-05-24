@@ -333,7 +333,7 @@ mod tests {
             id,
             Some(ClipShape::Rect(kurbo::Rect::new(0.0, 0.0, 50.0, 50.0))),
         );
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(SurfaceId::from_raw_parts(1, 0)));
         let changes = store.evaluate();
         assert!(changes.clips.contains(&id.idx));
         assert!(changes.content.contains(&id.idx));

@@ -1,7 +1,7 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! [`WgpuPresenter`]: a fallback compositor that composites layer textures via wgpu.
+//! [`WgpuPresenter`]: a fallback compositor that composites surface textures via wgpu.
 
 use std::collections::HashMap;
 
@@ -16,7 +16,7 @@ use crate::pipeline::CompositorPipeline;
 /// Minimum uniform buffer offset alignment required by wgpu.
 const UNIFORM_ALIGN: u64 = 256;
 /// Texture usages required by the presenter compositor itself.
-const REQUIRED_LAYER_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING;
+const REQUIRED_SURFACE_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING;
 
 /// Per-layer uniform data uploaded to the GPU.
 ///
@@ -30,19 +30,64 @@ struct LayerUniforms {
     _pad: [f32; 3],
 }
 
-/// GPU state for a single layer: its texture, view, and texture bind group.
-struct LayerEntry {
+/// GPU state for one [`SurfaceId`].
+struct SurfaceEntry {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     size: (u32, u32),
 }
 
-impl std::fmt::Debug for LayerEntry {
+impl std::fmt::Debug for SurfaceEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LayerEntry")
+        f.debug_struct("SurfaceEntry")
             .field("size", &self.size)
             .finish_non_exhaustive()
+    }
+}
+
+/// Current frame attachment state between surface content and layer slots.
+///
+/// Layer slots are raw `LayerStore` storage rows from `FrameChanges`; they are
+/// useful presenter plumbing, but they are not content identity. This table
+/// keeps the one-current-slot invariant for each surface without making slots
+/// part of the public render-target API.
+#[derive(Debug, Default)]
+struct SurfaceAttachments {
+    attached_surface_to_slot: HashMap<SurfaceId, u32>,
+    slot_to_attached_surface: HashMap<u32, SurfaceId>,
+}
+
+impl SurfaceAttachments {
+    fn surface_for_slot(&self, slot: u32) -> Option<SurfaceId> {
+        self.slot_to_attached_surface.get(&slot).copied()
+    }
+
+    fn is_attached_to_slot(&self, surface_id: SurfaceId, slot: u32) -> bool {
+        self.attached_surface_to_slot.get(&surface_id).copied() == Some(slot)
+    }
+
+    fn attach(&mut self, surface_id: SurfaceId, slot: u32) {
+        self.detach_slot(slot);
+        self.detach_surface(surface_id);
+        self.attached_surface_to_slot.insert(surface_id, slot);
+        self.slot_to_attached_surface.insert(slot, surface_id);
+    }
+
+    fn detach_slot(&mut self, slot: u32) -> Option<SurfaceId> {
+        let surface_id = self.slot_to_attached_surface.remove(&slot)?;
+        if self.attached_surface_to_slot.get(&surface_id).copied() == Some(slot) {
+            self.attached_surface_to_slot.remove(&surface_id);
+        }
+        Some(surface_id)
+    }
+
+    fn detach_surface(&mut self, surface_id: SurfaceId) -> Option<u32> {
+        let slot = self.attached_surface_to_slot.remove(&surface_id)?;
+        if self.slot_to_attached_surface.get(&slot).copied() == Some(surface_id) {
+            self.slot_to_attached_surface.remove(&slot);
+        }
+        Some(slot)
     }
 }
 
@@ -55,24 +100,24 @@ struct UniformCache {
     capacity: u64,
 }
 
-/// Borrowed render target for a presenter-owned layer texture.
+/// Borrowed render target for a presenter-owned surface texture.
 ///
 /// This exposes both the underlying texture and the default texture view so
 /// host renderers can choose the API they need. Backends such as Vello render
 /// through the view, while Skia/Ganesh needs the texture handle itself.
 #[derive(Clone, Copy, Debug)]
-pub struct WgpuLayerTarget<'a> {
+pub struct WgpuSurfaceTarget<'a> {
     texture: &'a wgpu::Texture,
     view: &'a wgpu::TextureView,
 }
 
-impl<'a> WgpuLayerTarget<'a> {
-    /// Returns the presenter-owned wgpu texture for this layer.
+impl<'a> WgpuSurfaceTarget<'a> {
+    /// Returns the presenter-owned wgpu texture for this surface.
     pub fn texture(self) -> &'a wgpu::Texture {
         self.texture
     }
 
-    /// Returns the default texture view for this layer.
+    /// Returns the default texture view for this surface.
     pub fn view(self) -> &'a wgpu::TextureView {
         self.view
     }
@@ -152,19 +197,29 @@ impl LayerRoot {
 
 /// A wgpu-based fallback compositor.
 ///
-/// Allocates one texture per layer and composites them in traversal order
-/// (back-to-front) with world transforms, opacity, and scissor clipping.
+/// Allocates one texture per [`SurfaceId`] and composites attached surfaces in
+/// layer traversal order (back-to-front) with world transforms, opacity, and
+/// scissor clipping.
 ///
-/// Layer textures use **premultiplied alpha**. Apps should render premultiplied
-/// content into each layer's texture for correct blending.
+/// Layer slots remain private presenter plumbing: [`FrameChanges`] reports raw
+/// slot indices so the presenter can read `LayerStore::*_at(idx)` efficiently,
+/// but render targets are keyed by surface identity. A contentless grouping
+/// layer does not allocate a texture.
 ///
-/// Presenter-owned layer textures are host render targets. By default,
+/// Presenter-owned surface textures are host render targets. By default,
 /// [`WgpuPresenter::new`] allocates them as `Rgba8Unorm` textures with
 /// [`wgpu::TextureUsages::TEXTURE_BINDING`],
 /// [`wgpu::TextureUsages::RENDER_ATTACHMENT`], and
 /// [`wgpu::TextureUsages::STORAGE_BINDING`] so renderers such as Vello can
 /// render into them directly even when the output surface uses a different
 /// format such as `Bgra8Unorm`.
+///
+/// Surface textures live until [`release_surface`](Self::release_surface) is
+/// called. Detaching a surface from a layer or destroying that layer only
+/// removes the current attachment; it does not destroy the surface texture.
+///
+/// Surface textures use **premultiplied alpha**. Apps should render
+/// premultiplied content into each surface texture for correct blending.
 ///
 /// # Usage
 ///
@@ -176,7 +231,7 @@ impl LayerRoot {
 /// let changes = store.evaluate();
 /// presenter.apply(&store, &changes);
 ///
-/// // App renders content into each layer's texture.
+/// // App renders content into each surface texture.
 /// for (surface_id, draw_fn) in &my_surfaces {
 ///     if let Some(target) = presenter.target_for_surface(*surface_id) {
 ///         draw_fn(&device, &queue, target.view());
@@ -197,19 +252,17 @@ pub struct WgpuPresenter {
     pipeline: CompositorPipeline,
     root: LayerRoot,
 
-    /// Per-layer GPU state, keyed by slot index.
-    layer_entries: HashMap<u32, LayerEntry>,
-    /// Maps `SurfaceId.0` → slot index for content lookup.
-    surface_to_slot: HashMap<u32, u32>,
-    /// Reverse: slot index → `SurfaceId.0` for O(1) cleanup.
-    slot_to_surface: HashMap<u32, u32>,
+    /// Per-surface GPU state, keyed by content identity.
+    surface_entries: HashMap<SurfaceId, SurfaceEntry>,
+    /// Current frame mapping between surface IDs and layer slots.
+    attachments: SurfaceAttachments,
 
-    /// Default size for new layer textures.
-    default_layer_size: (u32, u32),
-    /// Texture format of presenter-owned layer textures.
-    layer_format: wgpu::TextureFormat,
-    /// Texture usages of presenter-owned layer textures.
-    layer_usage: wgpu::TextureUsages,
+    /// Default size for new surface textures.
+    default_surface_size: (u32, u32),
+    /// Texture format of presenter-owned surface textures.
+    surface_format: wgpu::TextureFormat,
+    /// Texture usages of presenter-owned surface textures.
+    surface_usage: wgpu::TextureUsages,
 
     /// Persistent uniform buffer + bind group, grown as needed.
     uniform_cache: Option<UniformCache>,
@@ -217,58 +270,58 @@ pub struct WgpuPresenter {
 
 /// Texture allocation policy for [`WgpuPresenter`].
 ///
-/// This config controls the contract for presenter-owned layer textures:
+/// This config controls the contract for presenter-owned surface textures:
 /// their size, format, and usage flags. The final compositing target is owned
 /// separately by [`LayerRoot`].
 ///
 /// # Migration note
 ///
-/// Prior to this config, `WgpuPresenter` allocated layer textures with the
+/// Prior to this config, `WgpuPresenter` allocated surface textures with the
 /// same format as the output surface and only
 /// [`wgpu::TextureUsages::TEXTURE_BINDING`] plus
 /// [`wgpu::TextureUsages::RENDER_ATTACHMENT`]. The default is now
 /// `Rgba8Unorm` plus storage binding so compute-based renderers can write
-/// directly into presenter-owned layer textures.
+/// directly into presenter-owned surface textures.
 #[derive(Clone, Copy, Debug)]
 pub struct WgpuPresenterConfig {
-    /// Default `(width, height)` for newly allocated layer textures.
-    pub default_layer_size: (u32, u32),
-    /// Texture format of presenter-owned layer textures.
-    pub layer_format: wgpu::TextureFormat,
-    /// Texture usages of presenter-owned layer textures.
+    /// Default `(width, height)` for newly allocated surface textures.
+    pub default_surface_size: (u32, u32),
+    /// Texture format of presenter-owned surface textures.
+    pub surface_format: wgpu::TextureFormat,
+    /// Texture usages of presenter-owned surface textures.
     ///
     /// The presenter always requires [`wgpu::TextureUsages::TEXTURE_BINDING`]
     /// so it can sample these textures during composition.
-    pub layer_usage: wgpu::TextureUsages,
+    pub surface_usage: wgpu::TextureUsages,
 }
 
 impl WgpuPresenterConfig {
     /// Creates a presenter config with defaults suitable for host-rendered
-    /// layer textures.
-    pub fn new(default_layer_size: (u32, u32)) -> Self {
+    /// surface textures.
+    pub fn new(default_surface_size: (u32, u32)) -> Self {
         Self {
-            default_layer_size,
-            layer_format: wgpu::TextureFormat::Rgba8Unorm,
-            layer_usage: wgpu::TextureUsages::TEXTURE_BINDING
+            default_surface_size,
+            surface_format: wgpu::TextureFormat::Rgba8Unorm,
+            surface_usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::STORAGE_BINDING,
         }
     }
 
-    /// Overrides the layer texture format.
+    /// Overrides the surface texture format.
     #[must_use]
-    pub fn with_layer_format(mut self, layer_format: wgpu::TextureFormat) -> Self {
-        self.layer_format = layer_format;
+    pub fn with_surface_format(mut self, surface_format: wgpu::TextureFormat) -> Self {
+        self.surface_format = surface_format;
         self
     }
 
-    /// Overrides the layer texture usage flags.
+    /// Overrides the surface texture usage flags.
     ///
     /// [`wgpu::TextureUsages::TEXTURE_BINDING`] is always added because the
-    /// presenter compositor samples each layer texture.
+    /// presenter compositor samples each surface texture.
     #[must_use]
-    pub fn with_layer_usage(mut self, layer_usage: wgpu::TextureUsages) -> Self {
-        self.layer_usage = layer_usage | REQUIRED_LAYER_USAGE;
+    pub fn with_surface_usage(mut self, surface_usage: wgpu::TextureUsages) -> Self {
+        self.surface_usage = surface_usage | REQUIRED_SURFACE_USAGE;
         self
     }
 }
@@ -278,26 +331,26 @@ impl WgpuPresenter {
     ///
     /// - `device` / `queue`: the wgpu device and queue to use.
     /// - `root`: the final compositing root.
-    /// - `default_layer_size`: default `(width, height)` for new layer textures.
+    /// - `default_surface_size`: default `(width, height)` for new surface textures.
     ///
-    /// Layer textures default to `Rgba8Unorm` with texture binding, render
+    /// Surface textures default to `Rgba8Unorm` with texture binding, render
     /// attachment, and storage binding. Use [`WgpuPresenter::new_with_config`]
     /// or the builder methods on `Self` to override that contract.
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         root: LayerRoot,
-        default_layer_size: (u32, u32),
+        default_surface_size: (u32, u32),
     ) -> Self {
         Self::new_with_config(
             device,
             queue,
             root,
-            WgpuPresenterConfig::new(default_layer_size),
+            WgpuPresenterConfig::new(default_surface_size),
         )
     }
 
-    /// Creates a new wgpu presenter with explicit layer texture policy.
+    /// Creates a new wgpu presenter with explicit surface texture policy.
     pub fn new_with_config(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -311,64 +364,72 @@ impl WgpuPresenter {
             queue,
             pipeline,
             root,
-            layer_entries: HashMap::new(),
-            surface_to_slot: HashMap::new(),
-            slot_to_surface: HashMap::new(),
-            default_layer_size: config.default_layer_size,
-            layer_format: config.layer_format,
-            layer_usage: config.layer_usage | REQUIRED_LAYER_USAGE,
+            surface_entries: HashMap::new(),
+            attachments: SurfaceAttachments::default(),
+            default_surface_size: config.default_surface_size,
+            surface_format: config.surface_format,
+            surface_usage: config.surface_usage | REQUIRED_SURFACE_USAGE,
             uniform_cache: None,
         }
     }
 
-    /// Overrides the layer texture format for future allocations.
+    /// Overrides the surface texture format for future allocations.
     ///
     /// This is intended for setup-time configuration before the first
     /// [`Presenter::apply`] call.
     #[must_use]
-    pub fn with_layer_format(mut self, layer_format: wgpu::TextureFormat) -> Self {
-        self.layer_format = layer_format;
+    pub fn with_surface_format(mut self, surface_format: wgpu::TextureFormat) -> Self {
+        self.surface_format = surface_format;
         self
     }
 
-    /// Overrides the layer texture usage flags for future allocations.
+    /// Overrides the surface texture usage flags for future allocations.
     ///
     /// [`wgpu::TextureUsages::TEXTURE_BINDING`] is always preserved because
-    /// the presenter compositor samples each layer texture.
+    /// the presenter compositor samples each surface texture.
     #[must_use]
-    pub fn with_layer_usage(mut self, layer_usage: wgpu::TextureUsages) -> Self {
-        self.layer_usage = layer_usage | REQUIRED_LAYER_USAGE;
+    pub fn with_surface_usage(mut self, surface_usage: wgpu::TextureUsages) -> Self {
+        self.surface_usage = surface_usage | REQUIRED_SURFACE_USAGE;
         self
     }
 
-    /// Returns the layer target for a [`SurfaceId`] so the app can render into it.
+    /// Returns the render target for a [`SurfaceId`].
     ///
-    /// The returned target uses [`WgpuPresenter::layer_format`] and the
-    /// corresponding texture was allocated with [`WgpuPresenter::layer_usage`].
-    pub fn target_for_surface(&self, surface_id: SurfaceId) -> Option<WgpuLayerTarget<'_>> {
-        let slot = self.surface_to_slot.get(&surface_id.0)?;
-        self.target_for_slot(*slot)
+    /// Targets are allocated when [`apply`](Presenter::apply) first observes
+    /// `surface_id` attached as layer content. A target may remain available
+    /// after the surface is detached from a layer; call
+    /// [`release_surface`](Self::release_surface) to drop it.
+    pub fn target_for_surface(&self, surface_id: SurfaceId) -> Option<WgpuSurfaceTarget<'_>> {
+        self.surface_entries
+            .get(&surface_id)
+            .map(|entry| WgpuSurfaceTarget {
+                texture: &entry.texture,
+                view: &entry.view,
+            })
     }
 
-    /// Returns the layer target for a raw slot index.
+    /// Releases the presenter-owned render target for a surface.
     ///
-    /// The returned target uses [`WgpuPresenter::layer_format`] and the
-    /// corresponding texture was allocated with [`WgpuPresenter::layer_usage`].
-    pub fn target_for_slot(&self, idx: u32) -> Option<WgpuLayerTarget<'_>> {
-        self.layer_entries.get(&idx).map(|entry| WgpuLayerTarget {
-            texture: &entry.texture,
-            view: &entry.view,
-        })
+    /// This removes any current attachment mapping and drops the cached wgpu
+    /// texture. It does not mutate [`LayerStore`]; callers should detach the
+    /// surface from any layer before releasing it, or intentionally accept that
+    /// the store still names a surface the presenter no longer has cached.
+    ///
+    /// Returns `true` if either a target or attachment mapping was removed.
+    pub fn release_surface(&mut self, surface_id: SurfaceId) -> bool {
+        let had_entry = self.surface_entries.remove(&surface_id).is_some();
+        let had_attachment = self.attachments.detach_surface(surface_id).is_some();
+        had_entry || had_attachment
     }
 
-    /// Returns the texture format used for presenter-owned layer textures.
-    pub fn layer_format(&self) -> wgpu::TextureFormat {
-        self.layer_format
+    /// Returns the texture format used for presenter-owned surface textures.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_format
     }
 
-    /// Returns the texture usage flags used for presenter-owned layer textures.
-    pub fn layer_usage(&self) -> wgpu::TextureUsages {
-        self.layer_usage
+    /// Returns the texture usage flags used for presenter-owned surface textures.
+    pub fn surface_usage(&self) -> wgpu::TextureUsages {
+        self.surface_usage
     }
 
     /// Returns the scene root.
@@ -391,10 +452,10 @@ impl WgpuPresenter {
         &self.queue
     }
 
-    /// Composites all visible layers into the given output view.
+    /// Composites all visible attached surfaces into the given output view.
     ///
     /// Call after [`Presenter::apply`] and after the app has rendered content
-    /// into each layer's texture.
+    /// into each attached surface texture.
     pub fn composite(
         &mut self,
         store: &LayerStore,
@@ -402,11 +463,23 @@ impl WgpuPresenter {
     ) -> wgpu::CommandBuffer {
         let traversal = store.traversal_order();
 
-        // Collect visible layers that have a texture allocated.
-        let visible: Vec<u32> = traversal
+        // Collect visible attached surfaces in layer traversal order.
+        let visible: Vec<(u32, SurfaceId)> = traversal
             .iter()
             .copied()
-            .filter(|&idx| !store.effective_hidden_at(idx) && self.layer_entries.contains_key(&idx))
+            .filter_map(|idx| {
+                if store.effective_hidden_at(idx) {
+                    return None;
+                }
+                let surface_id = store.content_at(idx)?;
+                if self.attachments.is_attached_to_slot(surface_id, idx)
+                    && self.surface_entries.contains_key(&surface_id)
+                {
+                    Some((idx, surface_id))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Build uniform data with 256-byte aligned stride.
@@ -423,8 +496,8 @@ impl WgpuPresenter {
         let output_size = self.root.size();
         let ortho = ortho_projection(output_size.0, output_size.1);
 
-        for (i, &idx) in visible.iter().enumerate() {
-            let entry = &self.layer_entries[&idx];
+        for (i, &(idx, surface_id)) in visible.iter().enumerate() {
+            let entry = &self.surface_entries[&surface_id];
             let world = store.world_transform_at(idx);
             let bounds = store.bounds_at(idx);
             let (sw, sh) = if bounds.width > 0.0 && bounds.height > 0.0 {
@@ -515,8 +588,8 @@ impl WgpuPresenter {
 
             pass.set_pipeline(&self.pipeline.render_pipeline);
 
-            for (i, &idx) in visible.iter().enumerate() {
-                let entry = &self.layer_entries[&idx];
+            for (i, &(idx, surface_id)) in visible.iter().enumerate() {
+                let entry = &self.surface_entries[&surface_id];
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "dynamic offset fits in u32 for any reasonable layer count"
@@ -541,10 +614,10 @@ impl WgpuPresenter {
         encoder.finish()
     }
 
-    /// Creates a layer texture, view, and bind group with the given size.
-    fn create_layer_entry(&self, size: (u32, u32)) -> LayerEntry {
+    /// Creates a surface texture, view, and bind group with the given size.
+    fn create_surface_entry(&self, size: (u32, u32)) -> SurfaceEntry {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("layer texture"),
+            label: Some("surface texture"),
             size: wgpu::Extent3d {
                 width: size.0,
                 height: size.1,
@@ -553,18 +626,18 @@ impl WgpuPresenter {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.layer_format,
-            usage: self.layer_usage,
+            format: self.surface_format,
+            usage: self.surface_usage,
             view_formats: &[],
         });
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("layer texture view"),
+            label: Some("surface texture view"),
             ..Default::default()
         });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("layer texture bg"),
+            label: Some("surface texture bg"),
             layout: &self.pipeline.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -578,7 +651,7 @@ impl WgpuPresenter {
             ],
         });
 
-        LayerEntry {
+        SurfaceEntry {
             texture,
             view,
             bind_group,
@@ -586,51 +659,68 @@ impl WgpuPresenter {
         }
     }
 
-    /// Removes the surface mapping for a given slot, if any.
-    fn remove_surface_for_slot(&mut self, slot: u32) {
-        if let Some(surface) = self.slot_to_surface.remove(&slot) {
-            self.surface_to_slot.remove(&surface);
+    fn surface_size_for_slot(&self, store: &LayerStore, slot: u32) -> (u32, u32) {
+        let bounds = store.bounds_at(slot);
+        if bounds.width > 0.0 && bounds.height > 0.0 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "bounds are non-negative pixel dimensions that fit in u32"
+            )]
+            {
+                (bounds.width as u32, bounds.height as u32)
+            }
+        } else {
+            self.default_surface_size
         }
+    }
+
+    fn ensure_surface_entry(&mut self, surface_id: SurfaceId, size: (u32, u32)) {
+        if self.surface_entries.contains_key(&surface_id) {
+            return;
+        }
+
+        let entry = self.create_surface_entry(size);
+        self.surface_entries.insert(surface_id, entry);
+    }
+
+    fn resize_surface_entry(&mut self, surface_id: SurfaceId, size: (u32, u32)) {
+        if self
+            .surface_entries
+            .get(&surface_id)
+            .map(|entry| entry.size)
+            == Some(size)
+        {
+            return;
+        }
+
+        let entry = self.create_surface_entry(size);
+        self.surface_entries.insert(surface_id, entry);
     }
 }
 
 impl Presenter for WgpuPresenter {
     fn apply(&mut self, store: &LayerStore, changes: &FrameChanges) {
-        // Removals: drop GPU resources for removed layers.
+        // Removals detach slots. Surface resources are released explicitly.
         for &idx in &changes.removed {
-            self.layer_entries.remove(&idx);
-            self.remove_surface_for_slot(idx);
+            self.attachments.detach_slot(idx);
         }
 
-        // Additions: allocate textures for new layers.
-        for &idx in &changes.added {
-            let entry = self.create_layer_entry(self.default_layer_size);
-            self.layer_entries.insert(idx, entry);
-        }
-
-        // Content changes: update surface ↔ slot mapping.
+        // Content changes update the current surface ↔ slot attachment.
         for &idx in &changes.content {
-            self.remove_surface_for_slot(idx);
+            self.attachments.detach_slot(idx);
             if let Some(surface_id) = store.content_at(idx) {
-                self.surface_to_slot.insert(surface_id.0, idx);
-                self.slot_to_surface.insert(idx, surface_id.0);
+                self.attachments.attach(surface_id, idx);
+                let size = self.surface_size_for_slot(store, idx);
+                self.ensure_surface_entry(surface_id, size);
             }
         }
 
-        // Bounds changes: resize layer textures.
+        // Bounds changes resize the attached surface texture, if any.
         for &idx in &changes.bounds {
-            let bounds = store.bounds_at(idx);
-            if bounds.width > 0.0 && bounds.height > 0.0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "bounds are non-negative pixel dimensions that fit in u32"
-                )]
-                let size = (bounds.width as u32, bounds.height as u32);
-                if self.layer_entries.contains_key(&idx) {
-                    let entry = self.create_layer_entry(size);
-                    self.layer_entries.insert(idx, entry);
-                }
+            if let Some(surface_id) = self.attachments.surface_for_slot(idx) {
+                let size = self.surface_size_for_slot(store, idx);
+                self.resize_surface_entry(surface_id, size);
             }
         }
 
@@ -781,6 +871,63 @@ mod tests {
     use super::*;
     use subduction_core::output::Color;
 
+    fn surface_id(index: u32) -> SurfaceId {
+        SurfaceId::from_raw_parts(index, 0)
+    }
+
+    #[test]
+    fn surface_attachments_move_surface_to_new_slot() {
+        let mut attachments = SurfaceAttachments::default();
+        let surface = surface_id(1);
+
+        attachments.attach(surface, 10);
+        attachments.attach(surface, 20);
+
+        assert_eq!(attachments.surface_for_slot(10), None);
+        assert_eq!(attachments.surface_for_slot(20), Some(surface));
+        assert!(attachments.is_attached_to_slot(surface, 20));
+        assert!(!attachments.is_attached_to_slot(surface, 10));
+    }
+
+    #[test]
+    fn surface_attachments_replace_slot_surface() {
+        let mut attachments = SurfaceAttachments::default();
+        let old_surface = surface_id(1);
+        let new_surface = surface_id(2);
+
+        attachments.attach(old_surface, 10);
+        attachments.attach(new_surface, 10);
+
+        assert_eq!(attachments.surface_for_slot(10), Some(new_surface));
+        assert!(attachments.is_attached_to_slot(new_surface, 10));
+        assert!(!attachments.is_attached_to_slot(old_surface, 10));
+    }
+
+    #[test]
+    fn surface_attachments_detach_surface_clears_reverse_mapping() {
+        let mut attachments = SurfaceAttachments::default();
+        let surface = surface_id(1);
+
+        attachments.attach(surface, 10);
+        assert_eq!(attachments.detach_surface(surface), Some(10));
+
+        assert_eq!(attachments.surface_for_slot(10), None);
+        assert!(!attachments.is_attached_to_slot(surface, 10));
+    }
+
+    #[test]
+    fn surface_attachments_detach_old_slot_after_move_preserves_new_slot() {
+        let mut attachments = SurfaceAttachments::default();
+        let surface = surface_id(1);
+
+        attachments.attach(surface, 10);
+        attachments.attach(surface, 20);
+
+        assert_eq!(attachments.detach_slot(10), None);
+        assert_eq!(attachments.surface_for_slot(20), Some(surface));
+        assert!(attachments.is_attached_to_slot(surface, 20));
+    }
+
     #[test]
     fn layer_root_mutates_in_place() {
         let mut root = LayerRoot::new(wgpu::TextureFormat::Bgra8Unorm, (640, 480));
@@ -798,23 +945,23 @@ mod tests {
     }
 
     #[test]
-    fn presenter_config_defaults_to_vello_compatible_layers() {
+    fn presenter_config_defaults_to_vello_compatible_surfaces() {
         let config = WgpuPresenterConfig::new((256, 256));
 
-        assert_eq!(config.layer_format, wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(config.surface_format, wgpu::TextureFormat::Rgba8Unorm);
         assert!(
             config
-                .layer_usage
+                .surface_usage
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
         );
         assert!(
             config
-                .layer_usage
+                .surface_usage
                 .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         );
         assert!(
             config
-                .layer_usage
+                .surface_usage
                 .contains(wgpu::TextureUsages::STORAGE_BINDING)
         );
     }
@@ -822,18 +969,18 @@ mod tests {
     #[test]
     fn presenter_config_preserves_required_sampling_usage() {
         let config = WgpuPresenterConfig::new((256, 256))
-            .with_layer_format(wgpu::TextureFormat::Bgra8Unorm)
-            .with_layer_usage(wgpu::TextureUsages::STORAGE_BINDING);
+            .with_surface_format(wgpu::TextureFormat::Bgra8Unorm)
+            .with_surface_usage(wgpu::TextureUsages::STORAGE_BINDING);
 
-        assert_eq!(config.layer_format, wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(config.surface_format, wgpu::TextureFormat::Bgra8Unorm);
         assert!(
             config
-                .layer_usage
+                .surface_usage
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
         );
         assert!(
             config
-                .layer_usage
+                .surface_usage
                 .contains(wgpu::TextureUsages::STORAGE_BINDING)
         );
     }

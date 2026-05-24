@@ -146,12 +146,16 @@ mod tests {
     use crate::transform::Transform3d;
     use kurbo::{RoundedRect, Size};
 
+    fn surface_id(index: u32) -> SurfaceId {
+        SurfaceId::from_raw_parts(index, 0)
+    }
+
     /// Helper: create a store with a single content layer at the origin.
     fn single_layer_store(w: f64, h: f64) -> (LayerStore, LayerId) {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(w, h));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.evaluate();
         (store, id)
     }
@@ -178,11 +182,11 @@ mod tests {
         let mut store = LayerStore::new();
         let back = store.create_layer();
         store.set_bounds(back, Size::new(200.0, 200.0));
-        store.set_content(back, Some(SurfaceId(1)));
+        store.set_content(back, Some(surface_id(1)));
 
         let front = store.create_layer();
         store.set_bounds(front, Size::new(200.0, 200.0));
-        store.set_content(front, Some(SurfaceId(2)));
+        store.set_content(front, Some(surface_id(2)));
 
         store.evaluate();
 
@@ -198,7 +202,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_flags(id, LayerFlags { hidden: true });
         store.evaluate();
 
@@ -235,7 +239,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_hit_policy(id, HitPolicy::Disabled);
         store.evaluate();
 
@@ -258,7 +262,7 @@ mod tests {
         let child = store.create_layer();
         store.reparent(child, parent);
         store.set_bounds(child, Size::new(200.0, 200.0));
-        store.set_content(child, Some(SurfaceId(1)));
+        store.set_content(child, Some(surface_id(1)));
 
         store.evaluate();
 
@@ -286,7 +290,7 @@ mod tests {
         let child = store.create_layer();
         store.reparent(child, parent);
         store.set_bounds(child, Size::new(300.0, 300.0));
-        store.set_content(child, Some(SurfaceId(1)));
+        store.set_content(child, Some(surface_id(1)));
 
         store.evaluate();
 
@@ -301,7 +305,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_transform(id, Transform3d::from_translation(50.0, 50.0, 0.0));
         store.evaluate();
 
@@ -321,7 +325,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(50.0, 50.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_transform(id, Transform3d::from_scale(2.0, 2.0, 1.0));
         store.evaluate();
 
@@ -341,7 +345,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         // 90° rotation: local +X → world +Y, local +Y → world −X.
         store.set_transform(
             id,
@@ -362,7 +366,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_transform(id, Transform3d::from_scale(0.0, 1.0, 1.0));
         store.evaluate();
 
@@ -374,7 +378,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(0.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.evaluate();
 
         assert!(store.hit_test(Point::new(0.0, 50.0)).is_empty());
@@ -385,7 +389,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(200.0, 200.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_clip(id, Some(ClipShape::Rect(Rect::new(10.0, 10.0, 90.0, 90.0))));
         store.evaluate();
 
@@ -413,7 +417,7 @@ mod tests {
         let child = store.create_layer();
         store.reparent(child, parent);
         store.set_bounds(child, Size::new(100.0, 100.0));
-        store.set_content(child, Some(SurfaceId(1)));
+        store.set_content(child, Some(surface_id(1)));
 
         store.evaluate();
 
@@ -453,7 +457,7 @@ mod tests {
         let child = store.create_layer();
         store.reparent(child, parent);
         store.set_bounds(child, Size::new(50.0, 50.0));
-        store.set_content(child, Some(SurfaceId(1)));
+        store.set_content(child, Some(surface_id(1)));
 
         store.evaluate();
 
@@ -477,7 +481,7 @@ mod tests {
         let id = store.create_layer();
         // Surface is 200×200, but only the inset region is interactive.
         store.set_bounds(id, Size::new(200.0, 200.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_hit_region(
             id,
             Some(HitRegion::Rect(Rect::new(30.0, 30.0, 170.0, 170.0))),
@@ -496,7 +500,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 80.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         // No hit region set — should use full bounds.
         store.evaluate();
 
@@ -509,7 +513,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(220.0, 180.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_transform(id, Transform3d::from_translation(100.0, 100.0, 0.0));
         // Inset hit region: only (30,25)-(190,155) in local space.
         store.set_hit_region(
@@ -531,7 +535,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_hit_region(id, Some(HitRegion::Rect(Rect::new(40.0, 40.0, 60.0, 60.0))));
         store.evaluate();
 
@@ -548,7 +552,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(200.0, 200.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_transform(id, Transform3d::from_translation(50.0, 50.0, 0.0));
         store.set_hit_region(
             id,
@@ -569,7 +573,7 @@ mod tests {
         let mut store = LayerStore::new();
         let id = store.create_layer();
         store.set_bounds(id, Size::new(100.0, 100.0));
-        store.set_content(id, Some(SurfaceId(1)));
+        store.set_content(id, Some(surface_id(1)));
         store.set_hit_region(
             id,
             Some(HitRegion::RoundedRect(RoundedRect::from_rect(

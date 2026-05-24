@@ -724,7 +724,11 @@ impl LayerStore {
         self.dirty.mark(id.idx, dirty::CLIP);
     }
 
-    /// Sets the surface content of a layer.
+    /// Sets the surface content token attached to a layer.
+    ///
+    /// The store records only the [`SurfaceId`] attachment. It does not create,
+    /// retain, release, or destroy the host-owned surface resource keyed by
+    /// that ID.
     pub fn set_content(&mut self, id: LayerId, content: Option<SurfaceId>) {
         self.validate(id);
         self.content[id.idx as usize] = content;
@@ -1413,7 +1417,7 @@ mod tests {
         let id = store.create_layer();
         let _ = store.evaluate();
 
-        store.set_content(id, Some(SurfaceId(42)));
+        store.set_content(id, Some(SurfaceId::from_raw_parts(42, 0)));
         let changes = store.evaluate();
         assert!(
             changes.content.contains(&id.idx),

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use lotta_layers_common::LAYER_SIZE;
 use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter};
-use subduction_core::layer::{LayerId, LayerStore, SurfaceId};
+use subduction_core::layer::{LayerId, LayerStore, SurfaceId, SurfaceIds};
 use subduction_core::output::Color;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -73,6 +73,8 @@ struct RunState {
     store: LayerStore,
     group_ids: Vec<LayerId>,
     child_ids: Vec<LayerId>,
+    surface_ids: Vec<SurfaceId>,
+    _surface_id_allocator: SurfaceIds,
     fill_pipeline: wgpu::RenderPipeline,
     fill_bind_groups: Vec<wgpu::BindGroup>,
     frame_count: u64,
@@ -127,7 +129,7 @@ impl ApplicationHandler for App {
 
         let output_format = surface_config.format;
 
-        // --- Fill pipeline for rendering solid colors into layer textures ---
+        // --- Fill pipeline for rendering solid colors into surface textures ---
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fill shader"),
             source: wgpu::ShaderSource::Wgsl(FILL_SHADER.into()),
@@ -208,18 +210,21 @@ impl ApplicationHandler for App {
 
         let mut group_ids = Vec::with_capacity(NUM_GROUPS);
         let mut child_ids = Vec::with_capacity(NUM_CHILDREN);
+        let mut surface_ids = Vec::with_capacity(NUM_CHILDREN);
+        let mut surface_id_allocator = SurfaceIds::new();
 
-        for g in 0..NUM_GROUPS {
+        for _ in 0..NUM_GROUPS {
             let group = store.create_layer();
             store.add_child(root_id, group);
             group_ids.push(group);
 
-            for c in 0..LAYERS_PER_GROUP {
+            for _ in 0..LAYERS_PER_GROUP {
                 let child = store.create_layer();
                 store.add_child(group, child);
-                let surface_idx = g * LAYERS_PER_GROUP + c;
-                store.set_content(child, Some(SurfaceId(surface_idx as u32)));
+                let surface_id = surface_id_allocator.create();
+                store.set_content(child, Some(surface_id));
                 child_ids.push(child);
+                surface_ids.push(surface_id);
             }
         }
 
@@ -241,6 +246,8 @@ impl ApplicationHandler for App {
             store,
             group_ids,
             child_ids,
+            surface_ids,
+            _surface_id_allocator: surface_id_allocator,
             fill_pipeline,
             fill_bind_groups,
             frame_count: 0,
@@ -299,8 +306,9 @@ impl ApplicationHandler for App {
                         },
                     );
 
-                    for (i, &child_id) in s.child_ids.iter().enumerate() {
-                        let surface_id = SurfaceId(i as u32);
+                    for (i, (&child_id, &surface_id)) in
+                        s.child_ids.iter().zip(&s.surface_ids).enumerate()
+                    {
                         let Some(target) = s.presenter.target_for_surface(surface_id) else {
                             continue;
                         };

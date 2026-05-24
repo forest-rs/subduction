@@ -429,6 +429,10 @@ mod tests {
         WaylandPresenter::new(&ws, compositor, subcompositor, qh, config).unwrap()
     }
 
+    fn surface_id(index: u32) -> SurfaceId {
+        SurfaceId::from_raw_parts(index, 0)
+    }
+
     // -----------------------------------------------------------------------
     // Construction and accessors
     // -----------------------------------------------------------------------
@@ -437,7 +441,7 @@ mod tests {
     fn new_presenter_is_empty() {
         let p = test_presenter();
         assert!(p.get_surface(0).is_none());
-        assert!(p.surface_for_content(SurfaceId(0)).is_none());
+        assert!(p.surface_for_content(surface_id(0)).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -484,7 +488,7 @@ mod tests {
         let mut p = test_presenter();
         let mut store = LayerStore::new();
         let layer = store.create_layer();
-        let sid = SurfaceId(42);
+        let sid = surface_id(42);
         store.set_content(layer, Some(sid));
         let changes = store.evaluate();
         p.apply(&store, &changes);
@@ -501,7 +505,7 @@ mod tests {
         let mut store = LayerStore::new();
         let a = store.create_layer();
         let b = store.create_layer();
-        let sid = SurfaceId(7);
+        let sid = surface_id(7);
 
         // Assign SurfaceId to slot A.
         store.set_content(a, Some(sid));
@@ -534,7 +538,7 @@ mod tests {
         let b = store.create_layer();
         store.add_child(root, a);
         store.add_child(root, b);
-        let sid = SurfaceId(10);
+        let sid = surface_id(10);
 
         // Assign SurfaceId to A.
         store.set_content(a, Some(sid));
@@ -560,7 +564,7 @@ mod tests {
         let mut p = test_presenter();
         let mut store = LayerStore::new();
         let layer = store.create_layer();
-        let sid = SurfaceId(5);
+        let sid = surface_id(5);
         store.set_content(layer, Some(sid));
         let changes = store.evaluate();
         p.apply(&store, &changes);
@@ -662,7 +666,7 @@ mod tests {
         let mut p = test_presenter();
         let mut store = LayerStore::new();
         let layer = store.create_layer();
-        let sid = SurfaceId(1);
+        let sid = surface_id(1);
         store.set_content(layer, Some(sid));
         let changes = store.evaluate();
         p.apply(&store, &changes);

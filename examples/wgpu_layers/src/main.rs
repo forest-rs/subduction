@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter};
-use subduction_core::layer::{LayerId, LayerStore, SurfaceId};
+use subduction_core::layer::{LayerId, LayerStore, SurfaceId, SurfaceIds};
 use subduction_core::output::Color;
 use subduction_core::transform::Transform3d;
 
@@ -76,6 +76,8 @@ struct RunState {
     presenter: WgpuPresenter,
     store: LayerStore,
     layer_ids: Vec<LayerId>,
+    surface_ids: Vec<SurfaceId>,
+    _surface_id_allocator: SurfaceIds,
     fill_pipeline: wgpu::RenderPipeline,
     fill_bind_groups: Vec<wgpu::BindGroup>,
     frame_count: u64,
@@ -128,7 +130,7 @@ impl ApplicationHandler for App {
 
         let output_format = surface_config.format;
 
-        // --- Build a fill pipeline for rendering solid colors into layer textures ---
+        // --- Build a fill pipeline for rendering solid colors into surface textures ---
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fill shader"),
             source: wgpu::ShaderSource::Wgsl(FILL_SHADER.into()),
@@ -207,11 +209,15 @@ impl ApplicationHandler for App {
         let root_id = store.create_layer();
 
         let mut layer_ids = Vec::with_capacity(NUM_LAYERS);
-        for i in 0..NUM_LAYERS {
+        let mut surface_ids = Vec::with_capacity(NUM_LAYERS);
+        let mut surface_id_allocator = SurfaceIds::new();
+        for _ in 0..NUM_LAYERS {
             let id = store.create_layer();
+            let surface_id = surface_id_allocator.create();
             store.add_child(root_id, id);
-            store.set_content(id, Some(SurfaceId(i as u32)));
+            store.set_content(id, Some(surface_id));
             layer_ids.push(id);
+            surface_ids.push(surface_id);
         }
 
         // Create the presenter and do the initial apply.
@@ -232,6 +238,8 @@ impl ApplicationHandler for App {
             presenter,
             store,
             layer_ids,
+            surface_ids,
+            _surface_id_allocator: surface_id_allocator,
             fill_pipeline,
             fill_bind_groups,
             frame_count: 0,
@@ -306,8 +314,9 @@ impl ApplicationHandler for App {
                             label: Some("fill encoder"),
                         });
 
-                for (i, &layer_id) in s.layer_ids.iter().enumerate() {
-                    let surface_id = SurfaceId(i as u32);
+                for (i, (&layer_id, &surface_id)) in
+                    s.layer_ids.iter().zip(&s.surface_ids).enumerate()
+                {
                     let Some(target) = s.presenter.target_for_surface(surface_id) else {
                         continue;
                     };

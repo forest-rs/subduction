@@ -7,6 +7,10 @@
 //!
 //! - An identity ([`LayerId`]) — a generational handle that becomes stale when
 //!   the layer is destroyed, preventing use-after-free bugs at the API level.
+//! - Optional surface content ([`SurfaceId`]) — a stable token for
+//!   host-owned content. [`LayerStore`] attaches tokens but does not own
+//!   surface resources; use [`SurfaceIds`] when subduction-owned token
+//!   allocation is useful.
 //! - Topology — parent, first-child, and sibling links forming an ordered tree.
 //!   Sibling order is back-to-front: later siblings render in front of earlier
 //!   siblings, and hit testing walks the evaluated traversal order in reverse.
@@ -21,6 +25,16 @@
 //!
 //! Layers are stored in struct-of-arrays layout with index-based handles
 //! for cache-friendly traversal.
+//!
+//! # Identity Model
+//!
+//! - [`LayerId`] is the public, generation-checked handle for a compositor
+//!   node in the tree.
+//! - Raw slot indices (`u32`) are internal storage rows. [`FrameChanges`]
+//!   reports slots so presenters can read `*_at(idx)` accessors efficiently,
+//!   but a slot index is not a public lifetime-safe handle.
+//! - [`SurfaceId`] is content identity. It keys host-owned renderable resources
+//!   that may be attached to, detached from, or moved between layers.
 //!
 //! # Dirty tracking
 //!
@@ -43,6 +57,6 @@ mod traverse;
 pub use clip::ClipShape;
 pub use evaluate::FrameChanges;
 pub use hit_test::HitEntry;
-pub use id::{INVALID, LayerId, SurfaceId};
+pub use id::{INVALID, LayerId, SurfaceId, SurfaceIds};
 pub use store::{HitPolicy, HitRegion, LayerFlags, LayerStore};
 pub use traverse::Children;

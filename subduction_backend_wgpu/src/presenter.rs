@@ -239,7 +239,11 @@ impl LayerRoot {
 /// }
 ///
 /// // Composite and present.
-/// let output = surface.get_current_texture().unwrap();
+/// let output = match surface.get_current_texture() {
+///     wgpu::CurrentSurfaceTexture::Success(output)
+///     | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+///     other => panic!("failed to acquire surface texture: {other:?}"),
+/// };
 /// let output_view = output.texture.create_view(&Default::default());
 /// let cmd = presenter.composite(&store, &output_view);
 /// queue.submit([cmd]);

@@ -309,7 +309,7 @@ fn create_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("julia layout"),
-        bind_group_layouts: &[bind_group_layout],
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -367,9 +367,11 @@ fn render_frame(
     };
     queue.write_buffer(time_buffer, 0, bytemuck::bytes_of(&uniform));
 
-    let frame = surface
-        .get_current_texture()
-        .expect("failed to acquire surface texture");
+    let frame = match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(frame)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+        other => panic!("failed to acquire surface texture: {other:?}"),
+    };
     let view = frame
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
@@ -468,10 +470,9 @@ fn main() {
     );
 
     // Step 2: wgpu setup.
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
-        ..Default::default()
-    });
+    let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    instance_descriptor.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(instance_descriptor);
 
     let wgpu_surface = {
         let display_ptr = connection
@@ -483,11 +484,11 @@ fn main() {
         // SAFETY: The Wayland display and surface are valid for the lifetime
         // of this program. The wl_surface is kept alive by the `wl_surface` binding.
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: wgpu::rwh::RawDisplayHandle::Wayland(
+            raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Wayland(
                 wgpu::rwh::WaylandDisplayHandle::new(
                     NonNull::new(display_ptr).expect("display pointer is null"),
                 ),
-            ),
+            )),
             raw_window_handle: wgpu::rwh::RawWindowHandle::Wayland(
                 wgpu::rwh::WaylandWindowHandle::new(
                     NonNull::new(surface_ptr).expect("surface pointer is null"),

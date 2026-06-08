@@ -343,7 +343,7 @@ async fn init_wgpu(canvas: &HtmlCanvasElement) -> WgpuState {
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("plasma"),
-        bind_group_layouts: &[&time_bgl],
+        bind_group_layouts: &[Some(&time_bgl)],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -544,8 +544,13 @@ fn render_wgpu(gpu: &WgpuState, t: f32) {
         .write_buffer(&gpu.time_buffer, 0, bytemuck::bytes_of(&t));
 
     let frame = match gpu.surface.get_current_texture() {
-        Ok(f) => f,
-        Err(_) => return,
+        wgpu::CurrentSurfaceTexture::Success(frame)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+        wgpu::CurrentSurfaceTexture::Timeout
+        | wgpu::CurrentSurfaceTexture::Occluded
+        | wgpu::CurrentSurfaceTexture::Outdated
+        | wgpu::CurrentSurfaceTexture::Lost
+        | wgpu::CurrentSurfaceTexture::Validation => return,
     };
     let view = frame
         .texture

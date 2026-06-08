@@ -391,7 +391,7 @@ fn create_prism_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("prism layout"),
-        bind_group_layouts: &[bind_group_layout],
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -458,7 +458,7 @@ fn create_fullscreen_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[bind_group_layout],
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -802,9 +802,14 @@ fn on_tick(tick: FrameTick) {
                 .write_buffer(&gpu.time_buffer, 0, bytemuck::bytes_of(&time_f32));
 
             let frame = match gpu.surface.get_current_texture() {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("failed to acquire GPU frame: {e}");
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                wgpu::CurrentSurfaceTexture::Timeout
+                | wgpu::CurrentSurfaceTexture::Occluded
+                | wgpu::CurrentSurfaceTexture::Outdated => continue,
+                other @ (wgpu::CurrentSurfaceTexture::Lost
+                | wgpu::CurrentSurfaceTexture::Validation) => {
+                    eprintln!("failed to acquire GPU frame: {other:?}");
                     continue;
                 }
             };

@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use lotta_layers_common::LAYER_SIZE;
-use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter};
+use subduction_backend_wgpu::{LayerRoot, Presenter as _, WgpuPresenter, WgpuPresenterConfig};
 use subduction_core::layer::{LayerId, LayerStore, SurfaceId, SurfaceIds};
 use subduction_core::output::Color;
 use winit::application::ApplicationHandler;
@@ -128,6 +128,10 @@ impl ApplicationHandler for App {
         surface.configure(&device, &surface_config);
 
         let output_format = surface_config.format;
+        // Layer textures are LAYER_SIZE × LAYER_SIZE pixels.
+        let layer_px = LAYER_SIZE as u32;
+        let presenter_config = WgpuPresenterConfig::new((layer_px, layer_px));
+        let layer_format = presenter_config.surface_format;
 
         // --- Fill pipeline for rendering solid colors into surface textures ---
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -151,7 +155,7 @@ impl ApplicationHandler for App {
 
         let fill_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fill layout"),
-            bind_group_layouts: &[&fill_bgl],
+            bind_group_layouts: &[Some(&fill_bgl)],
             immediate_size: 0,
         });
 
@@ -168,7 +172,7 @@ impl ApplicationHandler for App {
                 module: &fill_shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: output_format,
+                    format: layer_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -228,12 +232,10 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Layer textures are LAYER_SIZE × LAYER_SIZE pixels.
-        let layer_px = LAYER_SIZE as u32;
         let backdrop_color = Color::from_rgba8(0x1a, 0x1a, 0x24, 0xff);
         let root =
             LayerRoot::new(output_format, (WINDOW_W, WINDOW_H)).with_backdrop_color(backdrop_color);
-        let mut presenter = WgpuPresenter::new(device, queue, root, (layer_px, layer_px));
+        let mut presenter = WgpuPresenter::new_with_config(device, queue, root, presenter_config);
 
         let changes = store.evaluate();
         presenter.apply(&store, &changes);
@@ -343,10 +345,14 @@ impl ApplicationHandler for App {
 
                 // Composite and present.
                 let output_frame = match s.surface.get_current_texture() {
-                    Ok(f) => f,
-                    Err(wgpu::SurfaceError::Outdated) => return,
-                    Err(e) => {
-                        eprintln!("surface error: {e}");
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded
+                    | wgpu::CurrentSurfaceTexture::Outdated => return,
+                    other @ (wgpu::CurrentSurfaceTexture::Lost
+                    | wgpu::CurrentSurfaceTexture::Validation) => {
+                        eprintln!("surface error: {other:?}");
                         return;
                     }
                 };

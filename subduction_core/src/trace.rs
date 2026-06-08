@@ -101,9 +101,9 @@ pub struct FramePlanEvent {
     /// Which output this plan targets.
     pub output: OutputId,
     /// Semantic (animation) time.
-    pub semantic_time: HostTime,
+    pub sample_time: HostTime,
     /// Intended display time, if known.
-    pub present_time: Option<HostTime>,
+    pub target_present: Option<HostTime>,
     /// Latest commit time.
     pub commit_deadline: HostTime,
     /// Current pipeline depth.
@@ -120,8 +120,8 @@ impl FramePlanEvent {
         Self {
             frame_index: plan.frame_index,
             output: plan.output,
-            semantic_time: plan.semantic_time,
-            present_time: plan.present_time,
+            sample_time: plan.sample_time,
+            target_present: plan.target_present,
             commit_deadline: plan.commit_deadline,
             pipeline_depth: plan.pipeline_depth,
             safety_margin_ticks,
@@ -185,9 +185,9 @@ pub struct FrameSummary {
     /// Host time when the tick was generated.
     pub now: HostTime,
     /// Intended present time, if known.
-    pub present_time: Option<HostTime>,
+    pub target_present: Option<HostTime>,
     /// Semantic (animation) time.
-    pub semantic_time: HostTime,
+    pub sample_time: HostTime,
     /// Commit deadline.
     pub deadline: HostTime,
     /// Pipeline depth for this frame.
@@ -511,8 +511,8 @@ impl FrameSummaryBuilder {
             output: self.tick.output,
             confidence: self.tick.confidence,
             now: self.tick.now,
-            present_time: self.plan.present_time,
-            semantic_time: self.plan.semantic_time,
+            target_present: self.plan.target_present,
+            sample_time: self.plan.sample_time,
             deadline: self.plan.commit_deadline,
             pipeline_depth: self.plan.pipeline_depth,
             plan_ticks: self.phase_duration(PhaseKind::Plan),
@@ -568,8 +568,8 @@ mod tests {
         FramePlanEvent {
             frame_index: 42,
             output: OutputId(0),
-            semantic_time: HostTime(1_016_667),
-            present_time: Some(HostTime(1_016_667)),
+            sample_time: HostTime(1_016_667),
+            target_present: Some(HostTime(1_016_667)),
             commit_deadline: HostTime(1_014_000),
             pipeline_depth: 2,
             safety_margin_ticks: 500,
@@ -597,8 +597,8 @@ mod tests {
     #[test]
     fn frame_plan_event_new() {
         let plan = FramePlan {
-            semantic_time: HostTime(1000),
-            present_time: Some(HostTime(1000)),
+            sample_time: HostTime(1000),
+            target_present: Some(HostTime(1000)),
             commit_deadline: HostTime(900),
             pipeline_depth: 2,
             output: OutputId(0),
@@ -620,8 +620,8 @@ mod tests {
             output: OutputId(0),
             confidence: TimingConfidence::PacingOnly,
             now: HostTime(0),
-            present_time: None,
-            semantic_time: HostTime(0),
+            target_present: None,
+            sample_time: HostTime(0),
             deadline: HostTime(0),
             pipeline_depth: 1,
             plan_ticks: 0,

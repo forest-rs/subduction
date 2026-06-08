@@ -20,7 +20,7 @@
 //!       └── Layer B
 //! ```
 
-use subduction_core::time::HostTime;
+use frameclock::HostTime;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;

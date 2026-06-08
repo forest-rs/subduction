@@ -6,9 +6,7 @@
 use crate::output_registry::OutputRegistry;
 use crate::queue::BoundedQueue;
 use crate::time::{Clock, now_for_clock};
-use subduction_core::output::OutputId;
-use subduction_core::time::HostTime;
-use subduction_core::timing::{FrameTick, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, TimingConfidence};
 
 /// Internal bounded queue for frame ticks.
 ///
@@ -153,9 +151,9 @@ mod tests {
     use super::{TickQueue, TickerState, select_tick_output};
     use crate::output_registry::OutputRegistry;
     use crate::time::Clock;
-    use subduction_core::output::OutputId;
-    use subduction_core::time::HostTime;
-    use subduction_core::timing::{FrameTick, TimingConfidence};
+    use frameclock::HostTime;
+    use frameclock::OutputId;
+    use frameclock::{FrameTick, TimingConfidence};
     use wayland_client::protocol::wl_output;
     use wayland_client::{Connection, Proxy};
 

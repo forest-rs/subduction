@@ -15,6 +15,7 @@ use core::cell::RefCell;
 use core::ffi::c_void;
 
 use bytemuck::{Pod, Zeroable};
+use frameclock::{Duration, FrameTick, OutputId, PendingFeedback, Scheduler, SchedulerConfig};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -30,10 +31,7 @@ use subduction_backend_apple::{
     DisplayLink, LayerPresenter, LayerRoot, Presenter as _, compute_present_hints,
 };
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::output::{Color, OutputId};
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::Duration;
-use subduction_core::timing::{FrameTick, PendingFeedback};
+use subduction_core::output::Color;
 use subduction_core::transform::Transform3d;
 
 const WINDOW_W: f64 = 800.0;
@@ -367,7 +365,7 @@ struct AnimState {
     scheduler: Scheduler,
     sub_ids: Vec<LayerId>,
     start_ticks: u64,
-    timebase: subduction_core::time::Timebase,
+    timebase: frameclock::Timebase,
     pending_feedback: Option<PendingFeedback>,
 
     // wgpu shared state
@@ -736,7 +734,7 @@ fn setup_window(mtm: MainThreadMarker) {
     // --- CADisplayLink-driven animation ---
     let timebase = DisplayLink::timebase();
     let start_ticks = DisplayLink::now().ticks();
-    let scheduler = Scheduler::new(SchedulerConfig::macos());
+    let scheduler = Scheduler::new(SchedulerConfig::predictive());
 
     ANIM_STATE.with(|cell| {
         *cell.borrow_mut() = Some(AnimState {
@@ -779,8 +777,8 @@ fn on_tick(tick: FrameTick) {
         let hints = compute_present_hints(&tick, safety);
         let plan = s.scheduler.plan(&tick, &hints);
 
-        // Convert semantic_time to elapsed seconds for the animation.
-        let elapsed_ticks = plan.semantic_time.ticks().saturating_sub(s.start_ticks);
+        // Convert sample_time to elapsed seconds for the animation.
+        let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
         let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
         let t = elapsed_nanos as f64 / 1_000_000_000.0;
 

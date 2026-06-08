@@ -12,5 +12,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true, features = ["std"] }
 subduction_core = { workspace = true, features = ["trace", "trace-rich"] }
 subduction_debug = { path = "../../subduction_debug" }

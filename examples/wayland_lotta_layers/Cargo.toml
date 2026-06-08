@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true, features = ["std"] }
 lotta_layers_common = { path = "../lotta_layers_common" }
 subduction_core = { workspace = true }
 subduction_backend_wayland = { path = "../../subduction_backend_wayland" }

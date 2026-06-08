@@ -1,4 +1,4 @@
-// Copyright 2026 the Subduction Authors
+// Copyright 2026 the Frameclock Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Capability-graded timing model.
@@ -20,10 +20,10 @@
 //! 2. The backend computes [`PresentHints`] from the tick and platform
 //!    knowledge (deadlines, desired present time).
 //! 3. [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) consumes the
-//!    tick and hints to produce a [`FramePlan`] with the semantic time,
-//!    present time, and commit deadline.
-//! 4. The application uses the plan to evaluate the scene and build/submit
-//!    the frame.
+//!    tick and hints to produce a [`FramePlan`] with a sampling time, target
+//!    presentation time, and commit deadline.
+//! 4. The application uses the plan's [`sample_time`](FramePlan::sample_time)
+//!    to evaluate animation/simulation state and build/submit the frame.
 //! 5. After submission, the backend constructs [`PresentFeedback`] from
 //!    timing observations and feeds it back to
 //!    [`Scheduler::observe()`](crate::scheduler::Scheduler::observe) to
@@ -78,10 +78,10 @@ pub struct FrameTick {
 /// selection should be driven by the times in this plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FramePlan {
-    /// The time the scene represents (animations, simulation, overlays).
-    pub semantic_time: HostTime,
+    /// Time applications should sample animation and simulation state for.
+    pub sample_time: HostTime,
     /// Intended display time, if known.
-    pub present_time: Option<HostTime>,
+    pub target_present: Option<HostTime>,
     /// Latest time by which the frame must be committed/submitted.
     pub commit_deadline: HostTime,
     /// Current pipeline depth (1–3).

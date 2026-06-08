@@ -14,9 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use subduction_core::output::OutputId;
-use subduction_core::time::HostTime;
-use subduction_core::timing::{FrameTick, PresentHints, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, PresentHints, TimingConfidence};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;

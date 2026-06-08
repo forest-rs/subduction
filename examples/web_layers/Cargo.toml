@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 subduction_core = { workspace = true }
 subduction_backend_web = { path = "../../subduction_backend_web" }
 kurbo = { workspace = true }

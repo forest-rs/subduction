@@ -20,8 +20,7 @@ pub use presenter::{DomPresenter, LayerRoot};
 pub use raf::RafLoop;
 pub use subduction_core::backend::Presenter;
 
-use subduction_core::time::{Duration, HostTime, Timebase};
-use subduction_core::timing::{FrameTick, PresentHints};
+use frameclock::{Duration, FrameTick, HostTime, PresentHints, Timebase};
 
 /// Returns the current host time from `performance.now()`.
 ///
@@ -63,8 +62,8 @@ pub fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> Pres
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subduction_core::output::OutputId;
-    use subduction_core::timing::TimingConfidence;
+    use frameclock::OutputId;
+    use frameclock::TimingConfidence;
 
     #[test]
     fn timebase_is_microsecond() {

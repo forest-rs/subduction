@@ -3,8 +3,8 @@
 
 //! Wayland backend host clock selection and reads.
 
+use frameclock::{HostTime, Timebase};
 use rustix::time::{ClockId as PosixClockId, Timespec, clock_gettime};
-use subduction_core::time::{HostTime, Timebase};
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -81,8 +81,8 @@ mod tests {
     use super::{
         Clock, clock_from_presentation_clk_id, now, now_for_clock, timebase, timespec_to_host_time,
     };
+    use frameclock::{HostTime, Timebase};
     use rustix::time::{ClockId as PosixClockId, Timespec};
-    use subduction_core::time::{HostTime, Timebase};
 
     #[test]
     fn timebase_is_nanos_identity() {

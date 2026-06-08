@@ -1,4 +1,4 @@
-// Copyright 2026 the Subduction Authors
+// Copyright 2026 the Frameclock Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Monotonic host time and timebase conversion.
@@ -123,10 +123,8 @@ impl fmt::Debug for HostTime {
 /// `nanoseconds = ticks * numer / denom`
 ///
 /// This matches the `mach_timebase_info` pattern on macOS. The correct
-/// instance for a given platform is provided by the backend crate's
-/// `timebase()` free function (e.g.
-/// `subduction_backend_apple::timebase()`,
-/// `subduction_backend_web::timebase()`).
+/// instance for a given platform is provided by the platform adapter's
+/// `timebase()` function.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Timebase {
     /// Numerator of the ticks-to-nanoseconds ratio.

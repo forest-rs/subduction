@@ -49,8 +49,7 @@ pub use cv_display_link::DisplayLinkError;
 #[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
 pub use threading::{TickForwarder, TickSender};
 
-use subduction_core::time::{Duration, HostTime};
-use subduction_core::timing::{FrameTick, PresentHints};
+use frameclock::{Duration, FrameTick, HostTime, PresentHints};
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
 ///
@@ -76,18 +75,18 @@ pub fn now() -> HostTime {
     mach_time::now()
 }
 
-/// Returns the Mach absolute time [`Timebase`](subduction_core::time::Timebase).
+/// Returns the Mach absolute time [`Timebase`](frameclock::Timebase).
 #[must_use]
-pub fn timebase() -> subduction_core::time::Timebase {
+pub fn timebase() -> frameclock::Timebase {
     mach_time::timebase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subduction_core::output::OutputId;
-    use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-    use subduction_core::timing::{PendingFeedback, PresentFeedback, TimingConfidence};
+    use frameclock::{
+        OutputId, PendingFeedback, PresentFeedback, Scheduler, SchedulerConfig, TimingConfidence,
+    };
 
     #[test]
     fn compute_present_hints_with_prediction() {
@@ -129,7 +128,7 @@ mod tests {
             desired_present: Some(HostTime(2_000_000)),
             latest_commit: HostTime(1_800_000),
         };
-        let mut scheduler = Scheduler::new(SchedulerConfig::macos());
+        let mut scheduler = Scheduler::new(SchedulerConfig::predictive());
 
         let feedback = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
         scheduler.observe(&feedback);
@@ -146,7 +145,7 @@ mod tests {
             desired_present: Some(HostTime(2_000_000)),
             latest_commit: HostTime(1_800_000),
         };
-        let mut scheduler = Scheduler::new(SchedulerConfig::macos());
+        let mut scheduler = Scheduler::new(SchedulerConfig::predictive());
 
         // Simulate deferred feedback: commit was on time, but actual present
         // was late (GPU stall / compositor delay).

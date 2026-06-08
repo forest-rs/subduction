@@ -3,7 +3,7 @@
 
 //! Mach absolute time utilities shared across display link implementations.
 
-use subduction_core::time::{HostTime, Timebase};
+use frameclock::{HostTime, Timebase};
 
 #[repr(C)]
 struct MachTimebaseInfo {

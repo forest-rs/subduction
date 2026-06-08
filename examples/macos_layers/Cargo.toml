@@ -17,6 +17,7 @@ cv-display-link = ["subduction_backend_apple/cv-display-link"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 subduction_core = { workspace = true, features = ["trace"] }
 subduction_backend_apple = { path = "../../subduction_backend_apple", default-features = false, features = [
   "appkit",

@@ -225,9 +225,8 @@ use crate::protocol::{
 };
 use crate::tick::TickerState;
 use crate::time::{Clock, now_for_clock};
+use frameclock::{FrameTick, HostTime};
 use std::collections::HashMap;
-use subduction_core::time::HostTime;
-use subduction_core::timing::FrameTick;
 use wayland_client::protocol::{
     wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_subsurface, wl_surface,
 };
@@ -717,11 +716,7 @@ impl WaylandState {
     /// Test helper: simulates the `sync_output` event from the dispatch handler.
     ///
     /// Takes a pre-resolved `Option<OutputId>` (bypassing proxy lookup).
-    fn test_on_sync_output(
-        &mut self,
-        id: SubmissionId,
-        resolved: Option<subduction_core::output::OutputId>,
-    ) {
+    fn test_on_sync_output(&mut self, id: SubmissionId, resolved: Option<frameclock::OutputId>) {
         if let Some(pending) = self.pending_feedback.get_mut(&id)
             && (resolved.is_some() || pending.sync_output.is_none())
         {
@@ -763,7 +758,7 @@ impl WaylandState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subduction_core::output::OutputId;
+    use frameclock::OutputId;
     use wayland_client::Proxy;
     use wayland_client::backend::ObjectId;
 

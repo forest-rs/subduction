@@ -17,11 +17,9 @@
 use lotta_layers_common::LAYER_SIZE;
 use wayland_client::Connection;
 
+use frameclock::{Duration, PresentFeedback, Scheduler, SchedulerConfig};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::LayerStore;
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::Duration;
-use subduction_core::timing::PresentFeedback;
 
 use wayland_example_common::{ExampleState, ShmBuffer, ShmPool};
 
@@ -161,7 +159,7 @@ fn main() {
 
     // --- Animation state ---
     let start_nanos = subduction_backend_wayland::now().ticks();
-    let mut scheduler = Scheduler::new(SchedulerConfig::wayland());
+    let mut scheduler = Scheduler::new(SchedulerConfig::pacing_only());
     let (mut win_w, mut win_h) = effective_size(&state);
 
     // Initial commit to map the xdg toplevel and request the first frame.
@@ -197,7 +195,7 @@ fn main() {
             let hints = subduction_backend_wayland::compute_present_hints(&tick, safety);
             let plan = scheduler.plan(&tick, &hints);
 
-            let elapsed_nanos = plan.semantic_time.ticks().saturating_sub(start_nanos);
+            let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;
 
             lotta_layers_common::animate_groups(

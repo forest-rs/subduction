@@ -14,15 +14,13 @@
 
 use std::cell::UnsafeCell;
 
+use frameclock::{HostTime, PendingFeedback, Scheduler, SchedulerConfig};
 use lotta_layers_common::LAYER_SIZE;
 use subduction_backend_windows::{
     self as backend, DCompPresenter, DCompSurfacePresenter, Presenter as _, TickSource,
     WM_APP_TICK, compute_hints, make_tick,
 };
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::HostTime;
-use subduction_core::timing::PendingFeedback;
 use subduction_core::trace::{
     FramePlanEvent, FrameSummaryBuilder, FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind,
     PresentFeedbackEvent, SubmitEvent, TraceSink as _,
@@ -57,7 +55,7 @@ struct AnimState {
     group_ids: Vec<LayerId>,
     child_ids: Vec<LayerId>,
     start_ticks: u64,
-    timebase: subduction_core::time::Timebase,
+    timebase: frameclock::Timebase,
     frame_index: u64,
     prev_present_time: Option<HostTime>,
     pending_feedback: Option<PendingFeedback>,
@@ -209,7 +207,7 @@ unsafe fn run() -> windows::core::Result<()> {
     // --- Scheduler ---
     let timebase = backend::timebase();
     let start_ticks = backend::now().ticks();
-    let scheduler = Scheduler::new(SchedulerConfig::windows());
+    let scheduler = Scheduler::new(SchedulerConfig::estimated());
 
     // --- Start tick source ---
     let tick_source = TickSource::start(hwnd);
@@ -312,7 +310,7 @@ fn on_tick() {
     summary.phase_begin(PhaseKind::Plan, plan_start);
     summary.phase_end(PhaseKind::Plan, plan_end);
 
-    let elapsed_ticks = plan.semantic_time.ticks().saturating_sub(s.start_ticks);
+    let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
     let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
     let t = elapsed_nanos as f64 / 1_000_000_000.0;
 

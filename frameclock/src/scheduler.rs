@@ -1,4 +1,4 @@
-// Copyright 2026 the Subduction Authors
+// Copyright 2026 the Frameclock Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Frame scheduling with adaptive pipeline depth and safety margins.
@@ -58,9 +58,11 @@ pub struct SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    /// Default configuration for macOS (predictive timing).
+    /// Default configuration for predictive timing.
+    ///
+    /// Use this when a platform exposes a strong predicted presentation time.
     #[must_use]
-    pub const fn macos() -> Self {
+    pub const fn predictive() -> Self {
         Self {
             initial_depth: 2,
             min_depth: 1,
@@ -75,12 +77,12 @@ impl SchedulerConfig {
         }
     }
 
-    /// Default configuration for Windows (estimated timing via DWM/DXGI).
+    /// Default configuration for estimated timing.
     ///
-    /// Similar to macOS but with a wider safety multiplier to account for
-    /// less predictable present timing from `DwmFlush`/DXGI frame stats.
+    /// Use this when a platform exposes useful but less reliable predicted
+    /// presentation timing.
     #[must_use]
-    pub const fn windows() -> Self {
+    pub const fn estimated() -> Self {
         Self {
             initial_depth: 2,
             min_depth: 1,
@@ -95,9 +97,12 @@ impl SchedulerConfig {
         }
     }
 
-    /// Default configuration for Web (pacing-only timing).
+    /// Default configuration for pacing-only timing.
+    ///
+    /// Use this when a platform exposes frame pacing but no reliable target
+    /// presentation time.
     #[must_use]
-    pub const fn web() -> Self {
+    pub const fn pacing_only() -> Self {
         Self {
             initial_depth: 2,
             min_depth: 1,
@@ -112,25 +117,19 @@ impl SchedulerConfig {
             },
         }
     }
+}
 
-    /// Default configuration for Wayland (pacing-only timing via frame
-    /// callbacks, with optional `wp_presentation` feedback).
-    #[must_use]
-    pub const fn wayland() -> Self {
-        Self {
-            initial_depth: 2,
-            min_depth: 1,
-            max_depth: 3,
-            ema_alpha: 0.15,
-            safety_multiplier: 2.0,
-            // ~16ms at 1ns tick resolution.
-            nominal_latency: Duration(16_000_000),
-            degradation_policy: DegradationPolicy::Adaptive {
-                miss_threshold: 3,
-                recovery_threshold: 10,
-            },
-        }
-    }
+/// Snapshot of scheduler adaptation state for diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SchedulerState {
+    /// Current pipeline depth.
+    pub pipeline_depth: u8,
+    /// Current estimated safety margin in host-time ticks.
+    pub safety_margin_ticks: u64,
+    /// Consecutive strong misses or pacing overruns currently accumulated.
+    pub consecutive_misses: u32,
+    /// Consecutive strong hits currently accumulated.
+    pub consecutive_hits: u32,
 }
 
 /// Exponential moving average tracker.
@@ -223,25 +222,25 @@ impl Scheduler {
     pub fn plan(&mut self, tick: &FrameTick, hints: &PresentHints) -> FramePlan {
         let target_present = hints.desired_present.or(tick.predicted_present);
 
-        let (present_time, semantic_time) = match tick.confidence {
+        let (target_present, sample_time) = match tick.confidence {
             TimingConfidence::Predictive | TimingConfidence::Estimated => {
-                // semantic_time = present_time for tight sync.
-                let ts = target_present.unwrap_or(tick.now);
-                (target_present, ts)
+                // sample_time = target_present for tight sync.
+                let sample_time = target_present.unwrap_or(tick.now);
+                (target_present, sample_time)
             }
             TimingConfidence::PacingOnly => {
-                // No reliable present time; use nominal latency for semantic time.
-                let ts = tick
+                // No reliable present time; use nominal latency for sample time.
+                let sample_time = tick
                     .now
                     .checked_add(self.config.nominal_latency)
                     .unwrap_or(tick.now);
-                (None, ts)
+                (None, sample_time)
             }
         };
 
         FramePlan {
-            semantic_time,
-            present_time,
+            sample_time,
+            target_present,
             commit_deadline: hints.latest_commit,
             pipeline_depth: self.pipeline_depth,
             output: tick.output,
@@ -341,6 +340,17 @@ impl Scheduler {
     pub fn safety_margin_ticks(&self) -> u64 {
         self.safety_margin_ticks
     }
+
+    /// Returns a snapshot of the current scheduler adaptation state.
+    #[must_use]
+    pub const fn state(&self) -> SchedulerState {
+        SchedulerState {
+            pipeline_depth: self.pipeline_depth,
+            safety_margin_ticks: self.safety_margin_ticks,
+            consecutive_misses: self.consecutive_misses,
+            consecutive_hits: self.consecutive_hits,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -371,7 +381,7 @@ mod tests {
 
     #[test]
     fn predictive_plan_uses_predicted_present() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
         let tick = make_tick(TimingConfidence::Predictive, 1000, Some(2000));
@@ -379,14 +389,14 @@ mod tests {
 
         let plan = sched.plan(&tick, &hints);
 
-        assert_eq!(plan.present_time, Some(HostTime(2000)));
-        assert_eq!(plan.semantic_time, HostTime(2000));
+        assert_eq!(plan.target_present, Some(HostTime(2000)));
+        assert_eq!(plan.sample_time, HostTime(2000));
         assert_eq!(plan.commit_deadline, HostTime(1800));
     }
 
     #[test]
-    fn pacing_only_plan_has_no_present_time() {
-        let config = SchedulerConfig::web();
+    fn pacing_only_plan_has_no_target_present() {
+        let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
 
         let tick = make_tick(TimingConfidence::PacingOnly, 1_000_000, None);
@@ -394,14 +404,14 @@ mod tests {
 
         let plan = sched.plan(&tick, &hints);
 
-        assert_eq!(plan.present_time, None);
-        // semantic_time = now + nominal_latency (16ms).
-        assert_eq!(plan.semantic_time, HostTime(17_000_000));
+        assert_eq!(plan.target_present, None);
+        // sample_time = now + nominal_latency (16ms).
+        assert_eq!(plan.sample_time, HostTime(17_000_000));
     }
 
     #[test]
     fn pipeline_depth_increases_after_misses() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
         assert_eq!(sched.pipeline_depth(), 2);
 
@@ -424,7 +434,7 @@ mod tests {
 
     #[test]
     fn consecutive_miss_counter_resets_on_success() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
         let miss = PresentFeedback {
@@ -451,7 +461,7 @@ mod tests {
 
     #[test]
     fn pipeline_depth_decreases_after_sustained_hits() {
-        let mut config = SchedulerConfig::macos();
+        let mut config = SchedulerConfig::predictive();
         config.initial_depth = 3;
         let mut sched = Scheduler::new(config);
         assert_eq!(sched.pipeline_depth(), 3);
@@ -475,7 +485,7 @@ mod tests {
 
     #[test]
     fn fixed_policy_never_changes_depth() {
-        let mut config = SchedulerConfig::macos();
+        let mut config = SchedulerConfig::predictive();
         config.degradation_policy = DegradationPolicy::Fixed;
         let mut sched = Scheduler::new(config);
         assert_eq!(sched.pipeline_depth(), 2);
@@ -500,7 +510,7 @@ mod tests {
 
     #[test]
     fn custom_miss_threshold() {
-        let mut config = SchedulerConfig::macos();
+        let mut config = SchedulerConfig::predictive();
         config.degradation_policy = DegradationPolicy::Adaptive {
             miss_threshold: 5,
             recovery_threshold: 10,
@@ -526,7 +536,7 @@ mod tests {
 
     #[test]
     fn recovery_respects_min_depth() {
-        let mut config = SchedulerConfig::macos();
+        let mut config = SchedulerConfig::predictive();
         config.degradation_policy = DegradationPolicy::Adaptive {
             miss_threshold: 3,
             recovery_threshold: 2,
@@ -556,7 +566,7 @@ mod tests {
 
     #[test]
     fn estimated_confidence_uses_predicted_present() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
         let tick = make_tick(TimingConfidence::Estimated, 1000, Some(2000));
@@ -565,13 +575,13 @@ mod tests {
         let plan = sched.plan(&tick, &hints);
 
         // Estimated behaves like Predictive: uses predicted_present.
-        assert_eq!(plan.present_time, Some(HostTime(2000)));
-        assert_eq!(plan.semantic_time, HostTime(2000));
+        assert_eq!(plan.target_present, Some(HostTime(2000)));
+        assert_eq!(plan.sample_time, HostTime(2000));
     }
 
     #[test]
     fn observe_with_unknown_deadline_resets_counters() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
         let miss = PresentFeedback {
@@ -605,7 +615,7 @@ mod tests {
 
     #[test]
     fn pacing_only_unknown_feedback_does_not_raise_depth() {
-        let config = SchedulerConfig::web();
+        let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
 
         let unknown = PresentFeedback {
@@ -630,7 +640,7 @@ mod tests {
 
     #[test]
     fn depth_clamped_at_max() {
-        let mut config = SchedulerConfig::macos();
+        let mut config = SchedulerConfig::predictive();
         config.max_depth = 3;
         config.degradation_policy = DegradationPolicy::Adaptive {
             miss_threshold: 1,
@@ -657,7 +667,7 @@ mod tests {
 
     #[test]
     fn build_cost_ema_updates() {
-        let config = SchedulerConfig::macos();
+        let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
         assert_eq!(sched.safety_margin_ticks(), 0);
 
@@ -679,7 +689,7 @@ mod tests {
 
     #[test]
     fn pacing_overrun_raises_depth_more_conservatively() {
-        let config = SchedulerConfig::web();
+        let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
 
         let overrun = PresentFeedback {
@@ -702,7 +712,7 @@ mod tests {
 
     #[test]
     fn pacing_overrun_counters_reset_on_clear_tick() {
-        let config = SchedulerConfig::web();
+        let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
 
         let overrun = PresentFeedback {

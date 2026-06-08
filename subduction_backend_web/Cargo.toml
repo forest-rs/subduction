@@ -14,6 +14,7 @@ categories = ["wasm", "rendering::engine"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 kurbo = { workspace = true }
 subduction_core = { workspace = true }
 wasm-bindgen = { workspace = true }

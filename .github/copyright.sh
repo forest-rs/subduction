@@ -7,13 +7,16 @@
 #   -g "!src/special_directory"
 
 # Check all the standard Rust source files
-output=$(rg "^// Copyright (19|20)[\d]{2} (.+ and )?the Subduction Authors( and .+)?$\n^// SPDX-License-Identifier: Apache-2\.0 OR MIT$\n\n" --files-without-match --multiline -g "*.rs" . "$@")
+output=$(rg "^// Copyright (19|20)[\d]{2} (.+ and )?the (Frameclock|Subduction) Authors( and .+)?$\n^// SPDX-License-Identifier: Apache-2\.0 OR MIT$\n\n" --files-without-match --multiline -g "*.rs" . "$@")
 
 if [ -n "$output" ]; then
 echo -e "The following files lack the correct copyright header:\n"
 echo $output
-echo -e "\n\nPlease add the following header:\n"
+echo -e "\n\nPlease add one of the following headers:\n"
 echo "// Copyright $(date +%Y) the Subduction Authors"
+echo "// SPDX-License-Identifier: Apache-2.0 OR MIT"
+echo "# or"
+echo "// Copyright $(date +%Y) the Frameclock Authors"
 echo "// SPDX-License-Identifier: Apache-2.0 OR MIT"
 echo -e "\n... rest of the file ...\n"
 exit 1

@@ -12,9 +12,9 @@
 //! no predicted present time.
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/API/DOMHighResTimeStamp
-//! [`FrameTick`]: subduction_core::timing::FrameTick
-//! [`HostTime`]: subduction_core::time::HostTime
-//! [`PacingOnly`]: subduction_core::timing::TimingConfidence::PacingOnly
+//! [`FrameTick`]: frameclock::FrameTick
+//! [`HostTime`]: frameclock::HostTime
+//! [`PacingOnly`]: frameclock::TimingConfidence::PacingOnly
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -23,9 +23,7 @@ use core::cell::{Cell, RefCell};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 
-use subduction_core::output::OutputId;
-use subduction_core::time::HostTime;
-use subduction_core::timing::{FrameTick, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, TimingConfidence};
 
 // Direct global bindings instead of `web_sys::Window` methods — avoids
 // fetching (and unwrapping) the Window/Performance objects on every frame.
@@ -47,7 +45,7 @@ extern "C" {
 /// receiving callbacks. The loop re-registers itself each frame until
 /// [`stop`](Self::stop) is called or the `RafLoop` is dropped.
 ///
-/// [`FrameTick`]: subduction_core::timing::FrameTick
+/// [`FrameTick`]: frameclock::FrameTick
 pub struct RafLoop {
     inner: Rc<RafInner>,
 }
@@ -85,7 +83,7 @@ impl RafLoop {
     /// [`start`](Self::start) is called. `output` identifies the display
     /// surface for the ticks.
     ///
-    /// [`FrameTick`]: subduction_core::timing::FrameTick
+    /// [`FrameTick`]: frameclock::FrameTick
     pub fn new(callback: impl FnMut(FrameTick) + 'static, output: OutputId) -> Self {
         Self {
             inner: Rc::new(RafInner {

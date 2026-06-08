@@ -469,6 +469,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "frameclock"
+version = "0.0.1"
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -847,6 +851,7 @@ dependencies = [
 name = "macos_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "kurbo",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -863,6 +868,7 @@ dependencies = [
 name = "macos_lotta_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "lotta_layers_common",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -880,6 +886,7 @@ name = "macos_wgpu"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "frameclock",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -1808,6 +1815,7 @@ name = "subduction_backend_apple"
 version = "0.0.1"
 dependencies = [
  "dispatch2",
+ "frameclock",
  "hashbrown 0.17.0",
  "kurbo",
  "objc2 0.6.4",
@@ -1824,6 +1832,7 @@ dependencies = [
 name = "subduction_backend_wayland"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "rustix 1.1.4",
  "subduction_core",
  "wayland-client",
@@ -1834,6 +1843,7 @@ dependencies = [
 name = "subduction_backend_web"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "kurbo",
  "subduction_core",
  "wasm-bindgen",
@@ -1855,6 +1865,7 @@ dependencies = [
 name = "subduction_backend_windows"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "kurbo",
  "subduction_core",
  "windows",
@@ -1874,6 +1885,7 @@ name = "subduction_core"
 version = "0.0.1"
 dependencies = [
  "color",
+ "frameclock",
  "invalidation",
  "kurbo",
 ]
@@ -1882,6 +1894,7 @@ dependencies = [
 name = "subduction_debug"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "serde_json",
  "subduction_core",
 ]
@@ -1897,7 +1910,7 @@ dependencies = [
 name = "subduction_sync_harness"
 version = "0.0.1"
 dependencies = [
- "subduction_core",
+ "frameclock",
 ]
 
 [[package]]
@@ -2019,6 +2032,7 @@ dependencies = [
 name = "trace_demo"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "subduction_core",
  "subduction_debug",
 ]
@@ -2266,6 +2280,7 @@ dependencies = [
 name = "wayland_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "subduction_backend_wayland",
  "subduction_core",
  "wayland-client",
@@ -2276,6 +2291,7 @@ dependencies = [
 name = "wayland_lotta_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "lotta_layers_common",
  "subduction_backend_wayland",
  "subduction_core",
@@ -2322,6 +2338,7 @@ name = "web_layers"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "frameclock",
  "js-sys",
  "kurbo",
  "subduction_backend_web",
@@ -2336,6 +2353,7 @@ dependencies = [
 name = "web_lotta_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "js-sys",
  "lotta_layers_common",
  "subduction_backend_web",
@@ -2348,6 +2366,7 @@ dependencies = [
 name = "web_video"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "subduction_backend_web",
  "subduction_core",
  "subduction_sync_harness",
@@ -2727,6 +2746,7 @@ checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
 name = "windows_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "kurbo",
  "subduction_backend_windows",
  "subduction_core",
@@ -2739,6 +2759,7 @@ dependencies = [
 name = "windows_lotta_layers"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
  "kurbo",
  "lotta_layers_common",
  "subduction_backend_windows",

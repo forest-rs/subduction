@@ -12,5 +12,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 subduction_core = { workspace = true, features = ["trace", "trace-rich"] }
 serde_json = "1"

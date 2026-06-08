@@ -10,9 +10,7 @@
 //! Rich events ([`on_layer_changes`](TraceSink::on_layer_changes),
 //! [`on_damage_rects`](TraceSink::on_damage_rects)) store only the count.
 
-use subduction_core::output::OutputId;
-use subduction_core::time::HostTime;
-use subduction_core::timing::TimingConfidence;
+use frameclock::{HostTime, OutputId, TimingConfidence};
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,
@@ -129,8 +127,8 @@ impl TraceSink for RecorderSink {
         self.write_u8(TAG_FRAME_PLAN);
         self.write_u64(e.frame_index);
         self.write_u32(e.output.0);
-        self.write_u64(e.semantic_time.ticks());
-        self.write_option_u64(e.present_time.map(|t| t.ticks()));
+        self.write_u64(e.sample_time.ticks());
+        self.write_option_u64(e.target_present.map(|t| t.ticks()));
         self.write_u64(e.commit_deadline.ticks());
         self.write_u8(e.pipeline_depth);
         self.write_u64(e.safety_margin_ticks);
@@ -170,8 +168,8 @@ impl TraceSink for RecorderSink {
         self.write_u32(s.output.0);
         self.write_confidence(s.confidence);
         self.write_u64(s.now.ticks());
-        self.write_option_u64(s.present_time.map(|t| t.ticks()));
-        self.write_u64(s.semantic_time.ticks());
+        self.write_option_u64(s.target_present.map(|t| t.ticks()));
+        self.write_u64(s.sample_time.ticks());
         self.write_u64(s.deadline.ticks());
         self.write_u8(s.pipeline_depth);
         self.write_u64(s.plan_ticks);
@@ -334,8 +332,8 @@ impl DecodeIter<'_> {
         Some(RecordedEvent::FramePlan(FramePlanEvent {
             frame_index: self.read_u64()?,
             output: OutputId(self.read_u32()?),
-            semantic_time: HostTime(self.read_u64()?),
-            present_time: self.read_option_u64()?.map(HostTime),
+            sample_time: HostTime(self.read_u64()?),
+            target_present: self.read_option_u64()?.map(HostTime),
             commit_deadline: HostTime(self.read_u64()?),
             pipeline_depth: self.read_u8()?,
             safety_margin_ticks: self.read_u64()?,
@@ -380,8 +378,8 @@ impl DecodeIter<'_> {
             output: OutputId(self.read_u32()?),
             confidence: self.read_confidence()?,
             now: HostTime(self.read_u64()?),
-            present_time: self.read_option_u64()?.map(HostTime),
-            semantic_time: HostTime(self.read_u64()?),
+            target_present: self.read_option_u64()?.map(HostTime),
+            sample_time: HostTime(self.read_u64()?),
             deadline: HostTime(self.read_u64()?),
             pipeline_depth: self.read_u8()?,
             plan_ticks: self.read_u64()?,
@@ -448,8 +446,8 @@ mod tests {
         FramePlanEvent {
             frame_index: 7,
             output: OutputId(1),
-            semantic_time: HostTime(1_016_667),
-            present_time: Some(HostTime(1_016_667)),
+            sample_time: HostTime(1_016_667),
+            target_present: Some(HostTime(1_016_667)),
             commit_deadline: HostTime(1_014_000),
             pipeline_depth: 2,
             safety_margin_ticks: 500,
@@ -462,8 +460,8 @@ mod tests {
             output: OutputId(1),
             confidence: TimingConfidence::Predictive,
             now: HostTime(1_000_000),
-            present_time: Some(HostTime(1_016_667)),
-            semantic_time: HostTime(1_016_667),
+            target_present: Some(HostTime(1_016_667)),
+            sample_time: HostTime(1_016_667),
             deadline: HostTime(1_014_000),
             pipeline_depth: 2,
             plan_ticks: 100,

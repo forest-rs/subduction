@@ -14,7 +14,7 @@
 //!
 //! [`RafLoop`]: subduction_backend_web::RafLoop
 //! [`DomPresenter`]: subduction_backend_web::DomPresenter
-//! [`Scheduler`]: subduction_core::scheduler::Scheduler
+//! [`Scheduler`]: frameclock::Scheduler
 
 // This crate only runs in the browser; suppress dead-code warnings when
 // cargo-checking on a native host target.
@@ -44,14 +44,12 @@ use web_sys::{
     WebGlUniformLocation,
 };
 
+use frameclock::{Duration, FrameTick, OutputId, PresentFeedback, Scheduler, SchedulerConfig};
 use kurbo::Size;
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::output::{Color, OutputId};
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::Duration;
-use subduction_core::timing::{FrameTick, PresentFeedback};
+use subduction_core::output::Color;
 use subduction_core::transform::Transform3d;
 
 const CONTAINER_W: f64 = 800.0;
@@ -169,7 +167,7 @@ struct AnimState {
     sizes: Vec<(f64, f64)>,
     layer_ids: Vec<LayerId>,
     start_us: u64,
-    timebase: subduction_core::time::Timebase,
+    timebase: frameclock::Timebase,
     webgl: Option<WebGlState>,
     wgpu: Option<WgpuState>,
 }
@@ -248,7 +246,7 @@ pub fn main() -> Result<(), JsValue> {
 
     let state = Rc::new(RefCell::new(AnimState {
         store,
-        scheduler: Scheduler::new(SchedulerConfig::web()),
+        scheduler: Scheduler::new(SchedulerConfig::pacing_only()),
         presenter,
         layer_ids,
         sizes,
@@ -596,7 +594,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let plan = s.scheduler.plan(&tick, &hints);
 
     // Elapsed seconds for animation.
-    let elapsed_us = plan.semantic_time.ticks().saturating_sub(s.start_us);
+    let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);
     let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_us);
     let t = elapsed_nanos as f64 / 1_000_000_000.0;
 

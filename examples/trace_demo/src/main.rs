@@ -11,10 +11,10 @@
 use std::fs::File;
 use std::io::BufWriter;
 
-use subduction_core::output::OutputId;
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::{HostTime, Timebase};
-use subduction_core::timing::{FrameTick, PresentFeedback, PresentHints, TimingConfidence};
+use frameclock::{
+    FrameTick, HostTime, OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
+    Timebase, TimingConfidence,
+};
 use subduction_core::trace::{
     FramePlanEvent, FrameSummaryBuilder, FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind,
     PresentFeedbackEvent, SubmitEvent, TraceSink, Tracer,
@@ -36,7 +36,7 @@ fn main() {
     let mut recorder = RecorderSink::new();
 
     // -- scheduler ---------------------------------------------------------
-    let config = SchedulerConfig::macos();
+    let config = SchedulerConfig::predictive();
     let mut scheduler = Scheduler::new(config);
 
     // -- simulated loop ----------------------------------------------------
@@ -150,7 +150,7 @@ fn main() {
         let submit_event = SubmitEvent {
             frame_index,
             submitted_at: submit_end,
-            expected_present: plan.present_time,
+            expected_present: plan.target_present,
         };
         pretty.on_submit(&submit_event);
         recorder.on_submit(&submit_event);
@@ -160,8 +160,8 @@ fn main() {
         let feedback = PresentFeedback {
             submitted_at: submit_end,
             build_start: plan_start,
-            expected_present: plan.present_time,
-            actual_present: plan.present_time,
+            expected_present: plan.target_present,
+            actual_present: plan.target_present,
             missed_deadline: Some(missed),
             pacing_overrun: None,
         };
@@ -169,7 +169,7 @@ fn main() {
 
         let feedback_event = PresentFeedbackEvent {
             frame_index,
-            actual_present: plan.present_time,
+            actual_present: plan.target_present,
             missed_deadline: Some(missed),
         };
         pretty.on_present_feedback(&feedback_event);

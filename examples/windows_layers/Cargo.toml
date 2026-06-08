@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true, features = ["std"] }
 subduction_core = { workspace = true, features = ["std", "trace"] }
 subduction_backend_windows = { path = "../../subduction_backend_windows" }
 subduction_debug = { path = "../../subduction_debug" }

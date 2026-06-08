@@ -30,14 +30,13 @@ use alloc::string::{String, ToString as _};
 use core::cell::RefCell;
 use core::f64::consts::TAU;
 
+use frameclock::{
+    AffineClock, Duration, FrameTick, HostTime, OutputId, PresentFeedback, Scheduler,
+    SchedulerConfig, Timebase, TimingConfidence,
+};
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
-use subduction_core::clock::AffineClock;
 use subduction_core::layer::{LayerId, LayerStore};
-use subduction_core::output::OutputId;
-use subduction_core::scheduler::{Scheduler, SchedulerConfig};
-use subduction_core::time::{Duration, HostTime, Timebase};
-use subduction_core::timing::{FrameTick, PresentFeedback, TimingConfidence};
 use subduction_core::transform::Transform3d;
 use subduction_sync_harness::{PathologyToggles, SyncSample, SyncTracker};
 use wasm_bindgen::JsCast as _;
@@ -329,7 +328,7 @@ pub fn main() -> Result<(), JsValue> {
     let mut media_clock = AffineClock::new(seconds_per_tick(timebase), 0.08, 0.08);
     media_clock.update(app_start.ticks(), 0.0);
 
-    let mut scheduler_cfg = SchedulerConfig::web();
+    let mut scheduler_cfg = SchedulerConfig::pacing_only();
     scheduler_cfg.nominal_latency = Duration::ZERO;
 
     let state = Rc::new(RefCell::new(VideoState {
@@ -466,9 +465,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
 
     let mut semantic_seconds = ticks_to_secs(
         s.timebase,
-        plan.semantic_time
-            .ticks()
-            .saturating_sub(s.app_start.ticks()),
+        plan.sample_time.ticks().saturating_sub(s.app_start.ticks()),
     );
 
     let pathologies = PathologyToggles {
@@ -486,7 +483,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
         s.last_timer_jitter_ms = 0.0;
     }
 
-    let target_time = plan.present_time.unwrap_or(plan.semantic_time);
+    let target_time = plan.target_present.unwrap_or(plan.sample_time);
     let target_present_seconds = ticks_to_secs(
         s.timebase,
         target_time.ticks().saturating_sub(s.app_start.ticks()),
@@ -512,16 +509,16 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
         reanchor_media_clock(
             &mut s.media_clock,
             timebase,
-            plan.semantic_time,
+            plan.sample_time,
             observed_media,
         );
     } else {
         s.media_clock
-            .update(plan.semantic_time.ticks(), observed_media);
+            .update(plan.sample_time.ticks(), observed_media);
     }
     let expected_media = s
         .media_clock
-        .media_time_at(plan.semantic_time.ticks())
+        .media_time_at(plan.sample_time.ticks())
         .unwrap_or(observed_media);
 
     let emu_refresh_hz = if pathologies.vary_refresh {
@@ -536,7 +533,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     // forward one frame; if it runs too far ahead, duplicate by pinning to
     // frame boundary.
     if !s.video.paused() {
-        let policy_target = if plan.present_time.is_some() {
+        let policy_target = if plan.target_present.is_some() {
             target_present_seconds
         } else {
             expected_media
@@ -572,7 +569,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     }
 
     let media_drift_ms = (observed_media - expected_media) * 1000.0;
-    let phase_target = if plan.present_time.is_some() {
+    let phase_target = if plan.target_present.is_some() {
         target_present_seconds
     } else {
         expected_media
@@ -647,7 +644,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let build_ms = submitted_at.ticks().saturating_sub(build_start.ticks()) as f64 / 1000.0;
     let frame_budget_ms = frame_dur * 1000.0;
     let hard_miss =
-        plan.present_time.is_some() && submitted_at.ticks() > hints.latest_commit.ticks();
+        plan.target_present.is_some() && submitted_at.ticks() > hints.latest_commit.ticks();
     let soft_miss = build_ms > frame_budget_ms * 1.20;
 
     let audio_delta_ms = if let Some(audio) = s.audio.as_ref() {
@@ -673,8 +670,8 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     s.ui.play_button.set_text_content(Some(play_label));
 
     let confidence = confidence_label(tick.confidence);
-    let ts_ms = ticks_to_secs(s.timebase, plan.semantic_time.ticks()) * 1000.0;
-    let tp_label = if let Some(tp) = plan.present_time {
+    let ts_ms = ticks_to_secs(s.timebase, plan.sample_time.ticks()) * 1000.0;
+    let tp_label = if let Some(tp) = plan.target_present {
         format!("{:.3}ms", ticks_to_secs(s.timebase, tp.ticks()) * 1000.0)
     } else {
         "none".to_string()

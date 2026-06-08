@@ -1,6 +1,6 @@
 [package]
 name = "subduction_core"
-description = "Core types and layer tree for timing-synchronized compositing"
+description = "Retained layer tree and presenter contract for Subduction compositors"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -12,7 +12,7 @@ categories = ["no-std", "rendering::engine"]
 
 [features]
 default = []
-std = ["kurbo/std"]
+std = ["frameclock/std", "kurbo/std"]
 trace = []
 trace-rich = ["trace"]
 
@@ -20,6 +20,7 @@ trace-rich = ["trace"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 kurbo = { workspace = true }
 invalidation = { workspace = true }
 color = { workspace = true }

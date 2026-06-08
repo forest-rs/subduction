@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 
+use frameclock::HostTime;
 use subduction_core::backend::Presenter;
 use subduction_core::layer::{ClipShape, FrameChanges, LayerStore, SurfaceId};
-use subduction_core::time::HostTime;
 
 use crate::composition::{CompositionManager, LayerId};
 

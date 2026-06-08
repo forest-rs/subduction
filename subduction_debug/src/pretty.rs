@@ -9,7 +9,7 @@
 
 use std::io::Write;
 
-use subduction_core::time::Timebase;
+use frameclock::Timebase;
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,
@@ -57,7 +57,7 @@ impl<W: Write> PrettyPrintSink<W> {
         self.timebase.ticks_to_nanos(ticks) as f64 / 1000.0
     }
 
-    fn host_us(&self, t: subduction_core::time::HostTime) -> f64 {
+    fn host_us(&self, t: frameclock::HostTime) -> f64 {
         self.ticks_to_us(t.ticks())
     }
 }
@@ -171,9 +171,9 @@ impl<W: Write> TraceSink for PrettyPrintSink<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subduction_core::output::OutputId;
-    use subduction_core::time::HostTime;
-    use subduction_core::timing::TimingConfidence;
+    use frameclock::HostTime;
+    use frameclock::OutputId;
+    use frameclock::TimingConfidence;
 
     #[test]
     fn pretty_print_tick() {

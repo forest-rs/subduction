@@ -3,7 +3,7 @@
 
 //! Internal output tracking for `wl_output` globals.
 
-use subduction_core::output::OutputId;
+use frameclock::OutputId;
 use wayland_client::Proxy;
 use wayland_client::protocol::wl_output;
 
@@ -135,7 +135,7 @@ impl std::fmt::Debug for OutputRegistry {
 #[cfg(test)]
 mod tests {
     use super::OutputRegistry;
-    use subduction_core::output::OutputId;
+    use frameclock::OutputId;
     use wayland_client::protocol::wl_output;
     use wayland_client::{Connection, Proxy};
 

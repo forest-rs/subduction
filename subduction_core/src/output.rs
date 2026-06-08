@@ -3,29 +3,13 @@
 
 //! Display output identification plus layer-root backdrop policy.
 //!
-//! [`OutputId`] is a lightweight handle identifying a specific display or
-//! output surface. Backends assign these; core treats them as opaque.
-//!
-//! This module also defines backend-neutral layer-root semantics such as the
+//! This module defines backend-neutral layer-root semantics such as the
 //! backdrop color. These settings belong to the root container the scene is
 //! presented into, not to any particular layer in the scene tree.
 
-use core::fmt;
-
 use color::{AlphaColor, Srgb};
 
-/// Identifies a specific display output or surface.
-///
-/// Backends assign output IDs to distinguish multiple displays. Core code
-/// passes them through without interpreting the value.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct OutputId(pub u32);
-
-impl fmt::Debug for OutputId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "OutputId({})", self.0)
-    }
-}
+pub use frameclock::OutputId;
 
 /// Straight-alpha sRGB color used by layer-root backdrop policy.
 ///

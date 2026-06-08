@@ -12,6 +12,7 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS: >-
+    -p frameclock
     -p subduction_backend_android
     -p subduction_backend_apple
     -p subduction_backend_wayland

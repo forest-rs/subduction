@@ -3,8 +3,7 @@
 
 //! Present-hint computation for Wayland ticks.
 
-use subduction_core::time::Duration;
-use subduction_core::timing::{FrameTick, PresentHints};
+use frameclock::{Duration, FrameTick, PresentHints};
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
 ///
@@ -29,9 +28,9 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin: Duration) -> Prese
 #[cfg(test)]
 mod tests {
     use super::compute_present_hints;
-    use subduction_core::output::OutputId;
-    use subduction_core::time::{Duration, HostTime};
-    use subduction_core::timing::{FrameTick, TimingConfidence};
+    use frameclock::OutputId;
+    use frameclock::{Duration, HostTime};
+    use frameclock::{FrameTick, TimingConfidence};
 
     fn tick(predicted_present: Option<HostTime>) -> FrameTick {
         FrameTick {

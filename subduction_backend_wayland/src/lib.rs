@@ -47,7 +47,7 @@
 //! # Frame callback lifecycle
 //!
 //! The backend converts Wayland `wl_surface.frame` callbacks into
-//! [`FrameTick`](subduction_core::timing::FrameTick) values using a
+//! [`FrameTick`](frameclock::FrameTick) values using a
 //! pull-based API. The typical per-frame sequence is:
 //!
 //! 1. **Request** — call [`request_frame`](WaylandState::request_frame)
@@ -104,7 +104,7 @@
 //! timing hints, frame evaluation, and commit:
 //!
 //! 1. **Dispatch** — pump the event loop to deliver protocol events.
-//! 2. **Poll tick** — drain [`FrameTick`](subduction_core::timing::FrameTick)
+//! 2. **Poll tick** — drain [`FrameTick`](frameclock::FrameTick)
 //!    values via [`poll_tick`](WaylandState::poll_tick).
 //! 3. **Compute present hints** — call
 //!    [`compute_present_hints`] with the tick.
@@ -121,7 +121,7 @@
 //! Feedback arrives as [`PresentEvent`]s correlated by `SubmissionId`:
 //!
 //! - **Simple path**: use
-//!   [`FrameTick::prev_actual_present`](subduction_core::timing::FrameTick::prev_actual_present)
+//!   [`FrameTick::prev_actual_present`](frameclock::FrameTick::prev_actual_present)
 //!   which is populated automatically from the most recent feedback.
 //! - **Robust path**: drain [`PresentEvent`]s via
 //!   [`WaylandState::poll_present_event`] (or

@@ -6,8 +6,8 @@
 //! Wraps `CVDisplayLink` in a safe Rust API that produces [`FrameTick`] events
 //! with [`TimingConfidence::Predictive`].
 //!
-//! [`FrameTick`]: subduction_core::timing::FrameTick
-//! [`TimingConfidence::Predictive`]: subduction_core::timing::TimingConfidence::Predictive
+//! [`FrameTick`]: frameclock::FrameTick
+//! [`TimingConfidence::Predictive`]: frameclock::TimingConfidence::Predictive
 
 use alloc::boxed::Box;
 use core::ffi::c_void;
@@ -16,11 +16,9 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use frameclock::{FrameTick, HostTime, OutputId, Timebase, TimingConfidence};
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink as CVDisplayLinkRaw, CVTimeStamp, kCVReturnSuccess};
-use subduction_core::output::OutputId;
-use subduction_core::time::{HostTime, Timebase};
-use subduction_core::timing::{FrameTick, TimingConfidence};
 
 use crate::threading::TickSender;
 

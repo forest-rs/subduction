@@ -4,8 +4,7 @@
 //! Presentation feedback contracts and queueing.
 
 use crate::queue::BoundedQueue;
-use subduction_core::output::OutputId;
-use subduction_core::time::HostTime;
+use frameclock::{HostTime, OutputId};
 
 /// Unique identity for one `wl_surface.commit` submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -118,8 +117,8 @@ impl Default for PresentEventQueue {
 #[cfg(test)]
 mod tests {
     use super::{PresentEvent, PresentEventQueue, SubmissionId, presentation_time_to_host_time};
-    use subduction_core::output::OutputId;
-    use subduction_core::time::HostTime;
+    use frameclock::HostTime;
+    use frameclock::OutputId;
 
     #[test]
     fn queue_overflow_drops_oldest_event() {

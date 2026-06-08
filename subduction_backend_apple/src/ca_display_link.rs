@@ -20,14 +20,12 @@ use alloc::boxed::Box;
 use core::cell::Cell;
 use core::fmt;
 
+use frameclock::{FrameTick, HostTime, OutputId, Timebase, TimingConfidence};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRunLoop};
 use objc2_quartz_core::CADisplayLink as CADisplayLinkRaw;
-use subduction_core::output::OutputId;
-use subduction_core::time::{HostTime, Timebase};
-use subduction_core::timing::{FrameTick, TimingConfidence};
 
 use crate::mach_time;
 

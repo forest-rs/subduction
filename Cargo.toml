@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "frameclock",
   "subduction_backend_apple",
   "subduction_backend_web",
   "subduction_backend_wgpu",
@@ -33,6 +34,7 @@ members = [
 # Only cross-platform crates are built by default. Platform-specific backends
 # and their examples must be selected explicitly (e.g. `cargo check -p subduction_backend_wayland`).
 default-members = [
+  "frameclock",
   "subduction_core",
   "subduction_debug",
   "subduction_render",
@@ -54,6 +56,7 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/subduction"
 
 [workspace.dependencies]
+frameclock = { path = "frameclock" }
 subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
 invalidation = "0.2.0"

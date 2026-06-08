@@ -14,6 +14,7 @@ categories = ["os::windows-apis", "rendering::engine"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true, features = ["std"] }
 subduction_core = { workspace = true, features = ["std"] }
 kurbo = { workspace = true }
 windows = { version = "0.62", features = [

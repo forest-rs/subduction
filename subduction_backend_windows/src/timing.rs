@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use subduction_core::time::{HostTime, Timebase};
+use frameclock::{HostTime, Timebase};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 /// Cached QPC frequency — constant for the lifetime of the system.

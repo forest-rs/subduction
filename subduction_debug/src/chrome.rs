@@ -12,7 +12,7 @@ use std::io::{self, Write};
 
 use serde_json::{Value, json};
 
-use subduction_core::time::Timebase;
+use frameclock::Timebase;
 
 use crate::recorder::{RecordedEvent, decode};
 
@@ -178,9 +178,9 @@ fn ticks_to_us(ticks: u64, timebase: Timebase) -> f64 {
 mod tests {
     use super::*;
     use crate::recorder::RecorderSink;
-    use subduction_core::output::OutputId;
-    use subduction_core::time::HostTime;
-    use subduction_core::timing::TimingConfidence;
+    use frameclock::HostTime;
+    use frameclock::OutputId;
+    use frameclock::TimingConfidence;
     use subduction_core::trace::{
         FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind, TraceSink,
     };

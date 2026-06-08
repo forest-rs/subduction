@@ -20,6 +20,7 @@ ca-display-link = ["objc2-quartz-core/CADisplayLink"]
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 subduction_core = { workspace = true }
 
 hashbrown = { version = "0.17.0", default-features = false, features = [

@@ -1,12 +1,16 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Core types and layer tree for timing-synchronized compositing.
+//! Retained layer tree and backend presenter contract for compositing.
 //!
 //! `subduction_core` provides the foundational data structures for managing
-//! trees of compositing layers with high-precision timing. It is `no_std`
-//! compatible (with `alloc`) and uses array-based struct-of-arrays storage with index
-//! handles for cache-friendly traversal.
+//! retained compositing layer trees. It is `no_std` compatible (with `alloc`)
+//! and uses array-based struct-of-arrays storage with index handles for
+//! cache-friendly traversal.
+//!
+//! Display-frame timing and scheduling live in the [`frameclock`] crate. This
+//! crate keeps compatibility re-exports for `clock`, `scheduler`, `time`, and
+//! `timing` while local callers migrate to direct `frameclock` imports.
 //!
 //! # Architecture
 //!
@@ -17,7 +21,7 @@
 //!   Backend (tick source)
 //!       │
 //!       ▼
-//!   FrameTick ──► Scheduler::plan() ──► FramePlan
+//!   frameclock::FrameTick ──► frameclock::Scheduler::plan() ──► frameclock::FramePlan
 //!                                           │
 //!                 ┌─────────────────────────┘
 //!                 ▼
@@ -25,7 +29,7 @@
 //!                                                    │
 //!                 ┌──────────────────────────────────┘
 //!                 ▼
-//!   PresentFeedback ──► Scheduler::observe()
+//!   frameclock::PresentFeedback ──► frameclock::Scheduler::observe()
 //! ```
 //!
 //! **[`layer`]** — Struct-of-arrays layer tree with generational handles.
@@ -37,22 +41,19 @@
 //! and OPACITY propagate to descendants; CLIP and CONTENT are local-only;
 //! TOPOLOGY triggers a traversal rebuild.
 //!
-//! **[`timing`]** — Capability-graded timing model. Types flow from backend
-//! tick sources through the scheduler and back as feedback.
+//! **[`timing`]** — Compatibility re-export of `frameclock::timing`.
 //!
-//! **[`scheduler`]** — Adaptive pipeline-depth scheduler that converts ticks
-//! into frame plans and adjusts based on observed build costs and deadline
-//! hits/misses.
+//! **[`scheduler`]** — Compatibility re-export of `frameclock::scheduler`.
 //!
 //! **[`backend`]** — The [`Presenter`](backend::Presenter) trait that
 //! platform backends implement to apply frame changes to native trees.
 //!
-//! **[`clock`]** — `AffineClock` for smoothed time mapping (A/V sync).
+//! **[`clock`]** — Compatibility re-export of `frameclock::timeline`.
 //!
 //! **[`transform`]** — 3D affine transform type for layer positioning.
 //!
-//! **[`output`]** — Output identification plus layer-root presentation policy
-//! such as the backdrop style.
+//! **[`output`]** — Layer-root presentation policy such as the backdrop style,
+//! plus a compatibility re-export of `frameclock::OutputId`.
 //!
 //! **[`trace`]** — [`TraceSink`](trace::TraceSink) trait and event types for
 //! frame-loop instrumentation, with zero-overhead [`Tracer`](trace::Tracer)
@@ -60,7 +61,8 @@
 //!
 //! # Crate features
 //!
-//! - `std` (disabled by default): Enables `std` support in dependencies.
+//! - `std` (disabled by default): Enables `std` support in dependencies and
+//!   in `frameclock`.
 //! - `trace` (disabled by default): Enables `Tracer` method bodies (one branch
 //!   per call site).
 //! - `trace-rich` (disabled by default, implies `trace`): Gates per-layer
@@ -72,12 +74,28 @@
 extern crate alloc;
 
 pub mod backend;
-pub mod clock;
 pub mod dirty;
 pub mod layer;
 pub mod output;
-pub mod scheduler;
-pub mod time;
-pub mod timing;
 pub mod trace;
 pub mod transform;
+
+/// Compatibility re-export for timeline helpers.
+pub mod clock {
+    pub use frameclock::timeline::*;
+}
+
+/// Compatibility re-export for frame scheduling.
+pub mod scheduler {
+    pub use frameclock::scheduler::*;
+}
+
+/// Compatibility re-export for host-time types.
+pub mod time {
+    pub use frameclock::time::*;
+}
+
+/// Compatibility re-export for frame timing and feedback types.
+pub mod timing {
+    pub use frameclock::timing::*;
+}

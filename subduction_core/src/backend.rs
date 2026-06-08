@@ -54,8 +54,8 @@ use crate::layer::{FrameChanges, LayerStore};
 ///     let hints = compute_present_hints(&tick, safety);
 ///     let plan = scheduler.plan(&tick, &hints);
 ///
-///     // Animate: update layer properties using plan.semantic_time
-///     store.set_transform(layer, animated_transform(plan.semantic_time));
+///     // Animate: update layer properties using plan.sample_time
+///     store.set_transform(layer, animated_transform(plan.sample_time));
 ///
 ///     // Evaluate: drain dirty channels, recompute world properties
 ///     let changes = store.evaluate();

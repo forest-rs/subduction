@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
 subduction_core = { workspace = true }
 subduction_backend_apple = { path = "../../subduction_backend_apple" }
 wgpu = { workspace = true }

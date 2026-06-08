@@ -7,13 +7,13 @@
 //! This module provides [`TickForwarder`] and [`TickSender`] to dispatch
 //! [`FrameTick`] events to the main thread's run loop with minimal latency.
 //!
-//! [`FrameTick`]: subduction_core::timing::FrameTick
+//! [`FrameTick`]: frameclock::FrameTick
 
 use alloc::sync::Arc;
 use core::fmt;
 
 use dispatch2::DispatchQueue;
-use subduction_core::timing::FrameTick;
+use frameclock::FrameTick;
 
 /// Owns the tick callback and produces [`TickSender`] handles.
 ///

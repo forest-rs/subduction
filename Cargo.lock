@@ -455,6 +455,13 @@ name = "frameclock"
 version = "0.0.1"
 
 [[package]]
+name = "frameclock_simulated"
+version = "0.0.1"
+dependencies = [
+ "frameclock",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2028,6 +2035,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
+name = "understory_timing"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd51bfaa2fed0422a43d7a29fcd928356376740422ac07191604039cfa3be4cd"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2823,6 +2836,16 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
+]
+
+[[package]]
+name = "winit_paced_redraw"
+version = "0.0.1"
+dependencies = [
+ "frameclock",
+ "understory_timing",
+ "web-time",
+ "winit",
 ]
 
 [[package]]

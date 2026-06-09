@@ -13,6 +13,7 @@ members = [
   "subduction_debug",
   "subduction_render",
   "subduction_sync_harness",
+  "examples/frameclock_simulated",
   "examples/lotta_layers_common",
   "examples/macos_layers",
   "examples/macos_lotta_layers",
@@ -29,6 +30,7 @@ members = [
   "examples/wgpu_lotta_layers",
   "examples/windows_layers",
   "examples/windows_lotta_layers",
+  "examples/winit_paced_redraw",
 ]
 
 # Only cross-platform crates are built by default. Platform-specific backends
@@ -40,10 +42,12 @@ default-members = [
   "subduction_render",
   "subduction_sync_harness",
   "subduction_backend_wgpu",
+  "examples/frameclock_simulated",
   "examples/lotta_layers_common",
   "examples/trace_demo",
   "examples/wgpu_layers",
   "examples/wgpu_lotta_layers",
+  "examples/winit_paced_redraw",
 ]
 
 [workspace.package]
@@ -66,6 +70,7 @@ wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 web-sys = "0.3"
+web-time = { version = "1.1.0" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

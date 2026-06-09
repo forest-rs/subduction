@@ -1,0 +1,15 @@
+[package]
+name = "frameclock_simulated"
+description = "Deterministic frameclock scheduler and diagnostics example"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true, features = ["std"] }

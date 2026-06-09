@@ -17,6 +17,15 @@ This release has an [MSRV][] of 1.92.
 
 This is the initial release.
 
+### Added
+
+- Added `FrameDemandClass`, `FrameDemand::dominant_class`, and
+  `FrameDemand::preempts` so hosts can use the same demand ordering as the
+  scheduler.
+- Added `FrameDriver` and `PlannedFrame` for retained pending-demand and queued
+  frame-start planning state. `PlannedFrame` retains the originating
+  `FrameTick`, selected `FramePlan`, and matching `PresentHints`.
+
 [Unreleased]: https://github.com/forest-rs/subduction/compare/frameclock-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/subduction/releases/tag/frameclock-v0.0.1
 

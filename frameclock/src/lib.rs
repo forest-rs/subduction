@@ -36,23 +36,27 @@
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod demand;
 pub mod diagnostics;
+pub mod driver;
 pub mod output;
 pub mod scheduler;
 pub mod time;
 pub mod timeline;
 pub mod timing;
 
+pub use demand::{FrameDemand, FrameDemandClass};
 pub use diagnostics::{
     Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingSummary,
     FrameTimingSummaryBuilder, NoopDiagnostics, PresentFeedbackEvent, SchedulerStateEvent,
     SubmitEvent,
 };
+pub use driver::{FrameDriver, PlannedFrame};
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
 pub use time::{Duration, HostTime, Timebase};
 pub use timeline::AffineClock;
 pub use timing::{
-    DisplayTiming, FrameDemand, FramePlan, FrameRequest, FrameTick, PendingFeedback,
-    PresentFeedback, PresentHints, TimingConfidence,
+    DisplayTiming, FramePlan, FrameRequest, FrameTick, PendingFeedback, PresentFeedback,
+    PresentHints, TimingConfidence,
 };

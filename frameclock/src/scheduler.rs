@@ -8,10 +8,9 @@
 //! observed [`PresentFeedback`]. See the [`Scheduler`] struct docs for
 //! details on pipeline depth and adaptive behavior.
 
+use crate::demand::{FrameDemand, FrameDemandClass};
 use crate::time::{Duration, HostTime};
-use crate::timing::{
-    DisplayTiming, FrameDemand, FramePlan, FrameRequest, PresentFeedback, TimingConfidence,
-};
+use crate::timing::{DisplayTiming, FramePlan, FrameRequest, PresentFeedback, TimingConfidence};
 
 /// Controls how the scheduler adapts pipeline depth in response to deadline
 /// misses and hits.
@@ -142,15 +141,6 @@ pub struct SchedulerState {
     pub consecutive_misses: u32,
     /// Consecutive strong hits currently accumulated.
     pub consecutive_hits: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DemandPolicy {
-    None,
-    Animation,
-    Input,
-    ContinuousInput,
-    Background,
 }
 
 /// Exponential moving average tracker.
@@ -324,14 +314,14 @@ impl Scheduler {
         } else {
             source_interval
         };
-        let policy = demand_policy(demand);
+        let policy = demand.dominant_class();
         let needed = match policy {
-            DemandPolicy::None | DemandPolicy::Input => return source_interval,
-            DemandPolicy::ContinuousInput => frame_start_margin,
-            DemandPolicy::Animation => {
+            FrameDemandClass::None | FrameDemandClass::Input => return source_interval,
+            FrameDemandClass::ContinuousInput => frame_start_margin,
+            FrameDemandClass::Animation => {
                 frame_start_margin.saturating_add(source_interval.div_u64(4))
             }
-            DemandPolicy::Background => frame_start_margin
+            FrameDemandClass::Background => frame_start_margin
                 .saturating_add(source_interval.div_u64(4))
                 .max(source_interval.saturating_mul(2)),
         };
@@ -345,7 +335,7 @@ impl Scheduler {
         commit_deadline: HostTime,
         demand: FrameDemand,
     ) -> HostTime {
-        if demand_policy(demand) == DemandPolicy::Input {
+        if demand.dominant_class() == FrameDemandClass::Input {
             return now;
         }
 
@@ -466,20 +456,6 @@ impl Scheduler {
             consecutive_misses: self.consecutive_misses,
             consecutive_hits: self.consecutive_hits,
         }
-    }
-}
-
-fn demand_policy(demand: FrameDemand) -> DemandPolicy {
-    if demand.contains(FrameDemand::INPUT) {
-        DemandPolicy::Input
-    } else if demand.contains(FrameDemand::CONTINUOUS_INPUT) {
-        DemandPolicy::ContinuousInput
-    } else if demand.contains(FrameDemand::ANIMATION) {
-        DemandPolicy::Animation
-    } else if demand.contains(FrameDemand::BACKGROUND) {
-        DemandPolicy::Background
-    } else {
-        DemandPolicy::None
     }
 }
 

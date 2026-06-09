@@ -6,7 +6,6 @@
 //! This module defines the types that flow between backends and the scheduler:
 //!
 //! - [`TimingConfidence`] — how much the platform can tell us about presentation
-//! - [`FrameDemand`] — why the host is asking for a frame
 //! - [`DisplayTiming`] — fixed/variable display timing constraints
 //! - [`FrameTick`] — a frame opportunity delivered by the backend
 //! - [`FrameRequest`] — one scheduler planning request
@@ -36,96 +35,9 @@
 //!    [`Scheduler::observe()`](crate::scheduler::Scheduler::observe) to
 //!    adapt pipeline depth and safety margins.
 
+pub use crate::demand::{FrameDemand, FrameDemandClass};
 use crate::output::OutputId;
 use crate::time::{Duration, HostTime};
-use core::ops::{BitOr, BitOrAssign};
-
-/// Why the host is requesting frame work.
-///
-/// Demand is a compact bit set because several causes can be pending at once.
-/// The scheduler derives a policy from the strongest pending demand: input is
-/// latency-first, continuous input is latency-sensitive but allowed to choose a
-/// sustainable cadence, animation prefers even pacing, and background work can
-/// be deferred.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct FrameDemand(u8);
-
-impl FrameDemand {
-    /// No frame is currently needed.
-    ///
-    /// Hosts should normally avoid calling
-    /// [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) when demand is
-    /// empty. Passing `NONE` is reserved for code that intentionally wants a
-    /// passive pacing plan for diagnostics or backend bookkeeping.
-    pub const NONE: Self = Self(0);
-    /// Smooth visual work such as animation or media playback.
-    pub const ANIMATION: Self = Self(1 << 0);
-    /// Latency-sensitive one-shot input such as key presses, clicks, or IME.
-    pub const INPUT: Self = Self(1 << 1);
-    /// Continuous user input such as scrolling, resize, pointer movement, or
-    /// gestures.
-    pub const CONTINUOUS_INPUT: Self = Self(1 << 2);
-    /// Deferrable visual work where power and batching matter more than
-    /// immediate latency.
-    pub const BACKGROUND: Self = Self(1 << 3);
-
-    /// Returns an empty demand set.
-    #[inline]
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self::NONE
-    }
-
-    /// Creates a demand set from raw bits, discarding unknown bits.
-    #[inline]
-    #[must_use]
-    pub const fn from_bits_truncate(bits: u8) -> Self {
-        Self(bits & 0x0f)
-    }
-
-    /// Returns the raw demand bits.
-    #[inline]
-    #[must_use]
-    pub const fn bits(self) -> u8 {
-        self.0
-    }
-
-    /// Returns whether no demand bits are set.
-    #[inline]
-    #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Returns whether all bits in `other` are set.
-    #[inline]
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        (self.0 & other.0) == other.0
-    }
-
-    /// Adds demand bits.
-    #[inline]
-    pub fn insert(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
-}
-
-impl BitOr for FrameDemand {
-    type Output = Self;
-
-    #[inline]
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl BitOrAssign for FrameDemand {
-    #[inline]
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.insert(rhs);
-    }
-}
 
 /// Fixed or variable display timing constraints for one output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

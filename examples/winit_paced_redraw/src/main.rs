@@ -4,8 +4,8 @@
 //! Minimal winit paced redraw loop using `frameclock`.
 //!
 //! This example does not render anything. It shows where `frameclock` planning
-//! fits in a winit application: convert redraw demand into [`FrameTick`]s, ask
-//! the scheduler for a [`FramePlan`], wake at the plan's frame-start time,
+//! fits in a winit application: send redraw demand to [`FrameDriver`], convert
+//! redraw opportunities into [`FrameTick`]s, wake at the plan's frame-start time,
 //! submit work, and feed pacing feedback back into the scheduler.
 //!
 //! A real renderer would replace the synthetic submit and feedback below with
@@ -20,8 +20,8 @@
 use std::time::Duration as StdDuration;
 
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FramePlan, FrameRequest, FrameTick, HostTime, OutputId,
-    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, TimingConfidence,
+    DisplayTiming, Duration, FrameDemand, FrameDriver, FramePlan, FrameTick, HostTime, OutputId,
+    PlannedFrame, PresentFeedback, PresentHints, SchedulerConfig, TimingConfidence,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;
@@ -44,42 +44,14 @@ struct WindowState {
     model: DemoModel,
     renderer: SyntheticRenderer,
     surface_clock: SurfaceFrameClock,
-    /// Planned frame that should not start until its scheduler-selected
-    /// `FramePlan::frame_start`.
-    ///
-    /// Winit may deliver `RedrawRequested` before the ideal frame-start time.
-    /// Keep the plan instead of re-planning so the eventual redraw samples the
-    /// time and uses the deadline selected for the same frame opportunity.
-    /// If stronger demand arrives while a frame is waiting, this example
-    /// discards the queued plan and asks `frameclock` for a new one.
-    pending_frame: Option<PlannedFrame>,
-    /// Demand that arrived after the last planned frame.
-    ///
-    /// This is app-visible work: input, resize, animation, or delayed updates.
-    /// A scheduled frame-start wake does not insert demand here; it only wakes
-    /// the event loop so an existing `pending_frame` can run.
-    pending_demand: FrameDemand,
     timers: TimerQueue<Wake>,
     frame_start_wake: Option<TimerId>,
 }
 
 struct SurfaceFrameClock {
-    scheduler: Scheduler,
+    driver: FrameDriver,
     frame_index: u64,
     output: OutputId,
-}
-
-/// A frame plan plus the backend hints used to produce it.
-///
-/// The hints are retained with the plan because feedback must be resolved
-/// against the same desired-present/deadline facts that were active when the
-/// scheduler made the decision.
-#[derive(Clone, Copy)]
-struct PlannedFrame {
-    /// Scheduler-selected frame timing.
-    plan: FramePlan,
-    /// Presentation constraints paired with `plan`.
-    hints: PresentHints,
 }
 
 struct DemoModel {
@@ -98,8 +70,8 @@ struct SyntheticSubmission {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Wake {
     // App timers, animation pulses, and delayed UI work would be additional
-    // variants in the same queue. The frame-start wake is just one source of
-    // demand.
+    // variants in the same queue. The frame-start wake is only a host wake; it
+    // does not create new app-visible frame demand.
     FrameStart(OutputId),
 }
 
@@ -130,8 +102,6 @@ impl WindowState {
             model: DemoModel::new(),
             renderer: SyntheticRenderer,
             surface_clock: SurfaceFrameClock::new(output),
-            pending_frame: None,
-            pending_demand: FrameDemand::NONE,
             timers: TimerQueue::new(),
             frame_start_wake: None,
         }
@@ -139,7 +109,7 @@ impl WindowState {
 
     /// Adds app-visible demand and asks winit to deliver `RedrawRequested`.
     fn request_frame(&mut self, demand: FrameDemand) {
-        self.pending_demand.insert(demand);
+        self.surface_clock.driver.request(demand);
         self.window.request_redraw();
     }
 
@@ -175,14 +145,17 @@ impl WindowState {
         ));
     }
 
-    /// Stores a planned frame and arms the host timer for its start time.
+    /// Mirrors the frame driver's queued frame-start time into the host timer.
     ///
     /// This keeps timer ownership at the app/window level. `frameclock`
     /// decides the start time; the host decides how that wake is merged with
     /// input, animation, layout, and other app timers.
-    fn queue_frame(&mut self, frame: PlannedFrame) {
-        self.schedule_frame_start(frame.plan.frame_start);
-        self.pending_frame = Some(frame);
+    fn sync_frame_start_wake(&mut self) {
+        if let Some(frame_start) = self.surface_clock.driver.next_frame_start() {
+            self.schedule_frame_start(frame_start);
+        } else {
+            self.cancel_frame_start_wake();
+        }
     }
 
     fn arm_next_wake(&self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -199,12 +172,10 @@ impl WindowState {
         }
     }
 
-    fn plan_frame(&mut self, now: HostTime, demand: FrameDemand) -> PlannedFrame {
-        debug_assert!(!demand.is_empty(), "no demand should not plan a frame");
-
+    fn frame_tick(&self, now: HostTime) -> FrameTick {
         // Plain winit does not expose the future present time here, so this
         // tick carries refresh-rate information but no predicted present.
-        let tick = FrameTick {
+        FrameTick {
             now,
             predicted_present: None,
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
@@ -212,24 +183,28 @@ impl WindowState {
             frame_index: self.surface_clock.frame_index,
             output: self.surface_clock.output,
             prev_actual_present: None,
-        };
+        }
+    }
 
+    fn present_hints(&self, now: HostTime) -> PresentHints {
         // Hints express app-side intent and constraints. With predictive
         // display timing, desired_present would normally be the display target.
         // In this pacing-only example, latest_commit gives the scheduler a
         // conservative "submit by around the next refresh" boundary.
-        let hints = PresentHints {
+        PresentHints {
             desired_present: None,
             latest_commit: now + REFRESH_INTERVAL,
-        };
+        }
+    }
 
-        let plan = self.surface_clock.scheduler.plan(FrameRequest::new(
+    fn take_ready_frame(&mut self, now: HostTime) -> Option<PlannedFrame> {
+        let tick = self.frame_tick(now);
+        let hints = self.present_hints(now);
+        self.surface_clock.driver.take_ready(
             tick,
             hints,
-            demand,
             DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
-        ));
-        PlannedFrame { plan, hints }
+        )
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -238,51 +213,18 @@ impl WindowState {
         // report times on the same clock.
         let now = host_time(started_at);
 
-        // RedrawRequested is winit's signal that the app may build another
-        // frame. A plan can intentionally be earlier than the render work: if
-        // frame_start is still in the future, store the plan and let the shared
-        // timer queue wake the event loop at the scheduler-selected time.
-        let planned_frame = match self.pending_frame.take() {
-            Some(frame) if now >= frame.plan.frame_start => frame,
-            Some(frame) if demand_preempts_plan(self.pending_demand, frame.plan.demand) => {
-                // Input or resize may arrive while an animation frame is parked
-                // for a later start time. Re-plan instead of forcing the newer,
-                // more urgent work to wait behind the old cadence decision.
-                self.cancel_frame_start_wake();
-                let demand = self.pending_demand;
-                self.pending_demand = FrameDemand::NONE;
-                self.plan_frame(now, demand)
-            }
-            Some(frame) => {
-                self.queue_frame(frame);
-                self.arm_next_wake(started_at, event_loop);
-                return;
-            }
-            None => {
-                // Spurious redraws can happen. With no planned frame and no
-                // app-visible demand, stay idle instead of teaching that
-                // FrameDemand::NONE is a normal render mode.
-                if self.pending_demand.is_empty() {
-                    self.arm_next_wake(started_at, event_loop);
-                    return;
-                }
-
-                let demand = self.pending_demand;
-                self.pending_demand = FrameDemand::NONE;
-                self.plan_frame(now, demand)
-            }
+        // RedrawRequested is winit's signal that the app may build or plan a
+        // frame. The driver owns pending demand and queued frame plans. If the
+        // selected frame start is still in the future, it returns `None`; the
+        // host mirrors `next_frame_start()` into its timer queue and sleeps.
+        let Some(planned_frame) = self.take_ready_frame(now) else {
+            self.sync_frame_start_wake();
+            self.arm_next_wake(started_at, event_loop);
+            return;
         };
         let plan = planned_frame.plan;
         let hints = planned_frame.hints;
-
-        // A redraw requested by input, resize, or the OS can arrive before the
-        // planned frame-start timer. Keep the existing plan and sleep until the
-        // scheduler-selected start instead of doing app/render work early.
-        if now < plan.frame_start {
-            self.queue_frame(planned_frame);
-            self.arm_next_wake(started_at, event_loop);
-            return;
-        }
+        self.cancel_frame_start_wake();
 
         // Update application state and models here. Time-varying content samples
         // `plan.sample_time`, not wall-clock "now", so CPU work targets the
@@ -304,7 +246,7 @@ impl WindowState {
 
         // Feeding feedback back into the scheduler lets it adapt safety margins
         // and pipeline depth when frames miss deadlines or submit too late.
-        self.surface_clock.scheduler.observe(&feedback);
+        self.surface_clock.driver.observe(&feedback);
 
         if self.surface_clock.frame_index.is_multiple_of(60) {
             self.window.set_title(&format!(
@@ -324,27 +266,30 @@ impl WindowState {
             );
         }
 
-        let mut next_demand = self.pending_demand;
-        self.pending_demand = FrameDemand::NONE;
+        self.surface_clock.frame_index += 1;
+
+        // If lower-priority demand was retained behind the queued frame we
+        // just consumed, wake winit again so the driver can plan it on a fresh
+        // turn. The host does not inspect or rank those demand bits itself.
+        let driver_needs_redraw = self.surface_clock.driver.has_pending_demand();
+
+        let mut next_demand = FrameDemand::NONE;
         if self.model.animation_active {
             next_demand.insert(FrameDemand::ANIMATION);
         }
 
         if next_demand.is_empty() {
-            self.cancel_frame_start_wake();
+            if driver_needs_redraw {
+                self.window.request_redraw();
+            }
             self.arm_next_wake(started_at, event_loop);
-            self.surface_clock.frame_index += 1;
             return;
         }
 
-        self.surface_clock.frame_index += 1;
-
-        // Plan the next frame and queue the scheduler-selected frame start
-        // alongside the host's other timers. This is the app/window-level
-        // queue; the per-surface frameclock only contributes timing context.
-        let now = host_time(started_at);
-        let next_frame = self.plan_frame(now, next_demand);
-        self.queue_frame(next_frame);
+        // Ask for another redraw so the driver can turn this new demand into a
+        // queued plan. If that plan starts in the future, the next redraw will
+        // only arm the host timer; it will not do app or render work early.
+        self.request_frame(next_demand);
         self.arm_next_wake(started_at, event_loop);
     }
 }
@@ -353,26 +298,11 @@ fn instant_for(started_at: Instant, deadline: TimerInstant) -> Instant {
     started_at + StdDuration::from_nanos(deadline)
 }
 
-fn demand_preempts_plan(pending: FrameDemand, planned: FrameDemand) -> bool {
-    demand_priority(pending) > demand_priority(planned)
-}
-
-fn demand_priority(demand: FrameDemand) -> u8 {
-    if demand.contains(FrameDemand::INPUT) {
-        4
-    } else if demand.contains(FrameDemand::CONTINUOUS_INPUT) {
-        3
-    } else if demand.contains(FrameDemand::ANIMATION) {
-        2
-    } else if demand.contains(FrameDemand::BACKGROUND) {
-        1
-    } else {
-        0
-    }
-}
-
 impl SurfaceFrameClock {
     fn new(output: OutputId) -> Self {
+        let mut config = SchedulerConfig::pacing_only();
+        config.initial_depth = 1;
+
         Self {
             // Winit alone does not give us predicted presentation timestamps, so
             // this example uses pacing-only scheduling. Platform backends can
@@ -382,11 +312,7 @@ impl SurfaceFrameClock {
             // there is no evidence that the app should add latency. The adaptive
             // policy can still raise depth if repeated overruns show that this is
             // too aggressive.
-            scheduler: {
-                let mut config = SchedulerConfig::pacing_only();
-                config.initial_depth = 1;
-                Scheduler::new(config)
-            },
+            driver: FrameDriver::new(config),
             frame_index: 0,
             output,
         }

@@ -41,6 +41,17 @@ Ordinary render loops should stay idle instead of calling `Scheduler::plan`
 with empty demand. Passing `NONE` is reserved for hosts that intentionally want
 a passive pacing plan for diagnostics or backend bookkeeping.
 
+`FrameDriver` is the retained helper for hosts that need to queue demand and a
+future frame-start plan between event-loop turns. It owns pending demand,
+stronger-demand preemption, and the queued `PlannedFrame`; hosts still own
+timers, redraw requests, and renderer submission. Use
+`FrameDriver::next_frame_start` as one wake source to merge with app timers.
+Returned `PlannedFrame`s retain the originating `FrameTick`, the selected
+`FramePlan`, and matching `PresentHints` so diagnostics and frame summaries can
+refer to the same facts the scheduler used. After consuming a ready
+`PlannedFrame`, hosts should request another redraw when
+`FrameDriver::has_pending_demand()` is still true.
+
 ## Display Timing And VRR
 
 `DisplayTiming::fixed(interval)` is the right model when a backend has only a
@@ -83,6 +94,11 @@ The split also tightens names around timing semantics:
   app-side frame work before `FramePlan::commit_deadline`.
 - `Scheduler::plan` now takes a `FrameRequest` so demand and display timing are
   explicit policy inputs.
+- `FrameDemand::dominant_class` and `FrameDemand::preempts` expose the demand
+  ordering used by the scheduler.
+- `FrameDriver` owns pending demand and queued frame-start plans for hosts that
+  need retained frame scheduling state. `PlannedFrame` retains the originating
+  `FrameTick`, selected `FramePlan`, and matching `PresentHints`.
 - Platform-named scheduler presets are now capability-named:
   `SchedulerConfig::predictive()`, `SchedulerConfig::estimated()`, and
   `SchedulerConfig::pacing_only()`.

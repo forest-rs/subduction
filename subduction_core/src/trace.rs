@@ -1,11 +1,15 @@
 // Copyright 2026 the Subduction Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Tracing and diagnostics for the frame loop.
+//! Tracing and diagnostics for Subduction frame loops.
 //!
 //! This module provides a [`TraceSink`] trait with per-event methods that
 //! frame-loop instrumentation calls at each stage. All method bodies default to
 //! no-ops, so implementing only the events you care about is fine.
+//!
+//! Frame timing events such as [`FrameTickEvent`] and [`FramePlanEvent`] are
+//! owned by `frameclock` and re-exported here for compatibility. This module
+//! owns Subduction-specific frame-loop phase summaries and layer/damage tracing.
 //!
 //! [`Tracer`] wraps an optional `&mut dyn TraceSink`. When the `trace` feature
 //! is **off**, every `Tracer` method compiles to nothing (zero overhead). When
@@ -20,9 +24,12 @@
 //! - `trace-rich` (implies `trace`) — gates `LayerChange` and `DamageRect`
 //!   events plus the corresponding `TraceSink` methods.
 
-use crate::output::OutputId;
-use crate::time::{Duration, HostTime};
-use crate::timing::{FrameDemand, FramePlan, FrameTick, TimingConfidence};
+use frameclock::{HostTime, OutputId, TimingConfidence};
+
+pub use frameclock::{
+    FramePlanEvent, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
+    PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
+};
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -63,81 +70,6 @@ pub enum LayerField {
 // Event structs
 // ---------------------------------------------------------------------------
 
-/// Emitted when the backend delivers a display-link tick.
-#[derive(Clone, Copy, Debug)]
-pub struct FrameTickEvent {
-    /// Monotonic frame counter.
-    pub frame_index: u64,
-    /// Which output this tick targets.
-    pub output: OutputId,
-    /// Host time when the tick was generated.
-    pub now: HostTime,
-    /// Predicted present time, if known.
-    pub predicted_present: Option<HostTime>,
-    /// Refresh interval in ticks, if known.
-    pub refresh_interval: Option<u64>,
-    /// Timing confidence for this tick.
-    pub confidence: TimingConfidence,
-}
-
-impl From<&FrameTick> for FrameTickEvent {
-    fn from(tick: &FrameTick) -> Self {
-        Self {
-            frame_index: tick.frame_index,
-            output: tick.output,
-            now: tick.now,
-            predicted_present: tick.predicted_present,
-            refresh_interval: tick.refresh_interval,
-            confidence: tick.confidence,
-        }
-    }
-}
-
-/// Emitted after the scheduler produces a frame plan.
-#[derive(Clone, Copy, Debug)]
-pub struct FramePlanEvent {
-    /// Frame counter.
-    pub frame_index: u64,
-    /// Which output this plan targets.
-    pub output: OutputId,
-    /// Demand that selected this frame.
-    pub demand: FrameDemand,
-    /// Scheduler-selected delivery interval for this frame.
-    pub frame_interval: Duration,
-    /// Time applications should wake or start app-side frame work.
-    pub frame_start: HostTime,
-    /// Time applications should sample animations and simulation state for.
-    pub sample_time: HostTime,
-    /// Intended display time, if known.
-    pub target_present: Option<HostTime>,
-    /// Latest commit time.
-    pub commit_deadline: HostTime,
-    /// Current pipeline depth.
-    pub pipeline_depth: u8,
-    /// Current scheduler safety margin in ticks.
-    pub safety_margin_ticks: u64,
-}
-
-impl FramePlanEvent {
-    /// Creates a `FramePlanEvent` from a [`FramePlan`] plus the scheduler's
-    /// current safety margin (which the plan itself does not carry).
-    #[must_use]
-    pub fn new(plan: &FramePlan, safety_margin_ticks: u64) -> Self {
-        Self {
-            frame_index: plan.frame_index,
-            output: plan.output,
-            demand: plan.demand,
-            frame_interval: plan.frame_interval,
-            frame_start: plan.frame_start,
-            sample_time: plan.sample_time,
-            target_present: plan.target_present,
-            commit_deadline: plan.commit_deadline,
-            pipeline_depth: plan.pipeline_depth,
-            safety_margin_ticks,
-        }
-    }
-}
-
 /// Marks the beginning of a frame-loop phase.
 #[derive(Clone, Copy, Debug)]
 pub struct PhaseBeginEvent {
@@ -158,34 +90,6 @@ pub struct PhaseEndEvent {
     pub phase: PhaseKind,
     /// Host time at the end of the phase.
     pub timestamp: HostTime,
-}
-
-/// Emitted when a frame is submitted to the display pipeline.
-#[derive(Clone, Copy, Debug)]
-pub struct SubmitEvent {
-    /// Frame counter.
-    pub frame_index: u64,
-    /// Host time of submission.
-    pub submitted_at: HostTime,
-    /// Expected present time at submission, if known.
-    pub expected_present: Option<HostTime>,
-}
-
-/// Emitted when actual presentation feedback arrives.
-#[derive(Clone, Copy, Debug)]
-pub struct PresentFeedbackEvent {
-    /// Frame counter.
-    pub frame_index: u64,
-    /// Actual present time, if reported by the platform.
-    pub actual_present: Option<HostTime>,
-    /// Whether the deadline was missed, if determinable.
-    pub missed_deadline: Option<bool>,
-    /// Whether frame building overran a pacing boundary, if determinable.
-    ///
-    /// This is weaker than [`Self::missed_deadline`]: pacing-only backends can
-    /// often report that they submitted after a scheduling boundary without
-    /// knowing whether presentation was actually late.
-    pub pacing_overrun: Option<bool>,
 }
 
 /// Per-frame timing summary produced by [`FrameSummaryBuilder`].
@@ -280,6 +184,16 @@ pub trait TraceSink {
     /// Called when presentation feedback arrives.
     fn on_present_feedback(&mut self, e: &PresentFeedbackEvent) {
         _ = e;
+    }
+
+    /// Called when scheduler adaptation state is sampled.
+    fn on_scheduler_state(&mut self, e: &SchedulerStateEvent) {
+        _ = e;
+    }
+
+    /// Called with frameclock-owned per-frame timing and pacing facts.
+    fn on_frame_timing_summary(&mut self, s: &FrameTimingSummary) {
+        _ = s;
     }
 
     /// Called with a per-frame timing summary.
@@ -444,6 +358,32 @@ impl<'a> Tracer<'a> {
         }
     }
 
+    /// Emits a [`SchedulerStateEvent`].
+    #[inline]
+    pub fn scheduler_state(&mut self, e: &SchedulerStateEvent) {
+        #[cfg(feature = "trace")]
+        if let Some(s) = &mut self.sink {
+            s.on_scheduler_state(e);
+        }
+        #[cfg(not(feature = "trace"))]
+        {
+            _ = e;
+        }
+    }
+
+    /// Emits a [`FrameTimingSummary`].
+    #[inline]
+    pub fn frame_timing_summary(&mut self, s: &FrameTimingSummary) {
+        #[cfg(feature = "trace")]
+        if let Some(sink) = &mut self.sink {
+            sink.on_frame_timing_summary(s);
+        }
+        #[cfg(not(feature = "trace"))]
+        {
+            _ = s;
+        }
+    }
+
     /// Emits a [`FrameSummary`].
     #[inline]
     pub fn frame_summary(&mut self, s: &FrameSummary) {
@@ -564,9 +504,10 @@ const fn phase_index(phase: PhaseKind) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::OutputId;
-    use crate::time::HostTime;
-    use crate::timing::TimingConfidence;
+    use frameclock::{
+        Duration, FrameDemand, FramePlan, FrameTick, HostTime, OutputId, SchedulerState,
+        TimingConfidence,
+    };
 
     fn sample_tick() -> FrameTickEvent {
         FrameTickEvent {
@@ -658,6 +599,29 @@ mod tests {
         let mut tracer = Tracer::none();
         tracer.frame_tick(&sample_tick());
         tracer.frame_plan(&sample_plan());
+    }
+
+    #[test]
+    fn tracer_none_accepts_scheduler_state() {
+        let mut tracer = Tracer::none();
+        tracer.scheduler_state(&SchedulerStateEvent {
+            state: SchedulerState {
+                pipeline_depth: 1,
+                safety_margin_ticks: 0,
+                consecutive_misses: 0,
+                consecutive_hits: 0,
+            },
+        });
+    }
+
+    #[test]
+    fn tracer_none_accepts_frame_timing_summary() {
+        let summary = FrameTimingSummaryBuilder::from_tick_and_plan(&sample_tick(), &sample_plan())
+            .finish()
+            .expect("sample tick and plan match");
+        let mut tracer = Tracer::none();
+
+        tracer.frame_timing_summary(&summary);
     }
 
     #[test]

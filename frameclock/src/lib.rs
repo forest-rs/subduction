@@ -44,8 +44,9 @@ pub mod timeline;
 pub mod timing;
 
 pub use diagnostics::{
-    Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, NoopDiagnostics,
-    PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
+    Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingSummary,
+    FrameTimingSummaryBuilder, NoopDiagnostics, PresentFeedbackEvent, SchedulerStateEvent,
+    SubmitEvent,
 };
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};

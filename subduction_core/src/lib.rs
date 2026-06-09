@@ -55,9 +55,9 @@
 //! **[`output`]** — Layer-root presentation policy such as the backdrop style,
 //! plus a compatibility re-export of `frameclock::OutputId`.
 //!
-//! **[`trace`]** — [`TraceSink`](trace::TraceSink) trait and event types for
-//! frame-loop instrumentation, with zero-overhead [`Tracer`](trace::Tracer)
-//! wrapper.
+//! **[`trace`]** — [`TraceSink`](trace::TraceSink) trait, Subduction frame-loop
+//! phase summaries, and rich layer/damage events. Timing diagnostics are
+//! compatibility re-exports of the `frameclock` event types.
 //!
 //! # Crate features
 //!

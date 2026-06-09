@@ -10,9 +10,9 @@
 
 use frameclock::{
     Diagnostics, DiagnosticsSink, DisplayTiming, Duration, FrameDemand, FramePlanEvent,
-    FrameRequest, FrameTick, FrameTickEvent, HostTime, OutputId, PresentFeedback,
-    PresentFeedbackEvent, PresentHints, Scheduler, SchedulerConfig, SchedulerStateEvent,
-    SubmitEvent, TimingConfidence,
+    FrameRequest, FrameTick, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
+    HostTime, OutputId, PresentFeedback, PresentFeedbackEvent, PresentHints, Scheduler,
+    SchedulerConfig, SchedulerStateEvent, SubmitEvent, TimingConfidence,
 };
 
 const FRAME_COUNT: u64 = 90;
@@ -26,6 +26,7 @@ struct SummarySink {
     plans: u64,
     submits: u64,
     feedback: u64,
+    summaries: u64,
     misses: u64,
     overruns: u64,
     final_depth: u8,
@@ -59,6 +60,11 @@ impl DiagnosticsSink for SummarySink {
         self.final_depth = event.state.pipeline_depth;
         self.final_safety_margin = event.state.safety_margin_ticks;
     }
+
+    fn on_frame_timing_summary(&mut self, event: &FrameTimingSummary) {
+        _ = event;
+        self.summaries += 1;
+    }
 }
 
 fn main() {
@@ -70,6 +76,7 @@ fn main() {
         let output = OutputId(0);
 
         for frame_index in 0..FRAME_COUNT {
+            let mut summary = FrameTimingSummaryBuilder::new();
             let now = START_TIME + Duration(frame_index * REFRESH_INTERVAL.ticks());
             let predicted_present = now + REFRESH_INTERVAL;
             let tick = FrameTick {
@@ -81,7 +88,9 @@ fn main() {
                 output,
                 prev_actual_present: if frame_index > 0 { Some(now) } else { None },
             };
-            diagnostics.frame_tick(&FrameTickEvent::from(&tick));
+            let tick_event = FrameTickEvent::from(&tick);
+            summary.record_frame_tick(&tick_event);
+            diagnostics.frame_tick(&tick_event);
 
             let hints = PresentHints {
                 desired_present: tick.predicted_present,
@@ -96,7 +105,9 @@ fn main() {
                 FrameDemand::ANIMATION,
                 DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
             ));
-            diagnostics.frame_plan(&FramePlanEvent::new(&plan, scheduler.safety_margin_ticks()));
+            let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());
+            summary.record_frame_plan(&plan_event);
+            diagnostics.frame_plan(&plan_event);
 
             let build_start = tick.now + Duration(250_000);
             let build_cost = if frame_index % 23 == 11 {
@@ -107,17 +118,28 @@ fn main() {
             let submitted_at = build_start + build_cost;
             let feedback = PresentFeedback::new(&hints, build_start, submitted_at, None);
 
-            diagnostics.submit(&SubmitEvent {
+            let submit_event = SubmitEvent {
                 frame_index,
                 submitted_at,
                 expected_present: feedback.expected_present,
-            });
-            diagnostics.present_feedback(&PresentFeedbackEvent::new(frame_index, &feedback));
+            };
+            summary.record_submit(&submit_event);
+            diagnostics.submit(&submit_event);
+
+            let feedback_event = PresentFeedbackEvent::new(frame_index, &feedback);
+            summary.record_present_feedback(&feedback_event);
+            diagnostics.present_feedback(&feedback_event);
 
             scheduler.observe(&feedback);
-            diagnostics.scheduler_state(&SchedulerStateEvent {
+            let state_event = SchedulerStateEvent {
                 state: scheduler.state(),
-            });
+            };
+            summary.record_scheduler_state(&state_event);
+            diagnostics.scheduler_state(&state_event);
+
+            if let Some(summary) = summary.finish() {
+                diagnostics.frame_timing_summary(&summary);
+            }
         }
     }
 
@@ -126,6 +148,7 @@ fn main() {
     println!("plans: {}", sink.plans);
     println!("submits: {}", sink.submits);
     println!("feedback events: {}", sink.feedback);
+    println!("timing summaries: {}", sink.summaries);
     println!("misses: {}", sink.misses);
     println!("pacing overruns: {}", sink.overruns);
     println!("final pipeline depth: {}", sink.final_depth);

@@ -64,9 +64,9 @@ when the presentation API can honestly honor it.
 ## Diagnostics
 
 `frameclock` exposes a neutral `DiagnosticsSink` trait and event structs for
-ticks, plans, submits, feedback, and scheduler state. Adapter crates can map
-those events to Spoor, Tracy, or other instrumentation systems without adding
-those dependencies to the core crate.
+ticks, plans, submits, feedback, scheduler state, and compact per-frame timing
+summaries. Adapter crates can map those events to Spoor, Tracy, or other
+instrumentation systems without adding those dependencies to the core crate.
 
 ## Migration Notes
 

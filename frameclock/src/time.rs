@@ -197,6 +197,13 @@ impl Duration {
         self.0
     }
 
+    /// Returns whether this duration is zero.
+    #[inline]
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
     /// Converts this duration to nanoseconds using the given timebase.
     #[inline]
     #[must_use]
@@ -223,6 +230,23 @@ impl Duration {
     #[must_use]
     pub const fn saturating_sub(self, rhs: Self) -> Self {
         Self(self.0.saturating_sub(rhs.0))
+    }
+
+    /// Saturating integer multiplication.
+    #[inline]
+    #[must_use]
+    pub const fn saturating_mul(self, rhs: u64) -> Self {
+        Self(self.0.saturating_mul(rhs))
+    }
+
+    /// Integer division, returning zero when `rhs` is zero.
+    #[inline]
+    #[must_use]
+    pub const fn div_u64(self, rhs: u64) -> Self {
+        match self.0.checked_div(rhs) {
+            Some(value) => Self(value),
+            None => Self::ZERO,
+        }
     }
 }
 

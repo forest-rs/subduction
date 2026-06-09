@@ -3,13 +3,15 @@
 
 //! Frame scheduling with adaptive pipeline depth and safety margins.
 //!
-//! The [`Scheduler`] converts a [`FrameTick`] and [`PresentHints`] into a
+//! The [`Scheduler`] converts a [`FrameRequest`] into a
 //! [`FramePlan`], adapting its pipeline depth and safety margin based on
 //! observed [`PresentFeedback`]. See the [`Scheduler`] struct docs for
 //! details on pipeline depth and adaptive behavior.
 
-use crate::time::Duration;
-use crate::timing::{FramePlan, FrameTick, PresentFeedback, PresentHints, TimingConfidence};
+use crate::time::{Duration, HostTime};
+use crate::timing::{
+    DisplayTiming, FrameDemand, FramePlan, FrameRequest, PresentFeedback, TimingConfidence,
+};
 
 /// Controls how the scheduler adapts pipeline depth in response to deadline
 /// misses and hits.
@@ -50,6 +52,13 @@ pub struct SchedulerConfig {
     pub ema_alpha: f32,
     /// Safety margin multiplier applied to the EMA build cost.
     pub safety_multiplier: f32,
+    /// Minimum margin subtracted from the commit deadline to compute
+    /// [`FramePlan::frame_start`].
+    ///
+    /// The scheduler uses the larger of this value and the learned safety
+    /// margin. This gives first-frame scheduling a conservative work window
+    /// before feedback has trained the build-cost estimate.
+    pub minimum_frame_start_margin: Duration,
     /// Nominal latency (in ticks) used for pacing-only mode when no predicted
     /// present time is available.
     pub nominal_latency: Duration,
@@ -69,6 +78,7 @@ impl SchedulerConfig {
             max_depth: 3,
             ema_alpha: 0.2,
             safety_multiplier: 1.5,
+            minimum_frame_start_margin: Duration(1_000_000),
             nominal_latency: Duration(0),
             degradation_policy: DegradationPolicy::Adaptive {
                 miss_threshold: 3,
@@ -89,6 +99,7 @@ impl SchedulerConfig {
             max_depth: 3,
             ema_alpha: 0.2,
             safety_multiplier: 2.0,
+            minimum_frame_start_margin: Duration(1_000_000),
             nominal_latency: Duration(0),
             degradation_policy: DegradationPolicy::Adaptive {
                 miss_threshold: 3,
@@ -109,6 +120,7 @@ impl SchedulerConfig {
             max_depth: 3,
             ema_alpha: 0.15,
             safety_multiplier: 2.0,
+            minimum_frame_start_margin: Duration(1_000_000),
             // ~16ms at 1ns tick resolution.
             nominal_latency: Duration(16_000_000),
             degradation_policy: DegradationPolicy::Adaptive {
@@ -130,6 +142,15 @@ pub struct SchedulerState {
     pub consecutive_misses: u32,
     /// Consecutive strong hits currently accumulated.
     pub consecutive_hits: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemandPolicy {
+    None,
+    Animation,
+    Input,
+    ContinuousInput,
+    Background,
 }
 
 /// Exponential moving average tracker.
@@ -163,7 +184,7 @@ impl Ema {
     }
 }
 
-/// Frame scheduler that converts [`FrameTick`]s into [`FramePlan`]s and
+/// Frame scheduler that converts [`FrameRequest`]s into [`FramePlan`]s and
 /// adapts over time.
 ///
 /// # Pipeline depth
@@ -183,13 +204,14 @@ impl Ema {
 /// decreases depth after sustained hits (reclaiming latency). The
 /// EMA-smoothed build cost feeds into a safety margin (build cost ×
 /// multiplier) that backends can query via
-/// [`Scheduler::safety_margin_ticks()`] to decide how early to begin frame
-/// work.
+/// [`Scheduler::safety_margin_ticks()`]. The [`FramePlan::frame_start`] field
+/// applies that margin directly so hosts can schedule a redraw wake without
+/// duplicating scheduler policy.
 ///
 /// # Usage
 ///
 /// ```rust,ignore
-/// let plan = scheduler.plan(&tick, &hints);
+/// let plan = scheduler.plan(request);
 /// // ... build and submit frame ...
 /// scheduler.observe(&feedback);
 /// ```
@@ -217,34 +239,128 @@ impl Scheduler {
         }
     }
 
-    /// Produces a [`FramePlan`] for the given tick and hints.
+    /// Produces a [`FramePlan`] for the given request.
+    ///
+    /// Hosts should usually call this only for requests with non-empty
+    /// [`FrameDemand`]. A request with
+    /// `FrameDemand::NONE` is accepted for passive pacing diagnostics or
+    /// backend bookkeeping, but it should not be treated as ordinary render
+    /// demand.
     #[must_use]
-    pub fn plan(&mut self, tick: &FrameTick, hints: &PresentHints) -> FramePlan {
-        let target_present = hints.desired_present.or(tick.predicted_present);
+    pub fn plan(&mut self, request: FrameRequest) -> FramePlan {
+        let tick = request.tick;
+        let hints = request.hints;
+        let source_interval = self.source_interval(request);
+        let frame_start_margin = self.frame_start_margin();
+        let frame_interval = self.frame_interval(
+            request.demand,
+            request.display_timing,
+            source_interval,
+            frame_start_margin,
+        );
+        let schedule_delta = frame_interval.saturating_sub(source_interval);
+        let platform_present = hints.desired_present.or(tick.predicted_present);
+        let base_present = platform_present
+            .unwrap_or_else(|| tick.now.checked_add(source_interval).unwrap_or(tick.now));
+        let scheduled_present = base_present
+            .checked_add(schedule_delta)
+            .unwrap_or(base_present);
+        let commit_deadline = hints
+            .latest_commit
+            .checked_add(schedule_delta)
+            .unwrap_or(hints.latest_commit);
 
         let (target_present, sample_time) = match tick.confidence {
             TimingConfidence::Predictive | TimingConfidence::Estimated => {
-                // sample_time = target_present for tight sync.
-                let sample_time = target_present.unwrap_or(tick.now);
+                let target_present = platform_present.map(|_| scheduled_present);
+                let sample_time = target_present.unwrap_or(scheduled_present);
                 (target_present, sample_time)
             }
             TimingConfidence::PacingOnly => {
-                // No reliable present time; use nominal latency for sample time.
-                let sample_time = tick
-                    .now
-                    .checked_add(self.config.nominal_latency)
-                    .unwrap_or(tick.now);
-                (None, sample_time)
+                // No reliable present time; sample at the scheduler-selected
+                // pacing target but do not report it as presentation truth.
+                (None, scheduled_present)
             }
         };
 
         FramePlan {
+            demand: request.demand,
+            frame_interval,
+            frame_start: self.frame_start(tick.now, commit_deadline, request.demand),
             sample_time,
             target_present,
-            commit_deadline: hints.latest_commit,
+            commit_deadline,
             pipeline_depth: self.pipeline_depth,
             output: tick.output,
             frame_index: tick.frame_index,
+        }
+    }
+
+    fn source_interval(&self, request: FrameRequest) -> Duration {
+        request
+            .tick
+            .refresh_interval
+            .filter(|ticks| *ticks > 0)
+            .map(Duration)
+            .unwrap_or_else(|| {
+                let display_min = request.display_timing.min_interval();
+                if display_min.is_zero() {
+                    self.config.nominal_latency
+                } else {
+                    display_min
+                }
+            })
+    }
+
+    fn frame_interval(
+        &self,
+        demand: FrameDemand,
+        display: DisplayTiming,
+        source_interval: Duration,
+        frame_start_margin: Duration,
+    ) -> Duration {
+        let source_interval = if source_interval.is_zero() {
+            display.min_interval()
+        } else {
+            source_interval
+        };
+        let policy = demand_policy(demand);
+        let needed = match policy {
+            DemandPolicy::None | DemandPolicy::Input => return source_interval,
+            DemandPolicy::ContinuousInput => frame_start_margin,
+            DemandPolicy::Animation => {
+                frame_start_margin.saturating_add(source_interval.div_u64(4))
+            }
+            DemandPolicy::Background => frame_start_margin
+                .saturating_add(source_interval.div_u64(4))
+                .max(source_interval.saturating_mul(2)),
+        };
+
+        display.choose_interval(needed).max(source_interval)
+    }
+
+    fn frame_start(
+        &self,
+        now: HostTime,
+        commit_deadline: HostTime,
+        demand: FrameDemand,
+    ) -> HostTime {
+        if demand_policy(demand) == DemandPolicy::Input {
+            return now;
+        }
+
+        commit_deadline
+            .checked_sub(self.frame_start_margin())
+            .unwrap_or(now)
+            .max(now)
+    }
+
+    fn frame_start_margin(&self) -> Duration {
+        let learned = Duration(self.safety_margin_ticks);
+        if learned > self.config.minimum_frame_start_margin {
+            learned
+        } else {
+            self.config.minimum_frame_start_margin
         }
     }
 
@@ -353,18 +469,35 @@ impl Scheduler {
     }
 }
 
+fn demand_policy(demand: FrameDemand) -> DemandPolicy {
+    if demand.contains(FrameDemand::INPUT) {
+        DemandPolicy::Input
+    } else if demand.contains(FrameDemand::CONTINUOUS_INPUT) {
+        DemandPolicy::ContinuousInput
+    } else if demand.contains(FrameDemand::ANIMATION) {
+        DemandPolicy::Animation
+    } else if demand.contains(FrameDemand::BACKGROUND) {
+        DemandPolicy::Background
+    } else {
+        DemandPolicy::None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::output::OutputId;
     use crate::time::HostTime;
+    use crate::timing::{FrameTick, PresentHints};
 
     use super::*;
+
+    const REFRESH_INTERVAL: Duration = Duration(16_666_667);
 
     fn make_tick(confidence: TimingConfidence, now: u64, predicted: Option<u64>) -> FrameTick {
         FrameTick {
             now: HostTime(now),
             predicted_present: predicted.map(HostTime),
-            refresh_interval: Some(16_666_667),
+            refresh_interval: Some(REFRESH_INTERVAL.ticks()),
             confidence,
             frame_index: 0,
             output: OutputId(0),
@@ -379,19 +512,42 @@ mod tests {
         }
     }
 
+    fn make_request(
+        confidence: TimingConfidence,
+        now: u64,
+        predicted: Option<u64>,
+        deadline: u64,
+        demand: FrameDemand,
+    ) -> FrameRequest {
+        let tick = make_tick(confidence, now, predicted);
+        let hints = make_hints(deadline);
+        FrameRequest {
+            tick,
+            hints,
+            demand,
+            display_timing: DisplayTiming::fixed(REFRESH_INTERVAL),
+        }
+    }
+
     #[test]
     fn predictive_plan_uses_predicted_present() {
         let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
-        let tick = make_tick(TimingConfidence::Predictive, 1000, Some(2000));
-        let hints = make_hints(1800);
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1000,
+            Some(2000),
+            1800,
+            FrameDemand::ANIMATION,
+        ));
 
-        let plan = sched.plan(&tick, &hints);
-
+        assert_eq!(plan.demand, FrameDemand::ANIMATION);
+        assert_eq!(plan.frame_interval, REFRESH_INTERVAL);
         assert_eq!(plan.target_present, Some(HostTime(2000)));
         assert_eq!(plan.sample_time, HostTime(2000));
         assert_eq!(plan.commit_deadline, HostTime(1800));
+        assert_eq!(plan.frame_start, HostTime(1000));
     }
 
     #[test]
@@ -399,14 +555,191 @@ mod tests {
         let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
 
-        let tick = make_tick(TimingConfidence::PacingOnly, 1_000_000, None);
-        let hints = make_hints(17_000_000);
-
-        let plan = sched.plan(&tick, &hints);
+        let plan = sched.plan(make_request(
+            TimingConfidence::PacingOnly,
+            1_000_000,
+            None,
+            17_000_000,
+            FrameDemand::ANIMATION,
+        ));
 
         assert_eq!(plan.target_present, None);
-        // sample_time = now + nominal_latency (16ms).
-        assert_eq!(plan.sample_time, HostTime(17_000_000));
+        // sample_time = now + the selected pacing interval.
+        assert_eq!(plan.sample_time, HostTime(17_666_667));
+        assert_eq!(plan.frame_start, HostTime(16_000_000));
+    }
+
+    #[test]
+    fn frame_start_uses_configured_start_margin() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1000,
+            Some(2000),
+            1800,
+            FrameDemand::ANIMATION,
+        ));
+
+        assert_eq!(plan.frame_start, HostTime(1550));
+    }
+
+    #[test]
+    fn frame_start_uses_learned_safety_margin_when_larger() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(100);
+        config.safety_multiplier = 2.0;
+        let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(1_200),
+            build_start: HostTime(1_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+        sched.observe(&feedback);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000,
+            Some(2_000),
+            2_000,
+            FrameDemand::ANIMATION,
+        ));
+
+        assert_eq!(sched.safety_margin_ticks(), 400);
+        assert_eq!(plan.frame_start, HostTime(1_600));
+    }
+
+    #[test]
+    fn frame_start_clamps_to_tick_now_when_start_is_due() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(1_000);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_500,
+            Some(2_000),
+            1_800,
+            FrameDemand::ANIMATION,
+        ));
+
+        assert_eq!(plan.frame_start, HostTime(1_500));
+    }
+
+    #[test]
+    fn input_demand_starts_immediately() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000,
+            Some(2_000),
+            1_800,
+            FrameDemand::INPUT,
+        ));
+
+        assert_eq!(plan.demand, FrameDemand::INPUT);
+        assert_eq!(plan.frame_interval, REFRESH_INTERVAL);
+        assert_eq!(plan.frame_start, HostTime(1_000));
+    }
+
+    #[test]
+    fn animation_uses_stable_fixed_rate_divisor_when_work_is_slow() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(20_000_000);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000_000,
+            Some(17_666_667),
+            16_666_667,
+            FrameDemand::ANIMATION,
+        ));
+
+        assert_eq!(plan.frame_interval, REFRESH_INTERVAL.saturating_mul(2));
+        assert_eq!(plan.target_present, Some(HostTime(34_333_334)));
+        assert_eq!(plan.commit_deadline, HostTime(33_333_334));
+        assert_eq!(plan.frame_start, HostTime(13_333_334));
+    }
+
+    #[test]
+    fn variable_refresh_without_granularity_uses_stable_divisor() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(12_000_000);
+        let mut sched = Scheduler::new(config);
+        let tick = FrameTick {
+            now: HostTime(1_000_000),
+            predicted_present: Some(HostTime(9_333_333)),
+            refresh_interval: Some(8_333_333),
+            confidence: TimingConfidence::Predictive,
+            frame_index: 0,
+            output: OutputId(0),
+            prev_actual_present: None,
+        };
+        let request = FrameRequest {
+            tick,
+            hints: PresentHints {
+                desired_present: tick.predicted_present,
+                latest_commit: HostTime(8_333_333),
+            },
+            demand: FrameDemand::ANIMATION,
+            display_timing: DisplayTiming::variable(
+                Duration(8_333_333),
+                Duration(33_333_333),
+                None,
+            ),
+        };
+
+        let plan = sched.plan(request);
+
+        assert_eq!(plan.frame_interval, Duration(16_666_666));
+        assert_eq!(plan.target_present, Some(HostTime(17_666_666)));
+        assert_eq!(plan.commit_deadline, HostTime(16_666_666));
+        assert_eq!(plan.frame_start, HostTime(4_666_666));
+    }
+
+    #[test]
+    fn variable_refresh_with_granularity_uses_direct_step() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(12_000_000);
+        let mut sched = Scheduler::new(config);
+        let tick = FrameTick {
+            now: HostTime(1_000_000),
+            predicted_present: Some(HostTime(9_333_333)),
+            refresh_interval: Some(8_333_333),
+            confidence: TimingConfidence::Predictive,
+            frame_index: 0,
+            output: OutputId(0),
+            prev_actual_present: None,
+        };
+        let request = FrameRequest {
+            tick,
+            hints: PresentHints {
+                desired_present: tick.predicted_present,
+                latest_commit: HostTime(8_333_333),
+            },
+            demand: FrameDemand::ANIMATION,
+            display_timing: DisplayTiming::variable(
+                Duration(8_333_333),
+                Duration(33_333_333),
+                Some(Duration(1_000_000)),
+            ),
+        };
+
+        let plan = sched.plan(request);
+
+        assert_eq!(plan.frame_interval, Duration(15_000_000));
+        assert_eq!(plan.target_present, Some(HostTime(16_000_000)));
+        assert_eq!(plan.commit_deadline, HostTime(15_000_000));
+        assert_eq!(plan.frame_start, HostTime(3_000_000));
     }
 
     #[test]
@@ -569,10 +902,13 @@ mod tests {
         let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
-        let tick = make_tick(TimingConfidence::Estimated, 1000, Some(2000));
-        let hints = make_hints(1800);
-
-        let plan = sched.plan(&tick, &hints);
+        let plan = sched.plan(make_request(
+            TimingConfidence::Estimated,
+            1000,
+            Some(2000),
+            1800,
+            FrameDemand::ANIMATION,
+        ));
 
         // Estimated behaves like Predictive: uses predicted_present.
         assert_eq!(plan.target_present, Some(HostTime(2000)));

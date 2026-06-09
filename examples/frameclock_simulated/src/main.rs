@@ -9,9 +9,10 @@
 //! into the scheduler.
 
 use frameclock::{
-    Diagnostics, DiagnosticsSink, Duration, FramePlanEvent, FrameTick, FrameTickEvent, HostTime,
-    OutputId, PresentFeedback, PresentFeedbackEvent, PresentHints, Scheduler, SchedulerConfig,
-    SchedulerStateEvent, SubmitEvent, TimingConfidence,
+    Diagnostics, DiagnosticsSink, DisplayTiming, Duration, FrameDemand, FramePlanEvent,
+    FrameRequest, FrameTick, FrameTickEvent, HostTime, OutputId, PresentFeedback,
+    PresentFeedbackEvent, PresentHints, Scheduler, SchedulerConfig, SchedulerStateEvent,
+    SubmitEvent, TimingConfidence,
 };
 
 const FRAME_COUNT: u64 = 90;
@@ -89,7 +90,12 @@ fn main() {
                     .unwrap_or(tick.now),
             };
 
-            let plan = scheduler.plan(&tick, &hints);
+            let plan = scheduler.plan(FrameRequest::new(
+                tick,
+                hints,
+                FrameDemand::ANIMATION,
+                DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
+            ));
             diagnostics.frame_plan(&FramePlanEvent::new(&plan, scheduler.safety_margin_ticks()));
 
             let build_start = tick.now + Duration(250_000);

@@ -10,8 +10,8 @@
 
 use crate::output::OutputId;
 use crate::scheduler::SchedulerState;
-use crate::time::HostTime;
-use crate::timing::{FramePlan, FrameTick, PresentFeedback, TimingConfidence};
+use crate::time::{Duration, HostTime};
+use crate::timing::{FrameDemand, FramePlan, FrameTick, PresentFeedback, TimingConfidence};
 
 /// Emitted when a platform adapter receives or constructs a display-frame tick.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +50,12 @@ pub struct FramePlanEvent {
     pub frame_index: u64,
     /// Target output for this plan.
     pub output: OutputId,
+    /// Demand that selected this frame.
+    pub demand: FrameDemand,
+    /// Scheduler-selected delivery interval for this frame.
+    pub frame_interval: Duration,
+    /// Time applications should wake or start app-side frame work.
+    pub frame_start: HostTime,
     /// Time applications should sample animations and simulation state for.
     pub sample_time: HostTime,
     /// Intended presentation time, if known.
@@ -69,6 +75,9 @@ impl FramePlanEvent {
         Self {
             frame_index: plan.frame_index,
             output: plan.output,
+            demand: plan.demand,
+            frame_interval: plan.frame_interval,
+            frame_start: plan.frame_start,
             sample_time: plan.sample_time,
             target_present: plan.target_present,
             commit_deadline: plan.commit_deadline,

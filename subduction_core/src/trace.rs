@@ -17,12 +17,12 @@
 //! # Crate features
 //!
 //! - `trace` — enables the `Tracer` method bodies (one branch per call).
-//! - `trace-rich` (implies `trace`) — gates [`LayerChange`] and [`DamageRect`]
+//! - `trace-rich` (implies `trace`) — gates `LayerChange` and `DamageRect`
 //!   events plus the corresponding `TraceSink` methods.
 
 use crate::output::OutputId;
-use crate::time::HostTime;
-use crate::timing::{FramePlan, FrameTick, TimingConfidence};
+use crate::time::{Duration, HostTime};
+use crate::timing::{FrameDemand, FramePlan, FrameTick, TimingConfidence};
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -100,7 +100,13 @@ pub struct FramePlanEvent {
     pub frame_index: u64,
     /// Which output this plan targets.
     pub output: OutputId,
-    /// Semantic (animation) time.
+    /// Demand that selected this frame.
+    pub demand: FrameDemand,
+    /// Scheduler-selected delivery interval for this frame.
+    pub frame_interval: Duration,
+    /// Time applications should wake or start app-side frame work.
+    pub frame_start: HostTime,
+    /// Time applications should sample animations and simulation state for.
     pub sample_time: HostTime,
     /// Intended display time, if known.
     pub target_present: Option<HostTime>,
@@ -120,6 +126,9 @@ impl FramePlanEvent {
         Self {
             frame_index: plan.frame_index,
             output: plan.output,
+            demand: plan.demand,
+            frame_interval: plan.frame_interval,
+            frame_start: plan.frame_start,
             sample_time: plan.sample_time,
             target_present: plan.target_present,
             commit_deadline: plan.commit_deadline,
@@ -171,6 +180,12 @@ pub struct PresentFeedbackEvent {
     pub actual_present: Option<HostTime>,
     /// Whether the deadline was missed, if determinable.
     pub missed_deadline: Option<bool>,
+    /// Whether frame building overran a pacing boundary, if determinable.
+    ///
+    /// This is weaker than [`Self::missed_deadline`]: pacing-only backends can
+    /// often report that they submitted after a scheduling boundary without
+    /// knowing whether presentation was actually late.
+    pub pacing_overrun: Option<bool>,
 }
 
 /// Per-frame timing summary produced by [`FrameSummaryBuilder`].
@@ -186,7 +201,7 @@ pub struct FrameSummary {
     pub now: HostTime,
     /// Intended present time, if known.
     pub target_present: Option<HostTime>,
-    /// Semantic (animation) time.
+    /// Time applications should sample animations and simulation state for.
     pub sample_time: HostTime,
     /// Commit deadline.
     pub deadline: HostTime,
@@ -568,6 +583,9 @@ mod tests {
         FramePlanEvent {
             frame_index: 42,
             output: OutputId(0),
+            demand: FrameDemand::ANIMATION,
+            frame_interval: Duration(16_666_667),
+            frame_start: HostTime(1_013_500),
             sample_time: HostTime(1_016_667),
             target_present: Some(HostTime(1_016_667)),
             commit_deadline: HostTime(1_014_000),
@@ -597,6 +615,9 @@ mod tests {
     #[test]
     fn frame_plan_event_new() {
         let plan = FramePlan {
+            demand: FrameDemand::ANIMATION,
+            frame_interval: Duration(16),
+            frame_start: HostTime(800),
             sample_time: HostTime(1000),
             target_present: Some(HostTime(1000)),
             commit_deadline: HostTime(900),

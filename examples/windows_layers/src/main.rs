@@ -15,7 +15,10 @@
 
 use std::cell::UnsafeCell;
 
-use frameclock::{HostTime, PendingFeedback, Scheduler, SchedulerConfig};
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameRequest, HostTime, PendingFeedback, Scheduler,
+    SchedulerConfig,
+};
 use subduction_backend_windows::{
     self as backend, DCompPresenter, DCompSurfacePresenter, Presenter as _, TickSource,
     WM_APP_TICK, compute_hints, make_tick,
@@ -277,6 +280,7 @@ fn on_tick() {
             frame_index: frame_index.saturating_sub(1),
             actual_present: tick.prev_actual_present,
             missed_deadline: feedback.missed_deadline,
+            pacing_overrun: feedback.pacing_overrun,
         });
     }
 
@@ -292,7 +296,12 @@ fn on_tick() {
     });
 
     let hints = compute_hints(&tick, SAFETY_MARGIN_NS);
-    let plan = s.scheduler.plan(&tick, &hints);
+    let plan = s.scheduler.plan(FrameRequest::new(
+        tick,
+        hints,
+        FrameDemand::ANIMATION,
+        DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+    ));
 
     let plan_end = backend::now();
     s.recorder.on_phase_end(&PhaseEndEvent {

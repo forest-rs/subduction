@@ -44,7 +44,10 @@ use web_sys::{
     WebGlUniformLocation,
 };
 
-use frameclock::{Duration, FrameTick, OutputId, PresentFeedback, Scheduler, SchedulerConfig};
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, OutputId, PresentFeedback,
+    Scheduler, SchedulerConfig,
+};
 use kurbo::Size;
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
@@ -596,7 +599,12 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
 
     let safety = Duration(s.scheduler.safety_margin_ticks());
     let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let plan = s.scheduler.plan(&tick, &hints);
+    let plan = s.scheduler.plan(FrameRequest::new(
+        tick,
+        hints,
+        FrameDemand::ANIMATION,
+        DisplayTiming::from_tick(&tick, Duration(16_667)),
+    ));
 
     // Elapsed seconds for animation.
     let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);

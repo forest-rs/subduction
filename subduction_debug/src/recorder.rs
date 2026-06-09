@@ -10,7 +10,7 @@
 //! Rich events ([`on_layer_changes`](TraceSink::on_layer_changes),
 //! [`on_damage_rects`](TraceSink::on_damage_rects)) store only the count.
 
-use frameclock::{HostTime, OutputId, TimingConfidence};
+use frameclock::{Duration, FrameDemand, HostTime, OutputId, TimingConfidence};
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,
@@ -127,6 +127,9 @@ impl TraceSink for RecorderSink {
         self.write_u8(TAG_FRAME_PLAN);
         self.write_u64(e.frame_index);
         self.write_u32(e.output.0);
+        self.write_u8(e.demand.bits());
+        self.write_u64(e.frame_interval.ticks());
+        self.write_u64(e.frame_start.ticks());
         self.write_u64(e.sample_time.ticks());
         self.write_option_u64(e.target_present.map(|t| t.ticks()));
         self.write_u64(e.commit_deadline.ticks());
@@ -160,6 +163,7 @@ impl TraceSink for RecorderSink {
         self.write_u64(e.frame_index);
         self.write_option_u64(e.actual_present.map(|t| t.ticks()));
         self.write_option_bool(e.missed_deadline);
+        self.write_option_bool(e.pacing_overrun);
     }
 
     fn on_frame_summary(&mut self, s: &FrameSummary) {
@@ -332,6 +336,9 @@ impl DecodeIter<'_> {
         Some(RecordedEvent::FramePlan(FramePlanEvent {
             frame_index: self.read_u64()?,
             output: OutputId(self.read_u32()?),
+            demand: FrameDemand::from_bits_truncate(self.read_u8()?),
+            frame_interval: Duration(self.read_u64()?),
+            frame_start: HostTime(self.read_u64()?),
             sample_time: HostTime(self.read_u64()?),
             target_present: self.read_option_u64()?.map(HostTime),
             commit_deadline: HostTime(self.read_u64()?),
@@ -369,6 +376,7 @@ impl DecodeIter<'_> {
             frame_index: self.read_u64()?,
             actual_present: self.read_option_u64()?.map(HostTime),
             missed_deadline: self.read_option_bool()?,
+            pacing_overrun: self.read_option_bool()?,
         }))
     }
 
@@ -446,6 +454,9 @@ mod tests {
         FramePlanEvent {
             frame_index: 7,
             output: OutputId(1),
+            demand: FrameDemand::ANIMATION,
+            frame_interval: Duration(16_666_667),
+            frame_start: HostTime(1_013_500),
             sample_time: HostTime(1_016_667),
             target_present: Some(HostTime(1_016_667)),
             commit_deadline: HostTime(1_014_000),
@@ -504,6 +515,9 @@ mod tests {
         match &events[0] {
             RecordedEvent::FramePlan(e) => {
                 assert_eq!(e.frame_index, orig.frame_index);
+                assert_eq!(e.demand, orig.demand);
+                assert_eq!(e.frame_interval, orig.frame_interval);
+                assert_eq!(e.frame_start, orig.frame_start);
                 assert_eq!(e.pipeline_depth, orig.pipeline_depth);
                 assert_eq!(e.safety_margin_ticks, orig.safety_margin_ticks);
             }
@@ -576,6 +590,7 @@ mod tests {
             frame_index: 3,
             actual_present: None,
             missed_deadline: Some(true),
+            pacing_overrun: Some(false),
         };
         rec.on_present_feedback(&orig);
 
@@ -586,6 +601,7 @@ mod tests {
                 assert_eq!(e.frame_index, 3);
                 assert_eq!(e.actual_present, None);
                 assert_eq!(e.missed_deadline, Some(true));
+                assert_eq!(e.pacing_overrun, Some(false));
             }
             other => panic!("expected PresentFeedback, got {other:?}"),
         }

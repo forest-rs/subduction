@@ -15,7 +15,10 @@ use core::cell::RefCell;
 use core::ffi::c_void;
 
 use bytemuck::{Pod, Zeroable};
-use frameclock::{Duration, FrameTick, OutputId, PendingFeedback, Scheduler, SchedulerConfig};
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, OutputId, PendingFeedback,
+    Scheduler, SchedulerConfig,
+};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -775,7 +778,12 @@ fn on_tick(tick: FrameTick) {
         // Compute hints and plan the frame.
         let safety = Duration(s.scheduler.safety_margin_ticks());
         let hints = compute_present_hints(&tick, safety);
-        let plan = s.scheduler.plan(&tick, &hints);
+        let plan = s.scheduler.plan(FrameRequest::new(
+            tick,
+            hints,
+            FrameDemand::ANIMATION,
+            DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+        ));
 
         // Convert sample_time to elapsed seconds for the animation.
         let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);

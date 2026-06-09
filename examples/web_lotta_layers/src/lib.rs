@@ -31,7 +31,10 @@ use lotta_layers_common::LAYER_SIZE;
 use wasm_bindgen::prelude::*;
 use web_sys::{Document, HtmlElement};
 
-use frameclock::{Duration, FrameTick, OutputId, PresentFeedback, Scheduler, SchedulerConfig};
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, OutputId, PresentFeedback,
+    Scheduler, SchedulerConfig,
+};
 use subduction_backend_web::DomPresenter;
 use subduction_backend_web::LayerRoot;
 use subduction_backend_web::Presenter as _;
@@ -223,7 +226,12 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
 
     let safety = Duration(s.scheduler.safety_margin_ticks());
     let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let plan = s.scheduler.plan(&tick, &hints);
+    let plan = s.scheduler.plan(FrameRequest::new(
+        tick,
+        hints,
+        FrameDemand::ANIMATION,
+        DisplayTiming::from_tick(&tick, Duration(16_667)),
+    ));
 
     let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);
     let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_us);

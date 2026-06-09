@@ -3,12 +3,14 @@
 
 //! Display-frame timing, scheduling, feedback, and diagnostics.
 //!
-//! `frameclock` turns platform display callbacks into explicit frame plans.
-//! Backends provide timing facts such as a callback time, a predicted
-//! presentation time, and a commit deadline. The scheduler converts those facts
-//! into a [`FramePlan`] whose [`sample_time`](FramePlan::sample_time) is the
-//! time applications should use for animations, simulations, media overlays,
-//! and other frame-dependent state.
+//! `frameclock` turns platform display callbacks, display timing, and frame
+//! demand into explicit frame plans. Backends provide timing facts such as a
+//! callback time, a predicted presentation time, and a commit deadline. Hosts
+//! provide demand and display constraints. The scheduler converts those facts
+//! into a [`FramePlan`] whose [`frame_start`](FramePlan::frame_start) says when
+//! to begin frame work and whose [`sample_time`](FramePlan::sample_time) says
+//! what presentation time animations, simulations, media overlays, and other
+//! frame-dependent state should target.
 //!
 //! The crate intentionally does not own windows, event loops, layer trees,
 //! renderers, swapchains, or native presentation resources. Those belong in
@@ -18,6 +20,7 @@
 //!
 //! ```text
 //! platform tick -> FrameTick + PresentHints
+//!               -> FrameRequest + FrameDemand + DisplayTiming
 //!               -> Scheduler::plan()
 //!               -> FramePlan
 //!               -> build/submit frame
@@ -49,5 +52,6 @@ pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerStat
 pub use time::{Duration, HostTime, Timebase};
 pub use timeline::AffineClock;
 pub use timing::{
-    FramePlan, FrameTick, PendingFeedback, PresentFeedback, PresentHints, TimingConfidence,
+    DisplayTiming, FrameDemand, FramePlan, FrameRequest, FrameTick, PendingFeedback,
+    PresentFeedback, PresentHints, TimingConfidence,
 };

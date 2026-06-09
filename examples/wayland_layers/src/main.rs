@@ -16,7 +16,9 @@
 
 use wayland_client::Connection;
 
-use frameclock::{Duration, PresentFeedback, Scheduler, SchedulerConfig};
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameRequest, PresentFeedback, Scheduler, SchedulerConfig,
+};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::transform::Transform3d;
@@ -163,7 +165,12 @@ fn main() {
 
             let safety = Duration(scheduler.safety_margin_ticks());
             let hints = subduction_backend_wayland::compute_present_hints(&tick, safety);
-            let plan = scheduler.plan(&tick, &hints);
+            let plan = scheduler.plan(FrameRequest::new(
+                tick,
+                hints,
+                FrameDemand::ANIMATION,
+                DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+            ));
 
             let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;

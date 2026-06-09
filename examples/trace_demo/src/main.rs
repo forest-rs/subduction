@@ -12,8 +12,8 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use frameclock::{
-    FrameTick, HostTime, OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
-    Timebase, TimingConfidence,
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
+    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase, TimingConfidence,
 };
 use subduction_core::trace::{
     FramePlanEvent, FrameSummaryBuilder, FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind,
@@ -78,7 +78,12 @@ fn main() {
             plan_start,
         );
 
-        let plan = scheduler.plan(&tick, &hints);
+        let plan = scheduler.plan(FrameRequest::new(
+            tick,
+            hints,
+            FrameDemand::ANIMATION,
+            DisplayTiming::from_tick(&tick, Duration(refresh_interval)),
+        ));
         let plan_end = HostTime(now_ticks + 100_000);
 
         let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());
@@ -171,6 +176,7 @@ fn main() {
             frame_index,
             actual_present: plan.target_present,
             missed_deadline: Some(missed),
+            pacing_overrun: feedback.pacing_overrun,
         };
         pretty.on_present_feedback(&feedback_event);
         recorder.on_present_feedback(&feedback_event);

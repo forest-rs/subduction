@@ -52,7 +52,13 @@ use crate::layer::{FrameChanges, LayerStore};
 /// ```rust,ignore
 /// fn on_frame(tick: FrameTick) {
 ///     let hints = compute_present_hints(&tick, safety);
-///     let plan = scheduler.plan(&tick, &hints);
+///     let request = FrameRequest::new(
+///         tick,
+///         hints,
+///         FrameDemand::ANIMATION,
+///         DisplayTiming::fixed(Duration(tick.refresh_interval.unwrap_or(16_666_667))),
+///     );
+///     let plan = scheduler.plan(request);
 ///
 ///     // Animate: update layer properties using plan.sample_time
 ///     store.set_transform(layer, animated_transform(plan.sample_time));

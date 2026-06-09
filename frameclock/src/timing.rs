@@ -6,7 +6,10 @@
 //! This module defines the types that flow between backends and the scheduler:
 //!
 //! - [`TimingConfidence`] — how much the platform can tell us about presentation
+//! - [`FrameDemand`] — why the host is asking for a frame
+//! - [`DisplayTiming`] — fixed/variable display timing constraints
 //! - [`FrameTick`] — a frame opportunity delivered by the backend
+//! - [`FrameRequest`] — one scheduler planning request
 //! - [`FramePlan`] — what the engine uses to evaluate the scene for a frame
 //! - [`PresentHints`] — submission constraints from the backend
 //! - [`PresentFeedback`] — post-submit observations fed back to the scheduler
@@ -19,18 +22,262 @@
 //!    `CADisplayLink`, `requestAnimationFrame`).
 //! 2. The backend computes [`PresentHints`] from the tick and platform
 //!    knowledge (deadlines, desired present time).
-//! 3. [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) consumes the
-//!    tick and hints to produce a [`FramePlan`] with a sampling time, target
-//!    presentation time, and commit deadline.
-//! 4. The application uses the plan's [`sample_time`](FramePlan::sample_time)
-//!    to evaluate animation/simulation state and build/submit the frame.
-//! 5. After submission, the backend constructs [`PresentFeedback`] from
+//! 3. The host combines those facts with [`FrameDemand`] and [`DisplayTiming`]
+//!    into a [`FrameRequest`].
+//! 4. [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) consumes the
+//!    request to produce a [`FramePlan`] with a frame start time, sampling time,
+//!    target presentation time, and commit deadline.
+//! 5. The application schedules frame work at
+//!    [`frame_start`](FramePlan::frame_start), uses the plan's
+//!    [`sample_time`](FramePlan::sample_time) to evaluate animation/simulation
+//!    state, and builds/submits the frame.
+//! 6. After submission, the backend constructs [`PresentFeedback`] from
 //!    timing observations and feeds it back to
 //!    [`Scheduler::observe()`](crate::scheduler::Scheduler::observe) to
 //!    adapt pipeline depth and safety margins.
 
 use crate::output::OutputId;
-use crate::time::HostTime;
+use crate::time::{Duration, HostTime};
+use core::ops::{BitOr, BitOrAssign};
+
+/// Why the host is requesting frame work.
+///
+/// Demand is a compact bit set because several causes can be pending at once.
+/// The scheduler derives a policy from the strongest pending demand: input is
+/// latency-first, continuous input is latency-sensitive but allowed to choose a
+/// sustainable cadence, animation prefers even pacing, and background work can
+/// be deferred.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrameDemand(u8);
+
+impl FrameDemand {
+    /// No frame is currently needed.
+    ///
+    /// Hosts should normally avoid calling
+    /// [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) when demand is
+    /// empty. Passing `NONE` is reserved for code that intentionally wants a
+    /// passive pacing plan for diagnostics or backend bookkeeping.
+    pub const NONE: Self = Self(0);
+    /// Smooth visual work such as animation or media playback.
+    pub const ANIMATION: Self = Self(1 << 0);
+    /// Latency-sensitive one-shot input such as key presses, clicks, or IME.
+    pub const INPUT: Self = Self(1 << 1);
+    /// Continuous user input such as scrolling, resize, pointer movement, or
+    /// gestures.
+    pub const CONTINUOUS_INPUT: Self = Self(1 << 2);
+    /// Deferrable visual work where power and batching matter more than
+    /// immediate latency.
+    pub const BACKGROUND: Self = Self(1 << 3);
+
+    /// Returns an empty demand set.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self::NONE
+    }
+
+    /// Creates a demand set from raw bits, discarding unknown bits.
+    #[inline]
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u8) -> Self {
+        Self(bits & 0x0f)
+    }
+
+    /// Returns the raw demand bits.
+    #[inline]
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether no demand bits are set.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns whether all bits in `other` are set.
+    #[inline]
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// Adds demand bits.
+    #[inline]
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+impl BitOr for FrameDemand {
+    type Output = Self;
+
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for FrameDemand {
+    #[inline]
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.insert(rhs);
+    }
+}
+
+/// Fixed or variable display timing constraints for one output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DisplayTiming {
+    min_interval: Duration,
+    max_interval: Duration,
+    granularity: Option<Duration>,
+}
+
+impl DisplayTiming {
+    /// Creates fixed-rate display timing.
+    #[inline]
+    #[must_use]
+    pub const fn fixed(interval: Duration) -> Self {
+        Self {
+            min_interval: interval,
+            max_interval: interval,
+            granularity: Some(interval),
+        }
+    }
+
+    /// Creates variable-refresh display timing.
+    ///
+    /// `min_interval` is the fastest direct display interval, `max_interval`
+    /// is the slowest direct display interval, and `granularity` describes a
+    /// fixed direct-interval step when the platform exposes one.
+    ///
+    /// `None` means the backend knows a variable range exists, but does not
+    /// know the direct interval granularity or cannot request arbitrary direct
+    /// presentation durations. In that case the scheduler uses stable
+    /// fixed-rate-like multiples of `min_interval` instead of inventing
+    /// unsupported direct intervals inside the range.
+    #[inline]
+    #[must_use]
+    pub const fn variable(
+        min_interval: Duration,
+        max_interval: Duration,
+        granularity: Option<Duration>,
+    ) -> Self {
+        let max_interval = if max_interval.0 < min_interval.0 {
+            min_interval
+        } else {
+            max_interval
+        };
+        Self {
+            min_interval,
+            max_interval,
+            granularity,
+        }
+    }
+
+    /// Creates fixed-rate display timing from a tick's timing facts.
+    ///
+    /// If the tick carries a predicted present time, this uses the delta from
+    /// `tick.now` to that prediction because it is already in host-time ticks.
+    /// Otherwise it falls back to [`FrameTick::refresh_interval`] and finally
+    /// to `fallback_interval`.
+    #[inline]
+    #[must_use]
+    pub fn from_tick(tick: &FrameTick, fallback_interval: Duration) -> Self {
+        let interval = tick
+            .predicted_present
+            .map(|present| present.saturating_duration_since(tick.now))
+            .filter(|interval| !interval.is_zero())
+            .or_else(|| {
+                tick.refresh_interval
+                    .filter(|ticks| *ticks > 0)
+                    .map(Duration)
+            })
+            .unwrap_or(fallback_interval);
+        Self::fixed(interval)
+    }
+
+    /// Fastest direct display interval.
+    #[inline]
+    #[must_use]
+    pub const fn min_interval(self) -> Duration {
+        self.min_interval
+    }
+
+    /// Slowest direct display interval.
+    #[inline]
+    #[must_use]
+    pub const fn max_interval(self) -> Duration {
+        self.max_interval
+    }
+
+    /// Optional direct interval granularity for displays with known steps.
+    ///
+    /// `None` is conservative: the scheduler treats direct interval
+    /// granularity as unknown and chooses stable multiples of
+    /// [`Self::min_interval`].
+    #[inline]
+    #[must_use]
+    pub const fn granularity(self) -> Option<Duration> {
+        self.granularity
+    }
+
+    /// Returns true when the display exposes a range of direct intervals.
+    #[inline]
+    #[must_use]
+    pub const fn is_variable(self) -> bool {
+        self.min_interval.0 != self.max_interval.0
+    }
+
+    /// Chooses a stable delivery interval that can contain `needed`.
+    ///
+    /// Fixed-rate displays and variable displays without known direct
+    /// granularity choose multiples of [`Self::min_interval`]. Variable
+    /// displays with an explicit granularity choose the first supported direct
+    /// interval step that can contain the needed work.
+    #[must_use]
+    pub fn choose_interval(self, needed: Duration) -> Duration {
+        if self.min_interval.is_zero() {
+            return needed;
+        }
+
+        if !self.is_variable() {
+            return round_up_to_multiple(needed, self.min_interval);
+        }
+
+        if needed > self.max_interval {
+            return round_up_to_multiple(needed, self.min_interval);
+        }
+
+        let clamped = clamp_duration(needed, self.min_interval, self.max_interval);
+        match self.granularity {
+            Some(step) if !step.is_zero() && step != self.min_interval => clamp_duration(
+                round_up_to_multiple(clamped, step),
+                self.min_interval,
+                self.max_interval,
+            ),
+            Some(_) => clamped,
+            None => round_up_to_multiple(clamped, self.min_interval),
+        }
+    }
+}
+
+fn clamp_duration(value: Duration, min_value: Duration, max_value: Duration) -> Duration {
+    value.max(min_value).min(max_value)
+}
+
+fn round_up_to_multiple(needed: Duration, interval: Duration) -> Duration {
+    if interval.is_zero() {
+        return needed;
+    }
+    let count = needed
+        .ticks()
+        .saturating_add(interval.ticks().saturating_sub(1))
+        / interval.ticks();
+    interval.saturating_mul(count.max(1))
+}
 
 /// How reliable the predicted present time is.
 ///
@@ -71,13 +318,59 @@ pub struct FrameTick {
     pub prev_actual_present: Option<HostTime>,
 }
 
+/// A single scheduler planning request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FrameRequest {
+    /// Platform frame opportunity.
+    pub tick: FrameTick,
+    /// Backend submission constraints for the opportunity.
+    pub hints: PresentHints,
+    /// Why this frame is requested.
+    ///
+    /// Ordinary render loops should only create a request when this is not
+    /// [`FrameDemand::NONE`]. Empty demand means there is no app-visible frame
+    /// work to schedule.
+    pub demand: FrameDemand,
+    /// Display timing constraints for the target output.
+    pub display_timing: DisplayTiming,
+}
+
+impl FrameRequest {
+    /// Creates a scheduler request from frame timing facts and demand.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        tick: FrameTick,
+        hints: PresentHints,
+        demand: FrameDemand,
+        display_timing: DisplayTiming,
+    ) -> Self {
+        Self {
+            tick,
+            hints,
+            demand,
+            display_timing,
+        }
+    }
+}
+
 /// The plan for evaluating a single frame.
 ///
 /// Produced by the [`Scheduler`](crate::scheduler::Scheduler) from a
-/// [`FrameTick`] and [`PresentHints`]. All engine evaluation and content
-/// selection should be driven by the times in this plan.
+/// [`FrameRequest`]. All engine evaluation and content selection should be
+/// driven by the times in this plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FramePlan {
+    /// Demand that selected this frame.
+    pub demand: FrameDemand,
+    /// Scheduler-selected delivery interval for this frame.
+    pub frame_interval: Duration,
+    /// Time applications should wake or start app-side frame work.
+    ///
+    /// This is derived from the commit deadline and scheduler safety margin.
+    /// It is clamped to the originating tick time, so callers can request
+    /// redraw immediately when this time is already due.
+    pub frame_start: HostTime,
     /// Time applications should sample animation and simulation state for.
     pub sample_time: HostTime,
     /// Intended display time, if known.

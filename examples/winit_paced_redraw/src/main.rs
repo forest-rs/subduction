@@ -4,24 +4,24 @@
 //! Minimal winit paced redraw loop using `frameclock`.
 //!
 //! This example does not render anything. It shows where `frameclock` planning
-//! fits in a winit application: convert redraw opportunities into
-//! [`FrameTick`]s, ask the scheduler for a [`FramePlan`], submit work, and feed
-//! pacing feedback back into the scheduler.
+//! fits in a winit application: convert redraw demand into [`FrameTick`]s, ask
+//! the scheduler for a [`FramePlan`], wake at the plan's frame-start time,
+//! submit work, and feed pacing feedback back into the scheduler.
 //!
 //! A real renderer would replace the synthetic submit and feedback below with
 //! surface acquisition, command submission, and platform or swapchain timing
 //! feedback. The `frameclock` calls should stay in the same places.
 //!
 //! The example also uses `understory_timing` to keep the host wake queue
-//! separate from the per-surface frame scheduler. The current `frameclock` API
-//! provides timing context for a frame; the host derives a frame-start wake and
-//! merges that wake with the host's other timers.
+//! separate from the per-surface frame scheduler. `frameclock` contributes the
+//! frame-start wake for this surface; the host merges that wake with its other
+//! timers.
 
 use std::time::Duration as StdDuration;
 
 use frameclock::{
-    Duration, FramePlan, FrameTick, HostTime, OutputId, PresentFeedback, PresentHints, Scheduler,
-    SchedulerConfig, TimingConfidence,
+    DisplayTiming, Duration, FrameDemand, FramePlan, FrameRequest, FrameTick, HostTime, OutputId,
+    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, TimingConfidence,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;
@@ -31,7 +31,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const REFRESH_INTERVAL: Duration = Duration(16_666_667);
-const ESTIMATED_FRAME_WORK: Duration = Duration(1_000_000);
+const DEMO_ANIMATION_DURATION: Duration = Duration(5_000_000_000);
 const SYNTHETIC_BUILD_COST: Duration = Duration(500_000);
 
 struct App {
@@ -44,7 +44,21 @@ struct WindowState {
     model: DemoModel,
     renderer: SyntheticRenderer,
     surface_clock: SurfaceFrameClock,
-    redraw_requested: bool,
+    /// Planned frame that should not start until its scheduler-selected
+    /// `FramePlan::frame_start`.
+    ///
+    /// Winit may deliver `RedrawRequested` before the ideal frame-start time.
+    /// Keep the plan instead of re-planning so the eventual redraw samples the
+    /// time and uses the deadline selected for the same frame opportunity.
+    /// If stronger demand arrives while a frame is waiting, this example
+    /// discards the queued plan and asks `frameclock` for a new one.
+    pending_frame: Option<PlannedFrame>,
+    /// Demand that arrived after the last planned frame.
+    ///
+    /// This is app-visible work: input, resize, animation, or delayed updates.
+    /// A scheduled frame-start wake does not insert demand here; it only wakes
+    /// the event loop so an existing `pending_frame` can run.
+    pending_demand: FrameDemand,
     timers: TimerQueue<Wake>,
     frame_start_wake: Option<TimerId>,
 }
@@ -53,6 +67,19 @@ struct SurfaceFrameClock {
     scheduler: Scheduler,
     frame_index: u64,
     output: OutputId,
+}
+
+/// A frame plan plus the backend hints used to produce it.
+///
+/// The hints are retained with the plan because feedback must be resolved
+/// against the same desired-present/deadline facts that were active when the
+/// scheduler made the decision.
+#[derive(Clone, Copy)]
+struct PlannedFrame {
+    /// Scheduler-selected frame timing.
+    plan: FramePlan,
+    /// Presentation constraints paired with `plan`.
+    hints: PresentHints,
 }
 
 struct DemoModel {
@@ -103,14 +130,16 @@ impl WindowState {
             model: DemoModel::new(),
             renderer: SyntheticRenderer,
             surface_clock: SurfaceFrameClock::new(output),
-            redraw_requested: true,
+            pending_frame: None,
+            pending_demand: FrameDemand::NONE,
             timers: TimerQueue::new(),
             frame_start_wake: None,
         }
     }
 
-    fn request_redraw(&mut self) {
-        self.redraw_requested = true;
+    /// Adds app-visible demand and asks winit to deliver `RedrawRequested`.
+    fn request_frame(&mut self, demand: FrameDemand) {
+        self.pending_demand.insert(demand);
         self.window.request_redraw();
     }
 
@@ -121,22 +150,39 @@ impl WindowState {
                 Wake::FrameStart(output) => {
                     if output == self.surface_clock.output && self.frame_start_wake == Some(id) {
                         self.frame_start_wake = None;
-                        self.request_redraw();
+                        // A frame-start wake means a previously planned frame
+                        // is due. It wakes winit without adding new app
+                        // demand.
+                        self.window.request_redraw();
                     }
                 }
             }
         }
     }
 
-    fn schedule_frame_start(&mut self, frame_start: HostTime) {
+    fn cancel_frame_start_wake(&mut self) {
         if let Some(id) = self.frame_start_wake.take() {
             self.timers.cancel(id);
         }
+    }
+
+    fn schedule_frame_start(&mut self, frame_start: HostTime) {
+        self.cancel_frame_start_wake();
 
         self.frame_start_wake = Some(self.timers.schedule_once_at(
             Wake::FrameStart(self.surface_clock.output),
             frame_start.ticks(),
         ));
+    }
+
+    /// Stores a planned frame and arms the host timer for its start time.
+    ///
+    /// This keeps timer ownership at the app/window level. `frameclock`
+    /// decides the start time; the host decides how that wake is merged with
+    /// input, animation, layout, and other app timers.
+    fn queue_frame(&mut self, frame: PlannedFrame) {
+        self.schedule_frame_start(frame.plan.frame_start);
+        self.pending_frame = Some(frame);
     }
 
     fn arm_next_wake(&self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -153,15 +199,11 @@ impl WindowState {
         }
     }
 
-    fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
-        // Frameclock uses an explicit monotonic host timeline. A real app would
-        // usually centralize this conversion so renderer and platform feedback
-        // report times on the same clock.
-        let now = host_time(started_at);
+    fn plan_frame(&mut self, now: HostTime, demand: FrameDemand) -> PlannedFrame {
+        debug_assert!(!demand.is_empty(), "no demand should not plan a frame");
 
-        // RedrawRequested is winit's signal that the app may build another
-        // frame. Since plain winit does not expose the future present time here,
-        // this tick carries refresh-rate information but no predicted present.
+        // Plain winit does not expose the future present time here, so this
+        // tick carries refresh-rate information but no predicted present.
         let tick = FrameTick {
             now,
             predicted_present: None,
@@ -172,25 +214,79 @@ impl WindowState {
             prev_actual_present: None,
         };
 
-        // Hints express app-side intent and constraints. With predictive display
-        // timing, desired_present would normally be the display target. In this
-        // pacing-only example, latest_commit gives the scheduler a conservative
-        // "submit by around the next refresh" boundary.
+        // Hints express app-side intent and constraints. With predictive
+        // display timing, desired_present would normally be the display target.
+        // In this pacing-only example, latest_commit gives the scheduler a
+        // conservative "submit by around the next refresh" boundary.
         let hints = PresentHints {
             desired_present: None,
             latest_commit: now + REFRESH_INTERVAL,
         };
 
-        // The plan is the app-facing contract for this frame. Animation and
-        // simulation should sample using plan.sample_time, render scheduling
-        // should respect plan.commit_deadline, and renderers with a real target
-        // present should aim at plan.target_present.
-        let plan = self.surface_clock.scheduler.plan(&tick, &hints);
+        let plan = self.surface_clock.scheduler.plan(FrameRequest::new(
+            tick,
+            hints,
+            demand,
+            DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
+        ));
+        PlannedFrame { plan, hints }
+    }
+
+    fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
+        // Frameclock uses an explicit monotonic host timeline. A real app would
+        // usually centralize this conversion so renderer and platform feedback
+        // report times on the same clock.
+        let now = host_time(started_at);
+
+        // RedrawRequested is winit's signal that the app may build another
+        // frame. A plan can intentionally be earlier than the render work: if
+        // frame_start is still in the future, store the plan and let the shared
+        // timer queue wake the event loop at the scheduler-selected time.
+        let planned_frame = match self.pending_frame.take() {
+            Some(frame) if now >= frame.plan.frame_start => frame,
+            Some(frame) if demand_preempts_plan(self.pending_demand, frame.plan.demand) => {
+                // Input or resize may arrive while an animation frame is parked
+                // for a later start time. Re-plan instead of forcing the newer,
+                // more urgent work to wait behind the old cadence decision.
+                self.cancel_frame_start_wake();
+                let demand = self.pending_demand;
+                self.pending_demand = FrameDemand::NONE;
+                self.plan_frame(now, demand)
+            }
+            Some(frame) => {
+                self.queue_frame(frame);
+                self.arm_next_wake(started_at, event_loop);
+                return;
+            }
+            None => {
+                // Spurious redraws can happen. With no planned frame and no
+                // app-visible demand, stay idle instead of teaching that
+                // FrameDemand::NONE is a normal render mode.
+                if self.pending_demand.is_empty() {
+                    self.arm_next_wake(started_at, event_loop);
+                    return;
+                }
+
+                let demand = self.pending_demand;
+                self.pending_demand = FrameDemand::NONE;
+                self.plan_frame(now, demand)
+            }
+        };
+        let plan = planned_frame.plan;
+        let hints = planned_frame.hints;
+
+        // A redraw requested by input, resize, or the OS can arrive before the
+        // planned frame-start timer. Keep the existing plan and sleep until the
+        // scheduler-selected start instead of doing app/render work early.
+        if now < plan.frame_start {
+            self.queue_frame(planned_frame);
+            self.arm_next_wake(started_at, event_loop);
+            return;
+        }
 
         // Update application state and models here. Time-varying content samples
         // `plan.sample_time`, not wall-clock "now", so CPU work targets the
         // frame that is expected to be displayed.
-        self.redraw_requested = false;
         self.model.update_for_frame(plan.sample_time);
 
         // Render here. A real renderer would acquire the surface texture, encode
@@ -217,8 +313,9 @@ impl WindowState {
                 self.model.sampled_position,
             ));
             println!(
-                "frame={:04} sample={} target={:?} deadline={} depth={} overrun={:?}",
+                "frame={:04} start={} sample={} target={:?} deadline={} depth={} overrun={:?}",
                 plan.frame_index,
+                plan.frame_start.ticks(),
                 plan.sample_time.ticks(),
                 plan.target_present.map(HostTime::ticks),
                 plan.commit_deadline.ticks(),
@@ -227,35 +324,51 @@ impl WindowState {
             );
         }
 
-        if !self.model.animation_active && !self.redraw_requested {
-            if let Some(id) = self.frame_start_wake.take() {
-                self.timers.cancel(id);
-            }
+        let mut next_demand = self.pending_demand;
+        self.pending_demand = FrameDemand::NONE;
+        if self.model.animation_active {
+            next_demand.insert(FrameDemand::ANIMATION);
+        }
+
+        if next_demand.is_empty() {
+            self.cancel_frame_start_wake();
             self.arm_next_wake(started_at, event_loop);
             self.surface_clock.frame_index += 1;
             return;
         }
 
-        // Current frameclock exposes a commit deadline, so this example derives
-        // the frame-start wake by subtracting an estimated frame work duration.
-        // A future frameclock pacing API could return this wake time directly.
-        //
-        // Queue that frame-start wake alongside the host's other timers. This
-        // is the app/window-level queue; the per-surface frameclock only
-        // contributes the frame timing context.
-        let frame_start = plan
-            .commit_deadline
-            .checked_sub(ESTIMATED_FRAME_WORK)
-            .unwrap_or(plan.commit_deadline);
-        self.schedule_frame_start(frame_start);
-        self.arm_next_wake(started_at, event_loop);
-
         self.surface_clock.frame_index += 1;
+
+        // Plan the next frame and queue the scheduler-selected frame start
+        // alongside the host's other timers. This is the app/window-level
+        // queue; the per-surface frameclock only contributes timing context.
+        let now = host_time(started_at);
+        let next_frame = self.plan_frame(now, next_demand);
+        self.queue_frame(next_frame);
+        self.arm_next_wake(started_at, event_loop);
     }
 }
 
 fn instant_for(started_at: Instant, deadline: TimerInstant) -> Instant {
     started_at + StdDuration::from_nanos(deadline)
+}
+
+fn demand_preempts_plan(pending: FrameDemand, planned: FrameDemand) -> bool {
+    demand_priority(pending) > demand_priority(planned)
+}
+
+fn demand_priority(demand: FrameDemand) -> u8 {
+    if demand.contains(FrameDemand::INPUT) {
+        4
+    } else if demand.contains(FrameDemand::CONTINUOUS_INPUT) {
+        3
+    } else if demand.contains(FrameDemand::ANIMATION) {
+        2
+    } else if demand.contains(FrameDemand::BACKGROUND) {
+        1
+    } else {
+        0
+    }
 }
 
 impl SurfaceFrameClock {
@@ -292,6 +405,7 @@ impl DemoModel {
         let millis = sample_time.ticks() / 1_000_000;
         let phase = millis % 2_000;
         self.sampled_position = if phase <= 1_000 { phase } else { 2_000 - phase };
+        self.animation_active = sample_time < HostTime(DEMO_ANIMATION_DURATION.ticks());
     }
 }
 
@@ -332,9 +446,9 @@ impl ApplicationHandler for App {
             .expect("failed to create window");
         let mut window = WindowState::new(window, OutputId(0));
 
-        // Kick the first frame. After that, each RedrawRequested schedules the
-        // next one so the loop stays driven by winit's redraw mechanism.
-        window.request_redraw();
+        // Kick the first animation frame. After that, animation demand keeps
+        // scheduling frames until the demo animation marks itself inactive.
+        window.request_frame(FrameDemand::ANIMATION);
         self.window = Some(window);
     }
 
@@ -359,7 +473,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(_) => {
                 if let Some(window) = &mut self.window {
-                    window.request_redraw();
+                    // Treat resize as continuous input: it is latency-sensitive,
+                    // but can still step down if rendering becomes too slow.
+                    window.request_frame(FrameDemand::CONTINUOUS_INPUT);
                 }
             }
             WindowEvent::RedrawRequested => {

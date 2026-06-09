@@ -86,10 +86,13 @@ impl<W: Write> TraceSink for PrettyPrintSink<W> {
     fn on_frame_plan(&mut self, e: &FramePlanEvent) {
         let _ = writeln!(
             self.writer,
-            "[plan] frame={} depth={} deadline={:.1}µs margin={}t",
+            "[plan] frame={} demand={:?} interval={:.1}µs start={:.1}µs deadline={:.1}µs depth={} margin={}t",
             e.frame_index,
-            e.pipeline_depth,
+            e.demand,
+            self.ticks_to_us(e.frame_interval.ticks()),
+            self.host_us(e.frame_start),
             self.host_us(e.commit_deadline),
+            e.pipeline_depth,
             e.safety_margin_ticks,
         );
     }
@@ -129,9 +132,14 @@ impl<W: Write> TraceSink for PrettyPrintSink<W> {
             Some(false) => "ok",
             None => "?",
         };
+        let overrun = match e.pacing_overrun {
+            Some(true) => "overrun",
+            Some(false) => "ok",
+            None => "?",
+        };
         let _ = writeln!(
             self.writer,
-            "[feedback] frame={} missed={missed}",
+            "[feedback] frame={} missed={missed} pacing={overrun}",
             e.frame_index,
         );
     }

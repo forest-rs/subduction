@@ -110,6 +110,7 @@ pub fn export(bytes: &[u8], timebase: Timebase, writer: &mut dyn Write) -> io::R
                     "args": {
                         "frame_index": e.frame_index,
                         "missed": e.missed_deadline,
+                        "pacing_overrun": e.pacing_overrun,
                     }
                 }));
             }

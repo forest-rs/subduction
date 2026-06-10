@@ -11,10 +11,10 @@
 use std::fs::File;
 use std::io::BufWriter;
 
+use frameclock::diagnostics::{FramePlanEvent, FrameTickEvent, PresentFeedbackEvent, SubmitEvent};
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FramePlanEvent, FrameRequest, FrameTick, FrameTickEvent,
-    HostTime, OutputId, PresentFeedback, PresentFeedbackEvent, PresentHints, Scheduler,
-    SchedulerConfig, SubmitEvent, Timebase, TimingConfidence,
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
+    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase, TimingConfidence,
 };
 use subduction_core::trace::{
     FrameSummaryBuilder, PhaseBeginEvent, PhaseEndEvent, PhaseKind, TraceSink, Tracer,

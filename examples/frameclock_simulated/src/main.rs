@@ -8,11 +8,13 @@
 //! emit diagnostics, submit synthetic work, and feed presentation feedback back
 //! into the scheduler.
 
+use frameclock::diagnostics::{
+    Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingSummaryBuilder,
+    PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
+};
 use frameclock::{
-    Diagnostics, DiagnosticsSink, DisplayTiming, Duration, FrameDemand, FramePlanEvent,
-    FrameRequest, FrameTick, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
-    HostTime, OutputId, PresentFeedback, PresentFeedbackEvent, PresentHints, Scheduler,
-    SchedulerConfig, SchedulerStateEvent, SubmitEvent, TimingConfidence,
+    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, FrameTimingSummary, HostTime,
+    OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig, TimingConfidence,
 };
 
 const FRAME_COUNT: u64 = 90;

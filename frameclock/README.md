@@ -50,9 +50,70 @@ redraw requests, renderer submission, and native presentation resources. Use
 After submitting or discarding an `ActiveFrame`, hosts should request another
 redraw when `FrameDriver::has_pending_demand()` is still true.
 
-The lower-level `Scheduler`, event structs, and `FrameTimingSummaryBuilder`
-remain available for telemetry adapters, tests, and custom integrations, but
-normal host code should not need to assemble summary events by hand.
+The lower-level `Scheduler` remains available for custom integrations. Event
+structs and `FrameTimingSummaryBuilder` live under `frameclock::diagnostics`
+for telemetry adapters and tests, but normal host code should not need to
+assemble summary events by hand.
+
+## API Surfaces
+
+The root module re-exports the frame-planning vocabulary used by both retained
+`FrameDriver` hosts and lower-level `Scheduler` integrations:
+
+- `FrameDriver`, `FrameOpportunity`, `ActiveFrame`, and `FrameSubmission`
+- `FrameDemand` and `FrameDemandClass`
+- `Scheduler`, `SchedulerConfig`, `SchedulerState`, and `DegradationPolicy`
+- `FrameTick`, `FrameRequest`, `FramePlan`, `PresentHints`, `PresentFeedback`,
+  `PendingFeedback`, `DisplayTiming`, and `TimingConfidence`
+- `HostTime`, `Duration`, `Timebase`, and `OutputId`
+- `FrameTimingSummary` and `FrameTimingBasis`
+
+The modules group the same responsibilities more explicitly:
+
+- `frameclock::diagnostics` for event structs, `DiagnosticsSink`, and
+  `FrameTimingSummaryBuilder`.
+- `frameclock::scheduler`, `frameclock::timing`, `frameclock::time`,
+  `frameclock::timeline`, `frameclock::driver`, and `frameclock::demand` for
+  the same public types grouped by responsibility.
+
+```rust,ignore
+use frameclock::{
+    DisplayTiming, Duration, FrameDemand, FrameDriver, FrameOpportunity, FrameSubmission,
+    FrameTick, HostTime, OutputId, PresentHints, SchedulerConfig, TimingConfidence,
+};
+
+let mut driver = FrameDriver::new(SchedulerConfig::pacing_only());
+driver.request(FrameDemand::ANIMATION);
+
+let tick = FrameTick {
+    now: HostTime(1_000_000),
+    predicted_present: None,
+    refresh_interval: Some(16_666_667),
+    confidence: TimingConfidence::PacingOnly,
+    frame_index: 1,
+    output: OutputId(0),
+    prev_actual_present: None,
+};
+let hints = PresentHints {
+    desired_present: None,
+    latest_commit: HostTime(17_000_000),
+};
+let opportunity = FrameOpportunity::new(
+    tick,
+    hints,
+    DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+);
+
+if let Some(frame) = driver.begin_frame(opportunity) {
+    let sample_time = frame.sample_time();
+    // Prepare app/model/render state for sample_time, then submit renderer work.
+    let summary = driver.submit_frame(
+        frame,
+        FrameSubmission::new(HostTime(2_000_000), None),
+    );
+    _ = (sample_time, summary);
+}
+```
 
 ## Display Timing And VRR
 

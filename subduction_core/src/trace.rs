@@ -26,7 +26,7 @@
 
 use frameclock::{HostTime, OutputId, TimingConfidence};
 
-pub use frameclock::{
+pub use frameclock::diagnostics::{
     FramePlanEvent, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
     PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };

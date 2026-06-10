@@ -194,8 +194,11 @@ fn round_up_to_multiple(needed: Duration, interval: Duration) -> Duration {
 /// How reliable the predicted present time is.
 ///
 /// Platforms differ in how well they can predict when pixels will appear on
-/// screen. This enum captures that spectrum so the scheduler can adapt its
-/// strategy.
+/// screen. This enum labels the tick's timing facts for diagnostics and for
+/// presentation-truth handling. Conservative scheduling policy is selected by
+/// [`SchedulerConfig`](crate::scheduler::SchedulerConfig): for example, hosts
+/// should normally pair [`TimingConfidence::Estimated`] ticks with
+/// [`SchedulerConfig::estimated`](crate::scheduler::SchedulerConfig::estimated).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimingConfidence {
     /// Strong predicted present time available (e.g. macOS `CVDisplayLink`).
@@ -220,6 +223,11 @@ pub struct FrameTick {
     /// Display refresh interval in host-time ticks, if known.
     pub refresh_interval: Option<u64>,
     /// Confidence level for timing information in this tick.
+    ///
+    /// This is a semantic label for the tick. The scheduler still relies on
+    /// the actual presence or absence of [`predicted_present`](Self::predicted_present)
+    /// and [`PresentHints::desired_present`] when deciding whether a plan has
+    /// presentation truth.
     pub confidence: TimingConfidence,
     /// Host-owned monotonically increasing frame counter for this output.
     ///
@@ -370,14 +378,13 @@ impl PresentFeedback {
     ///
     /// - If both `actual_present` and `hints.desired_present` are known, a
     ///   frame is missed when `actual_present > desired_present`.
-    /// - Otherwise, if `hints.desired_present` is known, fall back to commit
-    ///   timing: missed when `submitted_at > hints.latest_commit`.
-    /// - Otherwise, the result is `None`: pacing-only backends without real
-    ///   presentation feedback do not have enough information to classify the
-    ///   frame as hit or miss honestly.
+    /// - Otherwise, the result is `None`: without actual presentation
+    ///   feedback, commit timing is useful pacing evidence but not real
+    ///   presentation truth.
     ///
-    /// When `hints.desired_present` is `None`, [`PresentFeedback::pacing_overrun`]
-    /// is populated from commit timing as the weaker pacing-only signal.
+    /// When the frame cannot be classified as a real hit or miss,
+    /// [`PresentFeedback::pacing_overrun`] is populated from commit timing as
+    /// the weaker pacing signal.
     #[must_use]
     pub fn new(
         hints: &PresentHints,
@@ -386,19 +393,16 @@ impl PresentFeedback {
         actual_present: Option<HostTime>,
     ) -> Self {
         let expected_present = hints.desired_present;
-        // Pacing-only backends still expose a useful "we ran long relative to
-        // the pacing boundary" signal. Keep that distinct from real deadline
-        // truth.
-        let pacing_overrun = if expected_present.is_none() {
-            Some(submitted_at > hints.latest_commit)
-        } else {
-            None
-        };
         // Only report deadline truth when the backend can honestly support it.
         let missed_deadline = match (actual_present, expected_present) {
             (Some(actual), Some(expected)) => Some(actual > expected),
-            (None, Some(_expected)) => Some(submitted_at > hints.latest_commit),
             (_, None) => None,
+            (None, Some(_)) => None,
+        };
+        let pacing_overrun = if missed_deadline.is_none() {
+            Some(submitted_at > hints.latest_commit)
+        } else {
+            None
         };
 
         Self {
@@ -486,20 +490,21 @@ mod tests {
     }
 
     #[test]
-    fn new_without_actual_present_uses_commit_deadline() {
+    fn new_without_actual_present_uses_commit_deadline_as_pacing_evidence() {
         let hints = PresentHints {
             desired_present: Some(HostTime(2_000_000)),
             latest_commit: HostTime(1_800_000),
         };
-        // submitted_at > latest_commit → missed
+        // submitted_at > latest_commit is weak pacing evidence until the
+        // backend reports actual present.
         let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
-        assert_eq!(fb.missed_deadline, Some(true));
-        assert_eq!(fb.pacing_overrun, None);
+        assert_eq!(fb.missed_deadline, None);
+        assert_eq!(fb.pacing_overrun, Some(true));
 
-        // submitted_at <= latest_commit → not missed
+        // submitted_at <= latest_commit is still not presentation truth.
         let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_750_000), None);
-        assert_eq!(fb.missed_deadline, Some(false));
-        assert_eq!(fb.pacing_overrun, None);
+        assert_eq!(fb.missed_deadline, None);
+        assert_eq!(fb.pacing_overrun, Some(false));
     }
 
     #[test]
@@ -566,11 +571,11 @@ mod tests {
             submitted_at: HostTime(1_750_000),
         };
 
-        // No actual present → falls back to commit deadline (on time).
+        // No actual present → commit timing is pacing evidence, not deadline truth.
         let fb = pending.resolve(None);
-        assert_eq!(fb.missed_deadline, Some(false));
+        assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.actual_present, None);
-        assert_eq!(fb.pacing_overrun, None);
+        assert_eq!(fb.pacing_overrun, Some(false));
     }
 
     #[test]

@@ -11,7 +11,8 @@
 //! converts ticks → nanoseconds).
 //!
 //! [`Duration`] represents a duration in the same tick units as [`HostTime`].
-//! All arithmetic uses `u128` intermediates to avoid overflow.
+//! Conversion arithmetic uses `u128` intermediates to avoid overflow. Time and
+//! duration operators saturate instead of panicking or wrapping.
 
 use core::fmt;
 use core::ops::{Add, Sub};
@@ -90,7 +91,7 @@ impl Add<Duration> for HostTime {
 
     #[inline]
     fn add(self, rhs: Duration) -> Self {
-        Self(self.0 + rhs.0)
+        Self(self.0.saturating_add(rhs.0))
     }
 }
 
@@ -99,7 +100,7 @@ impl Sub<Duration> for HostTime {
 
     #[inline]
     fn sub(self, rhs: Duration) -> Self {
-        Self(self.0 - rhs.0)
+        Self(self.0.saturating_sub(rhs.0))
     }
 }
 
@@ -108,7 +109,7 @@ impl Sub for HostTime {
 
     #[inline]
     fn sub(self, rhs: Self) -> Duration {
-        Duration(self.0 - rhs.0)
+        Duration(self.0.saturating_sub(rhs.0))
     }
 }
 
@@ -255,7 +256,7 @@ impl Add for Duration {
 
     #[inline]
     fn add(self, rhs: Self) -> Self {
-        Self(self.0 + rhs.0)
+        self.saturating_add(rhs)
     }
 }
 
@@ -264,7 +265,7 @@ impl Sub for Duration {
 
     #[inline]
     fn sub(self, rhs: Self) -> Self {
-        Self(self.0 - rhs.0)
+        self.saturating_sub(rhs)
     }
 }
 
@@ -314,6 +315,8 @@ mod tests {
         assert_eq!((a + b).ticks(), 130);
         assert_eq!((a - b).ticks(), 70);
         assert_eq!(a.saturating_sub(Duration(200)), Duration::ZERO);
+        assert_eq!((Duration(u64::MAX) + Duration(1)).ticks(), u64::MAX);
+        assert_eq!((Duration(0) - Duration(1)).ticks(), 0);
     }
 
     #[test]
@@ -322,6 +325,9 @@ mod tests {
         let d = Duration(200);
         assert_eq!((t + d).ticks(), 1200);
         assert_eq!((t - d).ticks(), 800);
+        assert_eq!((HostTime(u64::MAX) + Duration(1)).ticks(), u64::MAX);
+        assert_eq!((HostTime(0) - Duration(1)).ticks(), 0);
+        assert_eq!((HostTime(0) - HostTime(1)).ticks(), 0);
         assert_eq!(t.saturating_duration_since(HostTime(1500)), Duration::ZERO);
         assert_eq!(t.saturating_duration_since(HostTime(400)), Duration(600));
     }

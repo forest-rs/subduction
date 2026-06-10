@@ -19,13 +19,13 @@
 //! # Core Flow
 //!
 //! ```text
-//! platform tick -> FrameTick + PresentHints
-//!               -> FrameRequest + FrameDemand + DisplayTiming
-//!               -> Scheduler::plan()
-//!               -> FramePlan
+//! platform tick -> FrameOpportunity
+//!               -> FrameDriver::begin_frame()
+//!               -> ActiveFrame
 //!               -> build/submit frame
-//!               -> PresentFeedback
-//!               -> Scheduler::observe()
+//!               -> FrameSubmission
+//!               -> FrameDriver::submit_frame()
+//!               -> FrameTimingSummary
 //! ```
 //!
 //! # Crate Features
@@ -47,11 +47,11 @@ pub mod timing;
 
 pub use demand::{FrameDemand, FrameDemandClass};
 pub use diagnostics::{
-    Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingSummary,
-    FrameTimingSummaryBuilder, NoopDiagnostics, PresentFeedbackEvent, SchedulerStateEvent,
-    SubmitEvent,
+    Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingBasis,
+    FrameTimingSummary, FrameTimingSummaryBuilder, NoopDiagnostics, PresentFeedbackEvent,
+    SchedulerStateEvent, SubmitEvent,
 };
-pub use driver::{FrameDriver, PlannedFrame};
+pub use driver::{ActiveFrame, FrameDriver, FrameOpportunity, FrameSubmission, PlannedFrame};
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
 pub use time::{Duration, HostTime, Timebase};

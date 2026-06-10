@@ -19,13 +19,13 @@ renderers, swapchains, or platform presentation resources.
 ## Core Flow
 
 ```text
-platform tick -> FrameTick + PresentHints
-              -> FrameRequest + FrameDemand + DisplayTiming
-              -> Scheduler::plan()
-              -> FramePlan
+platform tick -> FrameOpportunity
+              -> FrameDriver::begin_frame()
+              -> ActiveFrame
               -> build/submit frame
-              -> PresentFeedback
-              -> Scheduler::observe()
+              -> FrameSubmission
+              -> FrameDriver::submit_frame()
+              -> FrameTimingSummary
 ```
 
 Use `FrameDemand` to distinguish latency-sensitive input from continuous input,
@@ -41,16 +41,18 @@ Ordinary render loops should stay idle instead of calling `Scheduler::plan`
 with empty demand. Passing `NONE` is reserved for hosts that intentionally want
 a passive pacing plan for diagnostics or backend bookkeeping.
 
-`FrameDriver` is the retained helper for hosts that need to queue demand and a
-future frame-start plan between event-loop turns. It owns pending demand,
-stronger-demand preemption, and the queued `PlannedFrame`; hosts still own
-timers, redraw requests, and renderer submission. Use
+`FrameDriver` is the retained lifecycle helper for hosts that need to queue
+demand and a future frame-start plan between event-loop turns. It owns pending
+demand, stronger-demand preemption, queued `PlannedFrame`s, feedback
+observation, and `FrameTimingSummary` construction. Hosts still own timers,
+redraw requests, renderer submission, and native presentation resources. Use
 `FrameDriver::next_frame_start` as one wake source to merge with app timers.
-Returned `PlannedFrame`s retain the originating `FrameTick`, the selected
-`FramePlan`, and matching `PresentHints` so diagnostics and frame summaries can
-refer to the same facts the scheduler used. After consuming a ready
-`PlannedFrame`, hosts should request another redraw when
-`FrameDriver::has_pending_demand()` is still true.
+After submitting or discarding an `ActiveFrame`, hosts should request another
+redraw when `FrameDriver::has_pending_demand()` is still true.
+
+The lower-level `Scheduler`, event structs, and `FrameTimingSummaryBuilder`
+remain available for telemetry adapters, tests, and custom integrations, but
+normal host code should not need to assemble summary events by hand.
 
 ## Display Timing And VRR
 
@@ -78,6 +80,9 @@ when the presentation API can honestly honor it.
 ticks, plans, submits, feedback, scheduler state, and compact per-frame timing
 summaries. Adapter crates can map those events to Spoor, Tracy, or other
 instrumentation systems without adding those dependencies to the core crate.
+`FrameTimingSummary::timing_basis` classifies whether each summary is based on
+actual present feedback, predicted present timing, submission timing, or
+pacing-only timing.
 
 ## Migration Notes
 

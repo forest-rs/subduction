@@ -20,8 +20,9 @@
 use std::time::Duration as StdDuration;
 
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameDriver, FramePlan, FrameTick, HostTime, OutputId,
-    PlannedFrame, PresentFeedback, PresentHints, SchedulerConfig, TimingConfidence,
+    ActiveFrame, DisplayTiming, Duration, FrameDemand, FrameDriver, FrameOpportunity, FramePlan,
+    FrameSubmission, FrameTick, HostTime, OutputId, PresentHints, SchedulerConfig,
+    TimingConfidence,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;
@@ -60,12 +61,6 @@ struct DemoModel {
 }
 
 struct SyntheticRenderer;
-
-struct SyntheticSubmission {
-    build_start: HostTime,
-    submitted_at: HostTime,
-    actual_present: Option<HostTime>,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Wake {
@@ -197,14 +192,14 @@ impl WindowState {
         }
     }
 
-    fn take_ready_frame(&mut self, now: HostTime) -> Option<PlannedFrame> {
+    fn begin_frame(&mut self, now: HostTime) -> Option<ActiveFrame> {
         let tick = self.frame_tick(now);
         let hints = self.present_hints(now);
-        self.surface_clock.driver.take_ready(
+        self.surface_clock.driver.begin_frame(FrameOpportunity::new(
             tick,
             hints,
             DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
-        )
+        ))
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -217,13 +212,12 @@ impl WindowState {
         // frame. The driver owns pending demand and queued frame plans. If the
         // selected frame start is still in the future, it returns `None`; the
         // host mirrors `next_frame_start()` into its timer queue and sleeps.
-        let Some(planned_frame) = self.take_ready_frame(now) else {
+        let Some(frame) = self.begin_frame(now) else {
             self.sync_frame_start_wake();
             self.arm_next_wake(started_at, event_loop);
             return;
         };
-        let plan = planned_frame.plan;
-        let hints = planned_frame.hints;
+        let plan = frame.plan();
         self.cancel_frame_start_wake();
 
         // Update application state and models here. Time-varying content samples
@@ -237,16 +231,9 @@ impl WindowState {
         // use it to pick content or configure platform-specific present timing.
         let submission = self.renderer.render(&plan, now);
 
-        let feedback = PresentFeedback::new(
-            &hints,
-            submission.build_start,
-            submission.submitted_at,
-            submission.actual_present,
-        );
-
-        // Feeding feedback back into the scheduler lets it adapt safety margins
-        // and pipeline depth when frames miss deadlines or submit too late.
-        self.surface_clock.driver.observe(&feedback);
+        // Submitting through the driver feeds scheduler feedback internally and
+        // returns the frameclock-owned timing summary a devtools view would use.
+        let summary = self.surface_clock.driver.submit_frame(frame, submission);
 
         if self.surface_clock.frame_index.is_multiple_of(60) {
             self.window.set_title(&format!(
@@ -262,7 +249,7 @@ impl WindowState {
                 plan.target_present.map(HostTime::ticks),
                 plan.commit_deadline.ticks(),
                 plan.pipeline_depth,
-                feedback.pacing_overrun,
+                summary.pacing_overrun,
             );
         }
 
@@ -336,15 +323,15 @@ impl DemoModel {
 }
 
 impl SyntheticRenderer {
-    fn render(&mut self, plan: &FramePlan, now: HostTime) -> SyntheticSubmission {
-        // This example has no renderer, so it invents a short build/submit span.
-        // A real app would measure actual CPU build start and queue submit time,
-        // then attach platform present feedback when available.
+    fn render(&mut self, plan: &FramePlan, now: HostTime) -> FrameSubmission {
+        // This example has no renderer, so it invents a short submit span.
+        // The driver recorded frame build start when it returned ActiveFrame;
+        // a real backend would provide the queue submit time and attach
+        // platform present feedback when available.
         let budget = plan.commit_deadline.saturating_duration_since(now);
         let build_cost = Duration(SYNTHETIC_BUILD_COST.ticks().min(budget.ticks()));
 
-        SyntheticSubmission {
-            build_start: now,
+        FrameSubmission {
             submitted_at: now + build_cost,
             actual_present: None,
         }

@@ -132,18 +132,35 @@ pub struct SchedulerStateEvent {
     pub state: SchedulerState,
 }
 
+/// Timing basis represented by a [`FrameTimingSummary`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FrameTimingBasis {
+    /// A platform-reported actual present timestamp was recorded.
+    ActualPresent,
+    /// A predicted or requested present timestamp was used, but no actual
+    /// present timestamp was recorded.
+    PredictedPresent,
+    /// The platform exposed pacing/deadline information but no reliable
+    /// present timestamp.
+    PacingOnly,
+    /// Only submission timing was recorded.
+    SubmissionOnly,
+}
+
 /// Per-frame summary of frameclock-owned timing and pacing facts.
 ///
 /// This is a compact aggregate for logs, counters, trace rows, and diagnostics
 /// UIs that do not need a host-specific frame-loop trace. It intentionally does
 /// not include app/render phases, layer changes, damage rectangles, or other
 /// renderer-owned concepts.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameTimingSummary {
     /// Monotonic frame counter.
     pub frame_index: u64,
     /// Target output for this frame.
     pub output: OutputId,
+    /// What kind of timing evidence this summary contains.
+    pub timing_basis: FrameTimingBasis,
     /// Timing confidence for the originating frame tick.
     pub confidence: TimingConfidence,
     /// Host time when the frame tick was generated or received.
@@ -272,10 +289,12 @@ impl FrameTimingSummaryBuilder {
             .feedback
             .filter(|feedback| feedback.frame_index == plan.frame_index);
         let scheduler_state = self.scheduler_state.map(|event| event.state);
+        let timing_basis = classify_timing_basis(tick, plan, submit, feedback);
 
         Some(FrameTimingSummary {
             frame_index: plan.frame_index,
             output: plan.output,
+            timing_basis,
             confidence: tick.confidence,
             tick_time: tick.now,
             predicted_present: tick.predicted_present,
@@ -296,6 +315,33 @@ impl FrameTimingSummaryBuilder {
             scheduler_state,
         })
     }
+}
+
+fn classify_timing_basis(
+    tick: FrameTickEvent,
+    plan: FramePlanEvent,
+    submit: Option<SubmitEvent>,
+    feedback: Option<PresentFeedbackEvent>,
+) -> FrameTimingBasis {
+    if feedback
+        .and_then(|feedback| feedback.actual_present)
+        .is_some()
+    {
+        return FrameTimingBasis::ActualPresent;
+    }
+
+    if tick.confidence == TimingConfidence::PacingOnly {
+        return FrameTimingBasis::PacingOnly;
+    }
+
+    if plan.target_present.is_some()
+        || tick.predicted_present.is_some()
+        || submit.and_then(|submit| submit.expected_present).is_some()
+    {
+        return FrameTimingBasis::PredictedPresent;
+    }
+
+    FrameTimingBasis::SubmissionOnly
 }
 
 /// Receives frameclock diagnostics events.
@@ -513,6 +559,7 @@ mod tests {
 
         assert_eq!(summary.frame_index, 7);
         assert_eq!(summary.output, OutputId(2));
+        assert_eq!(summary.timing_basis, FrameTimingBasis::ActualPresent);
         assert_eq!(summary.tick_time, HostTime(1_000));
         assert_eq!(summary.submitted_at, Some(HostTime(1_850)));
         assert_eq!(summary.actual_present, Some(HostTime(2_050)));
@@ -552,5 +599,73 @@ mod tests {
         assert_eq!(summary.actual_present, None);
         assert_eq!(summary.missed_deadline, None);
         assert_eq!(summary.pacing_overrun, None);
+    }
+
+    #[test]
+    fn timing_summary_classifies_predicted_present() {
+        let tick = sample_tick();
+        let plan = sample_plan();
+        let submit = SubmitEvent {
+            frame_index: 7,
+            submitted_at: HostTime(1_850),
+            expected_present: Some(HostTime(2_000)),
+        };
+
+        let mut builder = FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &plan);
+        builder.record_submit(&submit);
+        let summary = builder
+            .finish()
+            .expect("matching tick and plan should produce a summary");
+
+        assert_eq!(summary.timing_basis, FrameTimingBasis::PredictedPresent);
+        assert_eq!(summary.actual_present, None);
+    }
+
+    #[test]
+    fn timing_summary_classifies_pacing_only() {
+        let mut tick = sample_tick();
+        tick.predicted_present = None;
+        tick.confidence = TimingConfidence::PacingOnly;
+        let mut plan = sample_plan();
+        plan.target_present = None;
+        let submit = SubmitEvent {
+            frame_index: 7,
+            submitted_at: HostTime(1_850),
+            expected_present: None,
+        };
+
+        let mut builder = FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &plan);
+        builder.record_submit(&submit);
+        let summary = builder
+            .finish()
+            .expect("matching tick and plan should produce a summary");
+
+        assert_eq!(summary.timing_basis, FrameTimingBasis::PacingOnly);
+        assert_eq!(summary.actual_present, None);
+        assert_eq!(summary.expected_present, None);
+    }
+
+    #[test]
+    fn timing_summary_classifies_submission_only() {
+        let mut tick = sample_tick();
+        tick.predicted_present = None;
+        tick.confidence = TimingConfidence::Estimated;
+        let mut plan = sample_plan();
+        plan.target_present = None;
+        let submit = SubmitEvent {
+            frame_index: 7,
+            submitted_at: HostTime(1_850),
+            expected_present: None,
+        };
+
+        let mut builder = FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &plan);
+        builder.record_submit(&submit);
+        let summary = builder
+            .finish()
+            .expect("matching tick and plan should produce a summary");
+
+        assert_eq!(summary.timing_basis, FrameTimingBasis::SubmissionOnly);
+        assert_eq!(summary.actual_present, None);
+        assert_eq!(summary.expected_present, None);
     }
 }

@@ -21,8 +21,8 @@
 use std::time::Duration as StdDuration;
 
 use frameclock::{
-    ActiveFrame, Duration, FrameDemand, FrameDriver, FrameOpportunity, FramePlan, FrameSubmission,
-    HostTime, OutputId, SchedulerConfig,
+    Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameOpportunity, FramePlan,
+    FrameSubmission, HostTime, OutputId, SchedulerConfig,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;
@@ -140,19 +140,6 @@ impl WindowState {
         ));
     }
 
-    /// Mirrors the frame driver's queued frame-start time into the host timer.
-    ///
-    /// This keeps timer ownership at the app/window level. `frameclock`
-    /// decides the start time; the host decides how that wake is merged with
-    /// input, animation, layout, and other app timers.
-    fn sync_frame_start_wake(&mut self) {
-        if let Some(frame_start) = self.surface_clock.driver.next_frame_start() {
-            self.schedule_frame_start(frame_start);
-        } else {
-            self.cancel_frame_start_wake();
-        }
-    }
-
     fn arm_next_wake(&self, started_at: Instant, event_loop: &ActiveEventLoop) {
         match self.timers.next_deadline() {
             Some(deadline) => {
@@ -167,7 +154,7 @@ impl WindowState {
         }
     }
 
-    fn begin_frame(&mut self, now: HostTime) -> Option<ActiveFrame> {
+    fn begin_frame(&mut self, now: HostTime) -> FrameBeginResult {
         // Plain winit does not expose a future present timestamp here, so this
         // example uses a pacing-only opportunity with a conservative "submit
         // by around the next refresh" boundary.
@@ -177,7 +164,7 @@ impl WindowState {
             self.surface_clock.frame_index,
             self.surface_clock.output,
         );
-        self.surface_clock.driver.begin_frame(opportunity)
+        self.surface_clock.driver.begin_frame_result(opportunity)
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -188,12 +175,20 @@ impl WindowState {
 
         // RedrawRequested is winit's signal that the app may build or plan a
         // frame. The driver owns pending demand and queued frame plans. If the
-        // selected frame start is still in the future, it returns `None`; the
-        // host mirrors `next_frame_start()` into its timer queue and sleeps.
-        let Some(frame) = self.begin_frame(now) else {
-            self.sync_frame_start_wake();
-            self.arm_next_wake(started_at, event_loop);
-            return;
+        // selected frame start is still in the future, the host mirrors the
+        // returned wake time into its timer queue and sleeps.
+        let frame = match self.begin_frame(now) {
+            FrameBeginResult::Ready(frame) => frame,
+            FrameBeginResult::WaitUntil(frame_start) => {
+                self.schedule_frame_start(frame_start);
+                self.arm_next_wake(started_at, event_loop);
+                return;
+            }
+            FrameBeginResult::Idle => {
+                self.cancel_frame_start_wake();
+                self.arm_next_wake(started_at, event_loop);
+                return;
+            }
         };
         let plan = frame.plan();
         self.cancel_frame_start_wake();

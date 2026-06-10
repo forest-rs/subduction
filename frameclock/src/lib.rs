@@ -35,8 +35,8 @@
 //!
 //! ```text
 //! platform tick -> FrameOpportunity
-//!               -> FrameDriver::begin_frame()
-//!               -> ActiveFrame
+//!               -> FrameDriver::begin_frame_result()
+//!               -> FrameBeginResult::Ready(ActiveFrame)
 //!               -> build frame
 //!               -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
 //!               -> FrameTimingSummary
@@ -46,8 +46,8 @@
 //!
 //! ```rust,ignore
 //! use frameclock::{
-//!     Duration, FrameDemand, FrameDriver, FrameOpportunity, FrameSubmission,
-//!     HostTime, OutputId, SchedulerConfig,
+//!     Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameOpportunity,
+//!     FrameSubmission, HostTime, OutputId, SchedulerConfig,
 //! };
 //!
 //! let mut driver = FrameDriver::new(SchedulerConfig::pacing_only());
@@ -64,16 +64,25 @@
 //!     OutputId(0),
 //! );
 //!
-//! if let Some(frame) = driver.begin_frame(opportunity) {
-//!     let sample_time = frame.sample_time();
-//!     // Prepare app/model/render state for `sample_time`, submit renderer work,
-//!     // then report submission facts back to frameclock. If the frame cannot
-//!     // be submitted, call `discard_frame` instead.
-//!     let summary = driver.submit_frame(
-//!         frame,
-//!         FrameSubmission::new(HostTime(2_000_000), None),
-//!     );
-//!     _ = summary;
+//! match driver.begin_frame_result(opportunity) {
+//!     FrameBeginResult::Ready(frame) => {
+//!         let sample_time = frame.sample_time();
+//!         // Prepare app/model/render state for `sample_time`, submit renderer work,
+//!         // then report submission facts back to frameclock. If the frame cannot
+//!         // be submitted, call `discard_frame` instead.
+//!         let summary = driver.submit_frame(
+//!             frame,
+//!             FrameSubmission::new(HostTime(2_000_000), None),
+//!         );
+//!         _ = summary;
+//!     }
+//!     FrameBeginResult::WaitUntil(frame_start) => {
+//!         // Mirror `frame_start` into the host timer queue and wait.
+//!         _ = frame_start;
+//!     }
+//!     FrameBeginResult::Idle => {
+//!         // Wait for input, animation, timers, or other app demand.
+//!     }
 //! }
 //! ```
 //!
@@ -96,7 +105,9 @@ pub mod timing;
 
 pub use demand::{FrameDemand, FrameDemandClass};
 pub use diagnostics::{FrameDropReason, FrameTimingBasis, FrameTimingSummary};
-pub use driver::{ActiveFrame, FrameDriver, FrameOpportunity, FrameSubmission, PlannedFrame};
+pub use driver::{
+    ActiveFrame, FrameBeginResult, FrameDriver, FrameOpportunity, FrameSubmission, PlannedFrame,
+};
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
 pub use time::{Duration, HostTime, Timebase};

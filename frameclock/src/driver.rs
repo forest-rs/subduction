@@ -217,14 +217,27 @@ impl FrameSubmission {
     }
 }
 
+/// Result of asking a [`FrameDriver`] to begin frame work.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FrameBeginResult {
+    /// No demand or queued frame is waiting.
+    Idle,
+    /// A frame has been planned, but its selected start time has not arrived.
+    ///
+    /// Hosts should mirror this time into their event-loop or timer queue and
+    /// call [`FrameDriver::begin_frame_result`] again from the wake/redraw path.
+    WaitUntil(HostTime),
+    /// A planned frame is ready for application update and rendering.
+    Ready(ActiveFrame),
+}
+
 /// Driver for pending demand, queued frame plans, and frame feedback.
 ///
 /// `FrameDriver` is a small retained layer above [`Scheduler`]. Hosts call
 /// [`request`](Self::request) when app-visible frame demand arrives, then call
-/// [`begin_frame`](Self::begin_frame) from a platform redraw/tick opportunity. If
-/// the scheduler chooses a future [`FramePlan::frame_start`], the driver keeps
-/// that plan queued and exposes the wake time through
-/// [`next_frame_start`](Self::next_frame_start).
+/// [`begin_frame_result`](Self::begin_frame_result) from a platform redraw/tick
+/// opportunity. If the scheduler chooses a future [`FramePlan::frame_start`],
+/// the driver keeps that plan queued and returns [`FrameBeginResult::WaitUntil`].
 ///
 /// Submit completed frames with [`submit_frame`](Self::submit_frame) so
 /// `frameclock` can observe feedback and produce the frame timing summary.
@@ -235,13 +248,13 @@ impl FrameSubmission {
 ///
 /// 1. Call [`request`](Self::request) with non-empty [`FrameDemand`] when input,
 ///    animation, layout, or other app-visible work needs a frame.
-/// 2. Call [`begin_frame`](Self::begin_frame) from a redraw/tick opportunity.
-///    This is the only public method that consumes pending demand into a
-///    planned frame.
-/// 3. If it returns `None`, mirror
-///    [`next_frame_start`](Self::next_frame_start) into the host timer queue
-///    when present, then sleep or wait for more demand.
-/// 4. If it returns [`ActiveFrame`], sample app state at
+/// 2. Call [`begin_frame_result`](Self::begin_frame_result) from a redraw/tick
+///    opportunity. This is the preferred public method for consuming pending
+///    demand into a planned frame.
+/// 3. If it returns [`FrameBeginResult::WaitUntil`], mirror that time into the
+///    host timer queue and sleep. If it returns [`FrameBeginResult::Idle`],
+///    wait for more demand.
+/// 4. If it returns [`FrameBeginResult::Ready`], sample app state at
 ///    [`ActiveFrame::sample_time`], then either submit it with
 ///    [`submit_frame`](Self::submit_frame) or drop it with
 ///    [`discard_frame`](Self::discard_frame).
@@ -252,6 +265,14 @@ impl FrameSubmission {
 /// This keeps demand preemption, feedback observation, and summary construction
 /// inside `frameclock` while leaving timer queues, event-loop wake mechanics,
 /// renderer submission, and native surface lifecycle in the host.
+///
+/// # Queued plans
+///
+/// Queued plans are replayed as decided. If a plan is created at tick `T` with
+/// a future frame start, a later wake releases the same [`FramePlan`],
+/// [`FrameTick`], and [`PresentHints`]. The returned [`ActiveFrame`] records
+/// the later wake time as [`ActiveFrame::build_start`], so diagnostics and
+/// budget calculations can still see that the host woke late.
 #[derive(Debug)]
 pub struct FrameDriver {
     scheduler: Scheduler,
@@ -341,16 +362,39 @@ impl FrameDriver {
 
     /// Begins a frame when pending demand is ready to prepare.
     ///
-    /// This is the normal host entry point for converting a platform frame
-    /// opportunity into frame work. It is the only public method that consumes
-    /// pending demand into a ready frame. If the selected frame start is still
-    /// in the future, this stores the planned frame internally and returns
-    /// `None`; hosts should arm their own timer for
-    /// [`next_frame_start`](Self::next_frame_start).
+    /// This is the lower-level entry point for hosts that only need to know
+    /// whether work is ready now. Prefer
+    /// [`begin_frame_result`](Self::begin_frame_result) when the host also
+    /// wants to distinguish "idle" from "waiting for a queued frame start".
     #[must_use]
     pub fn begin_frame(&mut self, opportunity: FrameOpportunity) -> Option<ActiveFrame> {
-        self.take_ready(opportunity)
-            .map(|frame| ActiveFrame::new(frame, opportunity.tick.now))
+        match self.begin_frame_result(opportunity) {
+            FrameBeginResult::Ready(frame) => Some(frame),
+            FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => None,
+        }
+    }
+
+    /// Begins a frame, waits for a queued frame start, or reports idleness.
+    ///
+    /// This is the normal host entry point for converting a platform frame
+    /// opportunity into frame work. It is the preferred public method that
+    /// consumes pending demand into a ready frame. If the selected frame start
+    /// is still in the future, this stores the planned frame internally and
+    /// returns [`FrameBeginResult::WaitUntil`] with the wake time the host
+    /// should mirror into its timer queue.
+    ///
+    /// When a queued frame becomes ready, the returned [`ActiveFrame`] carries
+    /// the original planning tick and plan. Its [`ActiveFrame::build_start`] is
+    /// the current opportunity time that released the queued frame.
+    #[must_use]
+    pub fn begin_frame_result(&mut self, opportunity: FrameOpportunity) -> FrameBeginResult {
+        match self.take_ready(opportunity) {
+            Some(frame) => FrameBeginResult::Ready(ActiveFrame::new(frame, opportunity.tick.now)),
+            None => match self.next_frame_start() {
+                Some(frame_start) => FrameBeginResult::WaitUntil(frame_start),
+                None => FrameBeginResult::Idle,
+            },
+        }
     }
 
     /// Reports that an active frame was submitted and returns its timing
@@ -570,6 +614,10 @@ mod tests {
         driver.begin_frame(opportunity(now, 0))
     }
 
+    fn begin_result_at(driver: &mut FrameDriver, now: u64) -> FrameBeginResult {
+        driver.begin_frame_result(opportunity(now, 0))
+    }
+
     #[test]
     fn pacing_only_opportunity_fills_common_host_defaults() {
         let opportunity =
@@ -600,6 +648,7 @@ mod tests {
         let mut driver = driver();
 
         assert_eq!(begin_at(&mut driver, 0), None);
+        assert_eq!(begin_result_at(&mut driver, 0), FrameBeginResult::Idle);
         assert_eq!(driver.next_frame_start(), None);
     }
 
@@ -610,6 +659,10 @@ mod tests {
 
         assert_eq!(begin_at(&mut driver, 0), None);
         assert_eq!(driver.next_frame_start(), Some(HostTime(90)));
+        assert_eq!(
+            begin_result_at(&mut driver, 89),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        );
         assert_eq!(begin_at(&mut driver, 89), None);
 
         let frame = begin_at(&mut driver, 90).expect("queued frame should be ready");
@@ -617,7 +670,27 @@ mod tests {
         assert_eq!(frame.build_start(), HostTime(90));
         assert_eq!(frame.plan().demand, FrameDemand::ANIMATION);
         assert_eq!(frame.plan().frame_start, HostTime(90));
+        assert_eq!(frame.plan().sample_time, HostTime(100));
+        assert_eq!(frame.plan().commit_deadline, HostTime(100));
         assert_eq!(driver.next_frame_start(), None);
+    }
+
+    #[test]
+    fn begin_frame_result_returns_ready_frame() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert_eq!(
+            begin_result_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        );
+
+        let result = begin_result_at(&mut driver, 90);
+        let FrameBeginResult::Ready(frame) = result else {
+            panic!("expected ready frame");
+        };
+        assert_eq!(frame.tick().now, HostTime(0));
+        assert_eq!(frame.build_start(), HostTime(90));
+        assert_eq!(frame.plan().sample_time, HostTime(100));
     }
 
     #[test]

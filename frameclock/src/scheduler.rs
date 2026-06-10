@@ -40,7 +40,11 @@ pub enum DegradationPolicy {
 /// Configuration for the [`Scheduler`].
 #[derive(Clone, Copy, Debug)]
 pub struct SchedulerConfig {
-    /// Initial pipeline depth (1–3).
+    /// Initial pipeline depth.
+    ///
+    /// A value of 1 means no extra whole-frame lookahead. Higher values shift
+    /// non-input plans further into the future by whole selected frame
+    /// intervals.
     pub initial_depth: u8,
     /// Minimum pipeline depth.
     pub min_depth: u8,
@@ -48,9 +52,9 @@ pub struct SchedulerConfig {
     pub max_depth: u8,
     /// EMA smoothing factor for build cost estimation (0.0–1.0).
     /// Smaller values = more smoothing.
-    pub ema_alpha: f32,
+    pub ema_alpha: f64,
     /// Safety margin multiplier applied to the EMA build cost.
-    pub safety_multiplier: f32,
+    pub safety_multiplier: f64,
     /// Minimum margin subtracted from the commit deadline to compute
     /// [`FramePlan::frame_start`].
     ///
@@ -72,7 +76,7 @@ impl SchedulerConfig {
     #[must_use]
     pub const fn predictive() -> Self {
         Self {
-            initial_depth: 2,
+            initial_depth: 1,
             min_depth: 1,
             max_depth: 3,
             ema_alpha: 0.2,
@@ -93,7 +97,7 @@ impl SchedulerConfig {
     #[must_use]
     pub const fn estimated() -> Self {
         Self {
-            initial_depth: 2,
+            initial_depth: 1,
             min_depth: 1,
             max_depth: 3,
             ema_alpha: 0.2,
@@ -114,7 +118,7 @@ impl SchedulerConfig {
     #[must_use]
     pub const fn pacing_only() -> Self {
         Self {
-            initial_depth: 2,
+            initial_depth: 1,
             min_depth: 1,
             max_depth: 3,
             ema_alpha: 0.15,
@@ -146,13 +150,13 @@ pub struct SchedulerState {
 /// Exponential moving average tracker.
 #[derive(Clone, Copy, Debug)]
 struct Ema {
-    value: f32,
-    alpha: f32,
+    value: f64,
+    alpha: f64,
     initialized: bool,
 }
 
 impl Ema {
-    const fn new(alpha: f32) -> Self {
+    const fn new(alpha: f64) -> Self {
         Self {
             value: 0.0,
             alpha,
@@ -160,7 +164,7 @@ impl Ema {
         }
     }
 
-    fn update(&mut self, sample: f32) {
+    fn update(&mut self, sample: f64) {
         if self.initialized {
             self.value = self.alpha * sample + (1.0 - self.alpha) * self.value;
         } else {
@@ -169,8 +173,12 @@ impl Ema {
         }
     }
 
-    const fn get(&self) -> f32 {
+    const fn get(&self) -> f64 {
         self.value
+    }
+
+    const fn initialized(&self) -> bool {
+        self.initialized
     }
 }
 
@@ -179,12 +187,13 @@ impl Ema {
 ///
 /// # Pipeline depth
 ///
-/// Pipeline depth controls how many frames ahead the engine works, bounded
-/// by [`SchedulerConfig::min_depth`] and [`SchedulerConfig::max_depth`].
-/// A depth of 1 means the engine builds and submits each frame just before
-/// its deadline (lowest latency, highest risk of missing deadlines). A depth
-/// of 3 means the engine may be building frames two intervals ahead
-/// (higher latency, but more time budget to absorb spikes).
+/// Pipeline depth controls how many selected frame intervals ahead the
+/// scheduler plans non-input work, bounded by [`SchedulerConfig::min_depth`]
+/// and [`SchedulerConfig::max_depth`]. A depth of 1 means no extra whole-frame
+/// lookahead (lowest latency, highest risk of missing deadlines). A depth of 3
+/// means animation/background/continuous-input plans target two selected
+/// intervals beyond the next eligible present slot. One-shot input remains
+/// latency-first and is not shifted by pipeline depth.
 ///
 /// # Adaptive behavior
 ///
@@ -218,7 +227,13 @@ pub struct Scheduler {
 impl Scheduler {
     /// Creates a new scheduler with the given configuration.
     #[must_use]
-    pub fn new(config: SchedulerConfig) -> Self {
+    pub fn new(mut config: SchedulerConfig) -> Self {
+        config.min_depth = config.min_depth.max(1);
+        config.max_depth = config.max_depth.max(config.min_depth);
+        config.initial_depth = config
+            .initial_depth
+            .clamp(config.min_depth, config.max_depth);
+
         Self {
             pipeline_depth: config.initial_depth,
             build_cost_ema: Ema::new(config.ema_alpha),
@@ -241,14 +256,14 @@ impl Scheduler {
         let tick = request.tick;
         let hints = request.hints;
         let source_interval = self.source_interval(request);
-        let frame_start_margin = self.frame_start_margin();
+        let build_cost = self.build_cost_estimate();
         let frame_interval = self.frame_interval(
             request.demand,
             request.display_timing,
             source_interval,
-            frame_start_margin,
+            build_cost,
         );
-        let schedule_delta = frame_interval.saturating_sub(source_interval);
+        let schedule_delta = self.schedule_delta(request.demand, frame_interval, source_interval);
         let platform_present = hints.desired_present.or(tick.predicted_present);
         let base_present = platform_present
             .unwrap_or_else(|| tick.now.checked_add(source_interval).unwrap_or(tick.now));
@@ -286,6 +301,25 @@ impl Scheduler {
         }
     }
 
+    fn schedule_delta(
+        &self,
+        demand: FrameDemand,
+        frame_interval: Duration,
+        source_interval: Duration,
+    ) -> Duration {
+        let cadence_delta = frame_interval.saturating_sub(source_interval);
+        let depth_delta = self.depth_lookahead_delta(demand, frame_interval);
+        cadence_delta.saturating_add(depth_delta)
+    }
+
+    fn depth_lookahead_delta(&self, demand: FrameDemand, frame_interval: Duration) -> Duration {
+        if demand.dominant_class() == FrameDemandClass::Input {
+            return Duration::ZERO;
+        }
+
+        frame_interval.saturating_mul(u64::from(self.pipeline_depth.saturating_sub(1)))
+    }
+
     fn source_interval(&self, request: FrameRequest) -> Duration {
         request
             .tick
@@ -307,7 +341,7 @@ impl Scheduler {
         demand: FrameDemand,
         display: DisplayTiming,
         source_interval: Duration,
-        frame_start_margin: Duration,
+        build_cost: Duration,
     ) -> Duration {
         let source_interval = if source_interval.is_zero() {
             display.min_interval()
@@ -317,11 +351,9 @@ impl Scheduler {
         let policy = demand.dominant_class();
         let needed = match policy {
             FrameDemandClass::None | FrameDemandClass::Input => return source_interval,
-            FrameDemandClass::ContinuousInput => frame_start_margin,
-            FrameDemandClass::Animation => {
-                frame_start_margin.saturating_add(source_interval.div_u64(4))
-            }
-            FrameDemandClass::Background => frame_start_margin
+            FrameDemandClass::ContinuousInput => build_cost,
+            FrameDemandClass::Animation => build_cost.saturating_add(source_interval.div_u64(4)),
+            FrameDemandClass::Background => build_cost
                 .saturating_add(source_interval.div_u64(4))
                 .max(source_interval.saturating_mul(2)),
         };
@@ -354,6 +386,21 @@ impl Scheduler {
         }
     }
 
+    fn build_cost_estimate(&self) -> Duration {
+        if !self.build_cost_ema.initialized() {
+            return Duration::ZERO;
+        }
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "EMA samples are non-negative host-time ticks and clamp before conversion"
+        )]
+        {
+            Duration(self.build_cost_ema.get().max(0.0) as u64)
+        }
+    }
+
     /// Feeds presentation feedback to adapt scheduling parameters.
     pub fn observe(&mut self, feedback: &PresentFeedback) {
         // Update build cost EMA.
@@ -361,7 +408,7 @@ impl Scheduler {
             .submitted_at
             .saturating_duration_since(feedback.build_start)
             .ticks();
-        self.build_cost_ema.update(build_ticks as f32);
+        self.build_cost_ema.update(build_ticks as f64);
 
         // Update safety margin.
         #[expect(
@@ -629,8 +676,18 @@ mod tests {
     #[test]
     fn animation_uses_stable_fixed_rate_divisor_when_work_is_slow() {
         let mut config = SchedulerConfig::predictive();
-        config.minimum_frame_start_margin = Duration(20_000_000);
+        config.ema_alpha = 1.0;
+        config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(21_000_000),
+            build_start: HostTime(1_000_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+        sched.observe(&feedback);
 
         let plan = sched.plan(make_request(
             TimingConfidence::Predictive,
@@ -647,10 +704,51 @@ mod tests {
     }
 
     #[test]
+    fn safety_multiplier_does_not_force_cadence_drop() {
+        let mut config = SchedulerConfig::predictive();
+        config.ema_alpha = 1.0;
+        config.safety_multiplier = 4.0;
+        config.minimum_frame_start_margin = Duration::ZERO;
+        let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(11_000_000),
+            build_start: HostTime(1_000_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+        sched.observe(&feedback);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000_000,
+            Some(50_000_000),
+            50_000_000,
+            FrameDemand::ANIMATION,
+        ));
+
+        assert_eq!(sched.safety_margin_ticks(), 40_000_000);
+        assert_eq!(plan.frame_interval, REFRESH_INTERVAL);
+        assert_eq!(plan.commit_deadline, HostTime(50_000_000));
+        assert_eq!(plan.frame_start, HostTime(10_000_000));
+    }
+
+    #[test]
     fn variable_refresh_without_granularity_uses_stable_divisor() {
         let mut config = SchedulerConfig::predictive();
-        config.minimum_frame_start_margin = Duration(12_000_000);
+        config.ema_alpha = 1.0;
+        config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(13_000_000),
+            build_start: HostTime(1_000_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+        sched.observe(&feedback);
         let tick = FrameTick {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
@@ -685,8 +783,18 @@ mod tests {
     #[test]
     fn variable_refresh_with_granularity_uses_direct_step() {
         let mut config = SchedulerConfig::predictive();
-        config.minimum_frame_start_margin = Duration(12_000_000);
+        config.ema_alpha = 1.0;
+        config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(13_000_000),
+            build_start: HostTime(1_000_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+        sched.observe(&feedback);
         let tick = FrameTick {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
@@ -722,7 +830,7 @@ mod tests {
     fn pipeline_depth_increases_after_misses() {
         let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
 
         let feedback = PresentFeedback {
             submitted_at: HostTime(2000),
@@ -734,11 +842,60 @@ mod tests {
         };
 
         sched.observe(&feedback);
-        assert_eq!(sched.pipeline_depth(), 2); // 1 miss
+        assert_eq!(sched.pipeline_depth(), 1); // 1 miss
         sched.observe(&feedback);
-        assert_eq!(sched.pipeline_depth(), 2); // 2 misses
+        assert_eq!(sched.pipeline_depth(), 1); // 2 misses
         sched.observe(&feedback);
-        assert_eq!(sched.pipeline_depth(), 3); // 3 misses → increase
+        assert_eq!(sched.pipeline_depth(), 2); // 3 misses → increase
+    }
+
+    #[test]
+    fn pipeline_depth_shifts_non_input_plan_by_whole_intervals() {
+        let mut config = SchedulerConfig::predictive();
+        config.initial_depth = 3;
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000,
+            Some(2_000),
+            1_800,
+            FrameDemand::ANIMATION,
+        ));
+
+        let lookahead = REFRESH_INTERVAL.saturating_mul(2);
+        assert_eq!(plan.pipeline_depth, 3);
+        assert_eq!(plan.frame_interval, REFRESH_INTERVAL);
+        assert_eq!(plan.target_present, Some(HostTime(2_000) + lookahead));
+        assert_eq!(plan.sample_time, HostTime(2_000) + lookahead);
+        assert_eq!(plan.commit_deadline, HostTime(1_800) + lookahead);
+        assert_eq!(
+            plan.frame_start,
+            HostTime(1_800) + lookahead - Duration(250)
+        );
+    }
+
+    #[test]
+    fn pipeline_depth_does_not_shift_one_shot_input() {
+        let mut config = SchedulerConfig::predictive();
+        config.initial_depth = 3;
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(make_request(
+            TimingConfidence::Predictive,
+            1_000,
+            Some(2_000),
+            1_800,
+            FrameDemand::INPUT,
+        ));
+
+        assert_eq!(plan.pipeline_depth, 3);
+        assert_eq!(plan.target_present, Some(HostTime(2_000)));
+        assert_eq!(plan.sample_time, HostTime(2_000));
+        assert_eq!(plan.commit_deadline, HostTime(1_800));
+        assert_eq!(plan.frame_start, HostTime(1_000));
     }
 
     #[test]
@@ -765,7 +922,7 @@ mod tests {
         sched.observe(&miss);
         sched.observe(&miss);
         // Only 2 consecutive misses, should not increase.
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
     }
 
     #[test]
@@ -796,6 +953,7 @@ mod tests {
     fn fixed_policy_never_changes_depth() {
         let mut config = SchedulerConfig::predictive();
         config.degradation_policy = DegradationPolicy::Fixed;
+        config.initial_depth = 2;
         let mut sched = Scheduler::new(config);
         assert_eq!(sched.pipeline_depth(), 2);
 
@@ -838,14 +996,15 @@ mod tests {
         for _ in 0..4 {
             sched.observe(&miss);
         }
-        assert_eq!(sched.pipeline_depth(), 2); // 4 misses, threshold is 5
+        assert_eq!(sched.pipeline_depth(), 1); // 4 misses, threshold is 5
         sched.observe(&miss); // 5th miss → increase
-        assert_eq!(sched.pipeline_depth(), 3);
+        assert_eq!(sched.pipeline_depth(), 2);
     }
 
     #[test]
     fn recovery_respects_min_depth() {
         let mut config = SchedulerConfig::predictive();
+        config.initial_depth = 2;
         config.degradation_policy = DegradationPolicy::Adaptive {
             miss_threshold: 3,
             recovery_threshold: 2,
@@ -918,11 +1077,11 @@ mod tests {
         // Two more misses — total consecutive is only 2, not 4.
         sched.observe(&miss);
         sched.observe(&miss);
-        assert_eq!(sched.pipeline_depth(), 2, "counter should have been reset");
+        assert_eq!(sched.pipeline_depth(), 1, "counter should have been reset");
 
         // One more miss pushes to 3 consecutive → depth increases.
         sched.observe(&miss);
-        assert_eq!(sched.pipeline_depth(), 3);
+        assert_eq!(sched.pipeline_depth(), 2);
     }
 
     #[test]
@@ -943,7 +1102,7 @@ mod tests {
             sched.observe(&unknown);
         }
 
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
         assert!(
             sched.safety_margin_ticks() > 0,
             "unknown deadline feedback should still train build-cost EMA"
@@ -959,7 +1118,7 @@ mod tests {
             recovery_threshold: 10,
         };
         let mut sched = Scheduler::new(config);
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
 
         let miss = PresentFeedback {
             submitted_at: HostTime(2000),
@@ -1016,10 +1175,10 @@ mod tests {
         for _ in 0..5 {
             sched.observe(&overrun);
         }
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
 
         sched.observe(&overrun);
-        assert_eq!(sched.pipeline_depth(), 3);
+        assert_eq!(sched.pipeline_depth(), 2);
     }
 
     #[test]
@@ -1048,8 +1207,8 @@ mod tests {
             sched.observe(&overrun);
         }
 
-        assert_eq!(sched.pipeline_depth(), 2);
+        assert_eq!(sched.pipeline_depth(), 1);
         sched.observe(&overrun);
-        assert_eq!(sched.pipeline_depth(), 3);
+        assert_eq!(sched.pipeline_depth(), 2);
     }
 }

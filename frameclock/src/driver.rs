@@ -10,13 +10,15 @@
 
 use crate::demand::FrameDemand;
 use crate::diagnostics::{
-    FramePlanEvent, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
-    PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
+    FrameDropEvent, FrameDropReason, FramePlanEvent, FrameTickEvent, FrameTimingSummary,
+    FrameTimingSummaryBuilder, PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };
+use crate::output::OutputId;
 use crate::scheduler::{Scheduler, SchedulerConfig};
-use crate::time::HostTime;
+use crate::time::{Duration, HostTime};
 use crate::timing::{
     DisplayTiming, FramePlan, FrameRequest, FrameTick, PresentFeedback, PresentHints,
+    TimingConfidence,
 };
 
 /// A platform frame opportunity for retained driver lifecycle APIs.
@@ -24,6 +26,12 @@ use crate::timing::{
 /// Hosts construct this from the current display/frame callback. `FrameDriver`
 /// combines it with pending demand to decide whether a frame should begin now
 /// or whether a planned frame should remain queued until its frame-start time.
+///
+/// `frame_index` is owned by the host/backend and should identify one planned
+/// content frame for one output. When using [`FrameDriver`], advance it after
+/// an [`ActiveFrame`] is submitted or discarded. Do not advance it merely
+/// because a frame-start wake fired while an older planned frame was still
+/// queued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameOpportunity {
     /// Platform frame opportunity.
@@ -44,6 +52,45 @@ impl FrameOpportunity {
             hints,
             display_timing,
         }
+    }
+
+    /// Creates a pacing-only frame opportunity.
+    ///
+    /// Use this from hosts that have a monotonic clock and a nominal refresh
+    /// interval but no reliable predicted present timestamp. The returned
+    /// opportunity uses:
+    ///
+    /// - [`TimingConfidence::PacingOnly`],
+    /// - no predicted or desired present time,
+    /// - `latest_commit = now + refresh_interval`, saturating at `u64::MAX`,
+    /// - [`DisplayTiming::fixed`] with `refresh_interval`.
+    ///
+    /// The host owns `frame_index`; with [`FrameDriver`], increment it after an
+    /// [`ActiveFrame`] is submitted or discarded.
+    #[inline]
+    #[must_use]
+    pub fn pacing_only(
+        now: HostTime,
+        refresh_interval: Duration,
+        frame_index: u64,
+        output: OutputId,
+    ) -> Self {
+        let tick = FrameTick {
+            now,
+            predicted_present: None,
+            refresh_interval: Some(refresh_interval.ticks()),
+            confidence: TimingConfidence::PacingOnly,
+            frame_index,
+            output,
+            prev_actual_present: None,
+        };
+        let hints = PresentHints {
+            desired_present: None,
+            latest_commit: now
+                .checked_add(refresh_interval)
+                .unwrap_or(HostTime(u64::MAX)),
+        };
+        Self::new(tick, hints, DisplayTiming::fixed(refresh_interval))
     }
 }
 
@@ -91,6 +138,12 @@ impl PlannedFrame {
 /// `ActiveFrame` is the normal host handle for frame work. It carries the
 /// scheduler plan plus the original planning facts needed to resolve feedback
 /// and build a [`FrameTimingSummary`] when the host submits the frame.
+///
+/// Treat an `ActiveFrame` as a single-use lifecycle token. A host should either
+/// pass it to [`FrameDriver::submit_frame`] after renderer submission or to
+/// [`FrameDriver::discard_frame`] / [`FrameDriver::discard_frame_with_reason`]
+/// if no submission will happen. Dropping the Rust value without reporting it
+/// loses diagnostics, but it does not update scheduler feedback.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActiveFrame {
     planned: PlannedFrame,
@@ -177,6 +230,24 @@ impl FrameSubmission {
 /// `frameclock` can observe feedback and produce the frame timing summary.
 /// Discard frames that will not be submitted with
 /// [`discard_frame`](Self::discard_frame).
+///
+/// # Lifecycle
+///
+/// 1. Call [`request`](Self::request) with non-empty [`FrameDemand`] when input,
+///    animation, layout, or other app-visible work needs a frame.
+/// 2. Call [`begin_frame`](Self::begin_frame) from a redraw/tick opportunity.
+///    This is the only public method that consumes pending demand into a
+///    planned frame.
+/// 3. If it returns `None`, mirror
+///    [`next_frame_start`](Self::next_frame_start) into the host timer queue
+///    when present, then sleep or wait for more demand.
+/// 4. If it returns [`ActiveFrame`], sample app state at
+///    [`ActiveFrame::sample_time`], then either submit it with
+///    [`submit_frame`](Self::submit_frame) or drop it with
+///    [`discard_frame`](Self::discard_frame).
+/// 5. After submit or discard, call
+///    [`has_pending_demand`](Self::has_pending_demand). If it is true, request
+///    another redraw so weaker retained demand can be planned on a fresh turn.
 ///
 /// This keeps demand preemption, feedback observation, and summary construction
 /// inside `frameclock` while leaving timer queues, event-loop wake mechanics,
@@ -327,8 +398,43 @@ impl FrameDriver {
     }
 
     /// Drops an active frame without feeding scheduler feedback.
-    pub fn discard_frame(&mut self, frame: ActiveFrame) {
-        _ = frame;
+    ///
+    /// This returns a [`FrameTimingSummary`] with
+    /// [`FrameTimingSummary::drop_reason`] set to
+    /// [`FrameDropReason::Discarded`]. Scheduler adaptation state is sampled
+    /// for diagnostics, but [`Scheduler::observe`] is not called.
+    #[must_use]
+    pub fn discard_frame(&mut self, frame: ActiveFrame) -> FrameTimingSummary {
+        self.discard_frame_with_reason(frame, FrameDropReason::Discarded)
+    }
+
+    /// Drops an active frame with an explicit reason and without feeding
+    /// scheduler feedback.
+    ///
+    /// Dropping a frame is a host lifecycle fact, not presentation feedback.
+    /// The returned summary is useful for traces and devtools, but this method
+    /// deliberately does not call [`Scheduler::observe`].
+    #[must_use]
+    pub fn discard_frame_with_reason(
+        &mut self,
+        frame: ActiveFrame,
+        reason: FrameDropReason,
+    ) -> FrameTimingSummary {
+        let tick_event = FrameTickEvent::from(&frame.tick());
+        let plan = frame.plan();
+        let plan_event = FramePlanEvent::new(&plan, frame.safety_margin_ticks());
+        let drop_event = FrameDropEvent::new(&plan, reason);
+        let state_event = SchedulerStateEvent {
+            state: self.scheduler.state(),
+        };
+
+        let mut summary = FrameTimingSummaryBuilder::from_tick_and_plan(&tick_event, &plan_event);
+        summary
+            .record_frame_drop(&drop_event)
+            .record_scheduler_state(&state_event);
+        summary
+            .finish()
+            .expect("driver-created tick and plan describe the same frame")
     }
 
     /// Returns a queued frame when it is ready, or plans pending demand.
@@ -462,6 +568,31 @@ mod tests {
 
     fn begin_at(driver: &mut FrameDriver, now: u64) -> Option<ActiveFrame> {
         driver.begin_frame(opportunity(now, 0))
+    }
+
+    #[test]
+    fn pacing_only_opportunity_fills_common_host_defaults() {
+        let opportunity =
+            FrameOpportunity::pacing_only(HostTime(12), REFRESH_INTERVAL, 42, OutputId(9));
+
+        assert_eq!(opportunity.tick.now, HostTime(12));
+        assert_eq!(opportunity.tick.predicted_present, None);
+        assert_eq!(
+            opportunity.tick.refresh_interval,
+            Some(REFRESH_INTERVAL.ticks())
+        );
+        assert_eq!(opportunity.tick.confidence, TimingConfidence::PacingOnly);
+        assert_eq!(opportunity.tick.frame_index, 42);
+        assert_eq!(opportunity.tick.output, OutputId(9));
+        assert_eq!(opportunity.hints.desired_present, None);
+        assert_eq!(
+            opportunity.hints.latest_commit,
+            HostTime(12 + REFRESH_INTERVAL.ticks())
+        );
+        assert_eq!(
+            opportunity.display_timing,
+            DisplayTiming::fixed(REFRESH_INTERVAL)
+        );
     }
 
     #[test]
@@ -614,15 +745,41 @@ mod tests {
     }
 
     #[test]
-    fn discard_frame_does_not_observe_feedback() {
+    fn discard_frame_returns_drop_summary_without_observe() {
         let mut driver = driver();
         driver.request(FrameDemand::INPUT);
         let frame = begin_at(&mut driver, 10).expect("input should start immediately");
+        let plan = frame.plan();
         let state_before = driver.scheduler().state();
 
-        driver.discard_frame(frame);
+        let summary = driver.discard_frame_with_reason(frame, FrameDropReason::SurfaceUnavailable);
 
         assert_eq!(driver.scheduler().state(), state_before);
+        assert_eq!(summary.frame_index, plan.frame_index);
+        assert_eq!(summary.output, plan.output);
+        assert_eq!(summary.submitted_at, None);
+        assert_eq!(summary.actual_present, None);
+        assert_eq!(
+            summary.drop_reason,
+            Some(FrameDropReason::SurfaceUnavailable)
+        );
+        assert_eq!(summary.scheduler_state, Some(state_before));
+    }
+
+    #[test]
+    fn retained_demand_survives_discarded_active_frame() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert_eq!(begin_at(&mut driver, 0), None);
+
+        driver.request(FrameDemand::BACKGROUND);
+        let frame = begin_at(&mut driver, 90).expect("animation frame should be ready");
+        assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
+
+        let summary = driver.discard_frame(frame);
+
+        assert_eq!(summary.drop_reason, Some(FrameDropReason::Discarded));
+        assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
     }
 
     #[test]

@@ -221,7 +221,13 @@ pub struct FrameTick {
     pub refresh_interval: Option<u64>,
     /// Confidence level for timing information in this tick.
     pub confidence: TimingConfidence,
-    /// Monotonically increasing frame counter.
+    /// Host-owned monotonically increasing frame counter for this output.
+    ///
+    /// Keep this stable for the full lifecycle of one planned content frame:
+    /// tick, plan, submit/feedback, and drop diagnostics all use this value to
+    /// join events. With [`FrameDriver`](crate::FrameDriver), increment it
+    /// after an [`ActiveFrame`](crate::ActiveFrame) is submitted or discarded,
+    /// not every time a frame-start wake fires while a plan is queued.
     pub frame_index: u64,
     /// Which output this tick is for.
     pub output: OutputId,
@@ -294,6 +300,9 @@ pub struct FramePlan {
     /// Which output this frame targets.
     pub output: OutputId,
     /// Frame counter, carried from the originating [`FrameTick`].
+    ///
+    /// This identifies the planned content frame, not necessarily the host
+    /// wake that eventually made the queued frame ready.
     pub frame_index: u64,
 }
 

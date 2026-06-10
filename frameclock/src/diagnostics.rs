@@ -125,6 +125,47 @@ impl PresentFeedbackEvent {
     }
 }
 
+/// Why a planned frame was dropped before submission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FrameDropReason {
+    /// The host intentionally discarded the frame without a more specific
+    /// reason.
+    Discarded,
+    /// Newer work replaced this frame before it was submitted.
+    Superseded,
+    /// The native surface, drawable, or swapchain image was unavailable.
+    SurfaceUnavailable,
+    /// The target output was unavailable, hidden, or no longer valid.
+    OutputUnavailable,
+}
+
+/// Emitted when a planned frame is dropped before submission.
+///
+/// Dropped-frame diagnostics are lifecycle facts, not scheduler feedback. They
+/// should be recorded for traces and summaries without feeding
+/// [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
+#[derive(Clone, Copy, Debug)]
+pub struct FrameDropEvent {
+    /// Monotonic frame counter.
+    pub frame_index: u64,
+    /// Target output for the dropped frame.
+    pub output: OutputId,
+    /// Why the frame was dropped.
+    pub reason: FrameDropReason,
+}
+
+impl FrameDropEvent {
+    /// Creates a drop diagnostics event from a [`FramePlan`].
+    #[must_use]
+    pub const fn new(plan: &FramePlan, reason: FrameDropReason) -> Self {
+        Self {
+            frame_index: plan.frame_index,
+            output: plan.output,
+            reason,
+        }
+    }
+}
+
 /// Emitted when scheduler adaptation state is sampled.
 #[derive(Clone, Copy, Debug)]
 pub struct SchedulerStateEvent {
@@ -191,6 +232,9 @@ pub struct FrameTimingSummary {
     pub missed_deadline: Option<bool>,
     /// Whether frame building overran a pacing boundary, if determinable.
     pub pacing_overrun: Option<bool>,
+    /// Reason the frame was dropped before submission, if it was not
+    /// submitted.
+    pub drop_reason: Option<FrameDropReason>,
     /// Scheduler pipeline depth used for the plan.
     pub pipeline_depth: u8,
     /// Scheduler safety margin used for the plan, in host-time ticks.
@@ -211,6 +255,7 @@ pub struct FrameTimingSummaryBuilder {
     plan: Option<FramePlanEvent>,
     submit: Option<SubmitEvent>,
     feedback: Option<PresentFeedbackEvent>,
+    drop: Option<FrameDropEvent>,
     scheduler_state: Option<SchedulerStateEvent>,
 }
 
@@ -223,6 +268,7 @@ impl FrameTimingSummaryBuilder {
             plan: None,
             submit: None,
             feedback: None,
+            drop: None,
             scheduler_state: None,
         }
     }
@@ -235,6 +281,7 @@ impl FrameTimingSummaryBuilder {
             plan: Some(*plan),
             submit: None,
             feedback: None,
+            drop: None,
             scheduler_state: None,
         }
     }
@@ -263,6 +310,12 @@ impl FrameTimingSummaryBuilder {
         self
     }
 
+    /// Records a dropped-frame event.
+    pub fn record_frame_drop(&mut self, event: &FrameDropEvent) -> &mut Self {
+        self.drop = Some(*event);
+        self
+    }
+
     /// Records a scheduler state event.
     pub fn record_scheduler_state(&mut self, event: &SchedulerStateEvent) -> &mut Self {
         self.scheduler_state = Some(*event);
@@ -288,6 +341,9 @@ impl FrameTimingSummaryBuilder {
         let feedback = self
             .feedback
             .filter(|feedback| feedback.frame_index == plan.frame_index);
+        let drop = self
+            .drop
+            .filter(|drop| drop.frame_index == plan.frame_index && drop.output == plan.output);
         let scheduler_state = self.scheduler_state.map(|event| event.state);
         let timing_basis = classify_timing_basis(tick, plan, submit, feedback);
 
@@ -310,6 +366,7 @@ impl FrameTimingSummaryBuilder {
             actual_present: feedback.and_then(|feedback| feedback.actual_present),
             missed_deadline: feedback.and_then(|feedback| feedback.missed_deadline),
             pacing_overrun: feedback.and_then(|feedback| feedback.pacing_overrun),
+            drop_reason: drop.map(|drop| drop.reason),
             pipeline_depth: plan.pipeline_depth,
             safety_margin_ticks: plan.safety_margin_ticks,
             scheduler_state,
@@ -369,6 +426,11 @@ pub trait DiagnosticsSink {
         _ = event;
     }
 
+    /// Called when a planned frame is dropped before submission.
+    fn on_frame_drop(&mut self, event: &FrameDropEvent) {
+        _ = event;
+    }
+
     /// Called when scheduler adaptation state is sampled.
     fn on_scheduler_state(&mut self, event: &SchedulerStateEvent) {
         _ = event;
@@ -395,6 +457,10 @@ impl DiagnosticsSink for FrameTimingSummaryBuilder {
 
     fn on_present_feedback(&mut self, event: &PresentFeedbackEvent) {
         self.record_present_feedback(event);
+    }
+
+    fn on_frame_drop(&mut self, event: &FrameDropEvent) {
+        self.record_frame_drop(event);
     }
 
     fn on_scheduler_state(&mut self, event: &SchedulerStateEvent) {
@@ -457,6 +523,13 @@ impl<'a> Diagnostics<'a> {
     pub fn present_feedback(&mut self, event: &PresentFeedbackEvent) {
         if let Some(sink) = &mut self.sink {
             sink.on_present_feedback(event);
+        }
+    }
+
+    /// Emits a dropped-frame event.
+    pub fn frame_drop(&mut self, event: &FrameDropEvent) {
+        if let Some(sink) = &mut self.sink {
+            sink.on_frame_drop(event);
         }
     }
 
@@ -564,6 +637,7 @@ mod tests {
         assert_eq!(summary.submitted_at, Some(HostTime(1_850)));
         assert_eq!(summary.actual_present, Some(HostTime(2_050)));
         assert_eq!(summary.missed_deadline, Some(true));
+        assert_eq!(summary.drop_reason, None);
         assert_eq!(
             summary
                 .scheduler_state
@@ -585,12 +659,18 @@ mod tests {
             missed_deadline: Some(true),
             pacing_overrun: Some(true),
         };
+        let mismatched_drop = FrameDropEvent {
+            frame_index: 10,
+            output: OutputId(2),
+            reason: FrameDropReason::Superseded,
+        };
 
         let mut builder =
             FrameTimingSummaryBuilder::from_tick_and_plan(&sample_tick(), &sample_plan());
         builder
             .record_submit(&mismatched_submit)
-            .record_present_feedback(&mismatched_feedback);
+            .record_present_feedback(&mismatched_feedback)
+            .record_frame_drop(&mismatched_drop);
         let summary = builder
             .finish()
             .expect("mismatched optional events should not reject the frame");
@@ -599,6 +679,30 @@ mod tests {
         assert_eq!(summary.actual_present, None);
         assert_eq!(summary.missed_deadline, None);
         assert_eq!(summary.pacing_overrun, None);
+        assert_eq!(summary.drop_reason, None);
+    }
+
+    #[test]
+    fn timing_summary_records_dropped_frame_reason() {
+        let drop = FrameDropEvent {
+            frame_index: 7,
+            output: OutputId(2),
+            reason: FrameDropReason::SurfaceUnavailable,
+        };
+
+        let mut builder =
+            FrameTimingSummaryBuilder::from_tick_and_plan(&sample_tick(), &sample_plan());
+        builder.record_frame_drop(&drop);
+        let summary = builder
+            .finish()
+            .expect("matching tick and plan should produce a summary");
+
+        assert_eq!(summary.submitted_at, None);
+        assert_eq!(summary.actual_present, None);
+        assert_eq!(
+            summary.drop_reason,
+            Some(FrameDropReason::SurfaceUnavailable)
+        );
     }
 
     #[test]

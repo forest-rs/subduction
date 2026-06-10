@@ -22,9 +22,8 @@ renderers, swapchains, or platform presentation resources.
 platform tick -> FrameOpportunity
               -> FrameDriver::begin_frame()
               -> ActiveFrame
-              -> build/submit frame
-              -> FrameSubmission
-              -> FrameDriver::submit_frame()
+              -> build frame
+              -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
               -> FrameTimingSummary
 ```
 
@@ -49,6 +48,10 @@ redraw requests, renderer submission, and native presentation resources. Use
 `FrameDriver::next_frame_start` as one wake source to merge with app timers.
 After submitting or discarding an `ActiveFrame`, hosts should request another
 redraw when `FrameDriver::has_pending_demand()` is still true.
+`FrameTick::frame_index` is host-owned per output and identifies one planned
+content frame. Hosts using `FrameDriver` normally increment it after an
+`ActiveFrame` is submitted or discarded, not every time a frame-start wake
+fires while a plan is queued.
 
 The lower-level `Scheduler` remains available for custom integrations. Event
 structs and `FrameTimingSummaryBuilder` live under `frameclock::diagnostics`
@@ -66,7 +69,7 @@ The root module re-exports the frame-planning vocabulary used by both retained
 - `FrameTick`, `FrameRequest`, `FramePlan`, `PresentHints`, `PresentFeedback`,
   `PendingFeedback`, `DisplayTiming`, and `TimingConfidence`
 - `HostTime`, `Duration`, `Timebase`, and `OutputId`
-- `FrameTimingSummary` and `FrameTimingBasis`
+- `FrameTimingSummary`, `FrameTimingBasis`, and `FrameDropReason`
 
 The modules group the same responsibilities more explicitly:
 
@@ -78,35 +81,24 @@ The modules group the same responsibilities more explicitly:
 
 ```rust,ignore
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameDriver, FrameOpportunity, FrameSubmission,
-    FrameTick, HostTime, OutputId, PresentHints, SchedulerConfig, TimingConfidence,
+    Duration, FrameDemand, FrameDriver, FrameOpportunity, FrameSubmission,
+    HostTime, OutputId, SchedulerConfig,
 };
 
 let mut driver = FrameDriver::new(SchedulerConfig::pacing_only());
 driver.request(FrameDemand::ANIMATION);
 
-let tick = FrameTick {
-    now: HostTime(1_000_000),
-    predicted_present: None,
-    refresh_interval: Some(16_666_667),
-    confidence: TimingConfidence::PacingOnly,
-    frame_index: 1,
-    output: OutputId(0),
-    prev_actual_present: None,
-};
-let hints = PresentHints {
-    desired_present: None,
-    latest_commit: HostTime(17_000_000),
-};
-let opportunity = FrameOpportunity::new(
-    tick,
-    hints,
-    DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+let opportunity = FrameOpportunity::pacing_only(
+    HostTime(1_000_000),
+    Duration(16_666_667),
+    1,
+    OutputId(0),
 );
 
 if let Some(frame) = driver.begin_frame(opportunity) {
     let sample_time = frame.sample_time();
-    // Prepare app/model/render state for sample_time, then submit renderer work.
+    // Prepare app/model/render state for sample_time, then submit renderer
+    // work. If the frame cannot be submitted, call `discard_frame` instead.
     let summary = driver.submit_frame(
         frame,
         FrameSubmission::new(HostTime(2_000_000), None),

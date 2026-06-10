@@ -5,8 +5,9 @@
 //!
 //! This example does not render anything. It shows where `frameclock` planning
 //! fits in a winit application: send redraw demand to [`FrameDriver`], convert
-//! redraw opportunities into [`FrameTick`]s, wake at the plan's frame-start time,
-//! submit work, and feed pacing feedback back into the scheduler.
+//! redraw opportunities into [`FrameOpportunity`] values, wake at the plan's
+//! frame-start time, submit work, and feed pacing feedback back into the
+//! scheduler.
 //!
 //! A real renderer would replace the synthetic submit and feedback below with
 //! surface acquisition, command submission, and platform or swapchain timing
@@ -20,9 +21,8 @@
 use std::time::Duration as StdDuration;
 
 use frameclock::{
-    ActiveFrame, DisplayTiming, Duration, FrameDemand, FrameDriver, FrameOpportunity, FramePlan,
-    FrameSubmission, FrameTick, HostTime, OutputId, PresentHints, SchedulerConfig,
-    TimingConfidence,
+    ActiveFrame, Duration, FrameDemand, FrameDriver, FrameOpportunity, FramePlan, FrameSubmission,
+    HostTime, OutputId, SchedulerConfig,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;
@@ -167,39 +167,17 @@ impl WindowState {
         }
     }
 
-    fn frame_tick(&self, now: HostTime) -> FrameTick {
-        // Plain winit does not expose the future present time here, so this
-        // tick carries refresh-rate information but no predicted present.
-        FrameTick {
-            now,
-            predicted_present: None,
-            refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            confidence: TimingConfidence::PacingOnly,
-            frame_index: self.surface_clock.frame_index,
-            output: self.surface_clock.output,
-            prev_actual_present: None,
-        }
-    }
-
-    fn present_hints(&self, now: HostTime) -> PresentHints {
-        // Hints express app-side intent and constraints. With predictive
-        // display timing, desired_present would normally be the display target.
-        // In this pacing-only example, latest_commit gives the scheduler a
-        // conservative "submit by around the next refresh" boundary.
-        PresentHints {
-            desired_present: None,
-            latest_commit: now + REFRESH_INTERVAL,
-        }
-    }
-
     fn begin_frame(&mut self, now: HostTime) -> Option<ActiveFrame> {
-        let tick = self.frame_tick(now);
-        let hints = self.present_hints(now);
-        self.surface_clock.driver.begin_frame(FrameOpportunity::new(
-            tick,
-            hints,
-            DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
-        ))
+        // Plain winit does not expose a future present timestamp here, so this
+        // example uses a pacing-only opportunity with a conservative "submit
+        // by around the next refresh" boundary.
+        let opportunity = FrameOpportunity::pacing_only(
+            now,
+            REFRESH_INTERVAL,
+            self.surface_clock.frame_index,
+            self.surface_clock.output,
+        );
+        self.surface_clock.driver.begin_frame(opportunity)
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -253,6 +231,9 @@ impl WindowState {
             );
         }
 
+        // `frame_index` is a per-output content-frame id. Advance it after the
+        // active frame is submitted, not for every frame-start wake that only
+        // releases a queued plan.
         self.surface_clock.frame_index += 1;
 
         // If lower-priority demand was retained behind the queued frame we

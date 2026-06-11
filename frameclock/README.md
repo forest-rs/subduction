@@ -70,6 +70,7 @@ The root module re-exports the frame-planning vocabulary used by both retained
   `PendingFeedback`, `DisplayTiming`, and `TimingConfidence`
 - `HostTime`, `Duration`, `Timebase`, and `OutputId`
 - `FrameTimingSummary`, `FrameTimingBasis`, and `FrameDropReason`
+- `AffineClock` and `AffineClockUpdate`
 
 The modules group the same responsibilities more explicitly:
 

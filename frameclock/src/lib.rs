@@ -116,7 +116,7 @@ pub use driver::{
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
 pub use time::{Duration, HostTime, Timebase};
-pub use timeline::AffineClock;
+pub use timeline::{AffineClock, AffineClockUpdate};
 pub use timing::{
     DisplayTiming, FramePlan, FrameRequest, FrameTick, PendingFeedback, PresentFeedback,
     PresentHints, TimingConfidence,

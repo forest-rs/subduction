@@ -7,11 +7,25 @@
 //! time:
 //!
 //! ```text
-//! media_time = rate * host_time + offset
+//! media_time = epoch_media + rate * (host_time - epoch_host)
 //! ```
 //!
-//! Rate and offset are updated smoothly (via EMA) each time a new observation
-//! is fed in, avoiding jitter while tracking drift.
+//! Rate and epoch media are updated smoothly (via EMA) each time a new
+//! observation is fed in, avoiding jitter while tracking drift.
+
+/// Result of feeding an observation to an [`AffineClock`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AffineClockUpdate {
+    /// The observation was ignored because it contained non-finite media time.
+    Ignored,
+    /// The observation initialized an unanchored clock.
+    Initialized,
+    /// The observation was applied through the normal smoothing path.
+    Smoothed,
+    /// The observation exceeded a discontinuity threshold and reanchored the
+    /// clock instead of being treated as drift.
+    Reanchored,
+}
 
 /// A smoothed affine mapping from host time (ticks) to media time (seconds).
 ///
@@ -21,10 +35,12 @@
 pub struct AffineClock {
     /// Current estimated rate (media seconds per host tick).
     rate: f64,
-    /// Initial rate supplied at construction, restored by [`reset`](Self::reset).
+    /// Baseline rate restored by [`reset`](Self::reset).
     initial_rate: f64,
-    /// Current estimated offset (media seconds).
-    offset: f64,
+    /// Host tick used as the affine mapping epoch.
+    epoch_host: u64,
+    /// Media time at [`Self::epoch_host`].
+    epoch_media: f64,
     /// EMA smoothing factor for rate correction (0.0–1.0).
     rate_alpha: f64,
     /// EMA smoothing factor for offset correction (0.0–1.0).
@@ -42,15 +58,16 @@ impl AffineClock {
     /// factors.
     ///
     /// `initial_rate` is in media-seconds per host-tick (e.g. for nanosecond
-    /// ticks, this would be `1e-9`). It is also the rate that
+    /// ticks, this would be `1e-9`). It is also the initial rate that
     /// [`reset`](Self::reset) restores, so the value chosen here sets the
-    /// post-reset baseline.
+    /// post-reset baseline unless [`set_rate`](Self::set_rate) replaces it.
     #[must_use]
     pub fn new(initial_rate: f64, rate_alpha: f64, offset_alpha: f64) -> Self {
         Self {
             rate: initial_rate,
             initial_rate,
-            offset: 0.0,
+            epoch_host: 0,
+            epoch_media: 0.0,
             rate_alpha,
             offset_alpha,
             initialized: false,
@@ -67,7 +84,7 @@ impl AffineClock {
         if !self.initialized {
             return None;
         }
-        Some(self.rate * host_ticks as f64 + self.offset)
+        Some(self.media_time_at_initialized(host_ticks))
     }
 
     /// Feeds an observation of `(host_time, media_time)` to update the
@@ -79,17 +96,47 @@ impl AffineClock {
     /// A non-finite `media_time` (NaN or infinity) is ignored, leaving the
     /// mapping unchanged, so a single bad observation cannot poison the clock.
     pub fn update(&mut self, host_ticks: u64, media_time: f64) {
+        _ = self.update_inner(host_ticks, media_time);
+    }
+
+    /// Feeds an observation, snapping to it when the current mapping error
+    /// exceeds `discontinuity_threshold`.
+    ///
+    /// Use this for media timelines where seeks, loops, and discontinuous PTS
+    /// jumps are expected. A finite, non-negative threshold is interpreted in
+    /// media seconds. Invalid thresholds disable snapping and use the normal
+    /// smoothing path.
+    #[must_use]
+    pub fn update_or_reanchor(
+        &mut self,
+        host_ticks: u64,
+        media_time: f64,
+        discontinuity_threshold: f64,
+    ) -> AffineClockUpdate {
         if !media_time.is_finite() {
-            return;
+            return AffineClockUpdate::Ignored;
         }
+
+        if self.initialized && discontinuity_threshold.is_finite() && discontinuity_threshold >= 0.0
+        {
+            let predicted = self.media_time_at_initialized(host_ticks);
+            if (media_time - predicted).abs() > discontinuity_threshold {
+                self.reanchor(host_ticks, media_time);
+                return AffineClockUpdate::Reanchored;
+            }
+        }
+
+        self.update_inner(host_ticks, media_time)
+    }
+
+    fn update_inner(&mut self, host_ticks: u64, media_time: f64) -> AffineClockUpdate {
+        if !media_time.is_finite() {
+            return AffineClockUpdate::Ignored;
+        }
+
         if !self.initialized {
-            // First observation: set mapping exactly.
-            // offset = media_time - rate * host_ticks
-            self.offset = media_time - self.rate * host_ticks as f64;
-            self.last_host = host_ticks;
-            self.last_media = media_time;
-            self.initialized = true;
-            return;
+            self.reanchor(host_ticks, media_time);
+            return AffineClockUpdate::Initialized;
         }
 
         let dt_host = host_ticks.saturating_sub(self.last_host);
@@ -102,23 +149,76 @@ impl AffineClock {
             self.rate = self.rate_alpha * observed_rate + (1.0 - self.rate_alpha) * self.rate;
         }
 
-        // Compute offset from current rate.
-        let predicted_media = self.rate * host_ticks as f64 + self.offset;
+        // Correct the epoch media value from the current rate.
+        let predicted_media = self.media_time_at_initialized(host_ticks);
         let offset_error = media_time - predicted_media;
 
         // Smooth offset correction.
-        self.offset += self.offset_alpha * offset_error;
+        self.epoch_media += self.offset_alpha * offset_error;
 
         self.last_host = host_ticks;
         self.last_media = media_time;
+        AffineClockUpdate::Smoothed
+    }
+
+    /// Reanchors the mapping exactly at `(host_ticks, media_time)`.
+    ///
+    /// This keeps the current rate but resets accumulated offset state. Use it
+    /// for known timeline discontinuities such as seek, loop, and pause/resume
+    /// points.
+    pub fn reanchor(&mut self, host_ticks: u64, media_time: f64) {
+        if !media_time.is_finite() {
+            return;
+        }
+
+        self.epoch_host = host_ticks;
+        self.epoch_media = media_time;
+        self.last_host = host_ticks;
+        self.last_media = media_time;
+        self.initialized = true;
+    }
+
+    /// Sets the commanded host-to-media rate immediately.
+    ///
+    /// This is for known playback-rate changes, not clock drift. If the clock
+    /// is initialized, the current mapping is preserved at the last observed
+    /// host time before the rate changes so media time remains continuous. The
+    /// new rate also becomes the baseline restored by [`reset`](Self::reset).
+    pub fn set_rate(&mut self, rate: f64) {
+        if !rate.is_finite() {
+            return;
+        }
+
+        if self.initialized {
+            let anchor_host = self.last_host;
+            let anchor_media = self.media_time_at_initialized(anchor_host);
+            self.rate = rate;
+            self.initial_rate = rate;
+            self.epoch_host = anchor_host;
+            self.epoch_media = anchor_media;
+            self.last_media = anchor_media;
+        } else {
+            self.rate = rate;
+            self.initial_rate = rate;
+        }
+    }
+
+    fn media_time_at_initialized(&self, host_ticks: u64) -> f64 {
+        let host_delta = if host_ticks >= self.epoch_host {
+            host_ticks.saturating_sub(self.epoch_host) as f64
+        } else {
+            -(self.epoch_host.saturating_sub(host_ticks) as f64)
+        };
+        self.epoch_media + self.rate * host_delta
     }
 
     /// Resets all accumulated state — including the rate, which is restored to
-    /// the value passed to [`new`](Self::new) — requiring new observations
-    /// before queries return values.
+    /// the current baseline rate — requiring new observations before queries
+    /// return values.
     pub fn reset(&mut self) {
         self.rate = self.initial_rate;
-        self.offset = 0.0;
+        self.epoch_host = 0;
+        self.epoch_media = 0.0;
         self.initialized = false;
         self.last_host = 0;
         self.last_media = 0.0;
@@ -144,6 +244,20 @@ mod tests {
         let mt = clock.media_time_at(2_000_000_000).unwrap();
         // rate * 2e9 + offset = 1e-9 * 2e9 + (1.0 - 1e-9 * 1e9) = 2.0 + 0.0 = 2.0
         assert!((mt - 2.0).abs() < 1e-6, "expected ~2.0, got {mt}");
+    }
+
+    #[test]
+    fn large_absolute_host_times_keep_delta_precision() {
+        let mut clock = AffineClock::new(1e-9, 0.1, 0.1);
+        let host_epoch = 10_000_000_000_000_000_000_u64;
+        clock.update(host_epoch, 10.0);
+
+        let mt = clock.media_time_at(host_epoch + 1_000).unwrap();
+
+        assert!(
+            (mt - 10.000_001).abs() < 1e-12,
+            "expected microsecond delta at large epoch, got {mt}"
+        );
     }
 
     #[test]
@@ -188,6 +302,50 @@ mod tests {
         clock.reset();
 
         assert_eq!(clock.rate, 1e-9, "reset must restore the initial rate");
+    }
+
+    #[test]
+    fn reanchor_snaps_known_discontinuity() {
+        let mut clock = AffineClock::new(1e-9, 0.1, 0.1);
+        clock.update(0, 0.0);
+        clock.update(1_000_000_000, 1.0);
+
+        clock.reanchor(2_000_000_000, 10.0);
+
+        assert!((clock.media_time_at(2_000_000_000).unwrap() - 10.0).abs() < 1e-12);
+        assert!((clock.media_time_at(3_000_000_000).unwrap() - 11.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn update_or_reanchor_snaps_large_error() {
+        let mut clock = AffineClock::new(1e-9, 0.1, 0.1);
+        assert_eq!(
+            clock.update_or_reanchor(0, 0.0, 0.25),
+            AffineClockUpdate::Initialized
+        );
+
+        assert_eq!(
+            clock.update_or_reanchor(1_000_000_000, 1.0, 0.25),
+            AffineClockUpdate::Smoothed
+        );
+        assert_eq!(
+            clock.update_or_reanchor(2_000_000_000, 10.0, 0.25),
+            AffineClockUpdate::Reanchored
+        );
+
+        assert!((clock.media_time_at(2_000_000_000).unwrap() - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn set_rate_applies_commanded_rate_without_drift_learning() {
+        let mut clock = AffineClock::new(1e-9, 0.1, 0.1);
+        clock.update(0, 0.0);
+        clock.update(1_000_000_000, 1.0);
+
+        clock.set_rate(2e-9);
+
+        assert!((clock.media_time_at(1_000_000_000).unwrap() - 1.0).abs() < 1e-12);
+        assert!((clock.media_time_at(2_000_000_000).unwrap() - 3.0).abs() < 1e-12);
     }
 
     #[test]

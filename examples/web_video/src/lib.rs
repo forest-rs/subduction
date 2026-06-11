@@ -107,8 +107,7 @@ fn seconds_per_tick(timebase: Timebase) -> f64 {
 }
 
 fn reanchor_media_clock(clock: &mut AffineClock, host: HostTime, media: f64) {
-    clock.reset();
-    clock.update(host.ticks(), media);
+    clock.reanchor(host.ticks(), media);
 }
 
 /// Entry point for the web-video demo.

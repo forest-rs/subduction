@@ -164,7 +164,7 @@ impl WindowState {
             self.surface_clock.frame_index,
             self.surface_clock.output,
         );
-        self.surface_clock.driver.begin_frame_result(opportunity)
+        self.surface_clock.driver.begin_frame(opportunity)
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {

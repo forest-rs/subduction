@@ -140,7 +140,7 @@ impl PlannedFrame {
 /// [`FrameDriver::discard_frame`] / [`FrameDriver::discard_frame_with_reason`]
 /// if no submission will happen. Dropping the Rust value without reporting it
 /// loses diagnostics, but it does not update scheduler feedback.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub struct ActiveFrame {
     planned: PlannedFrame,
     build_start: HostTime,
@@ -214,14 +214,14 @@ impl FrameSubmission {
 }
 
 /// Result of asking a [`FrameDriver`] to begin frame work.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub enum FrameBeginResult {
     /// No demand or queued frame is waiting.
     Idle,
     /// A frame has been planned, but its selected start time has not arrived.
     ///
     /// Hosts should mirror this time into their event-loop or timer queue and
-    /// call [`FrameDriver::begin_frame_result`] again from the wake/redraw path.
+    /// call [`FrameDriver::begin_frame`] again from the wake/redraw path.
     WaitUntil(HostTime),
     /// A planned frame is ready for application update and rendering.
     Ready(ActiveFrame),
@@ -244,7 +244,7 @@ enum DriverBeginResult {
 ///
 /// `FrameDriver` is a small retained layer above [`Scheduler`]. Hosts call
 /// [`request`](Self::request) when app-visible frame demand arrives, then call
-/// [`begin_frame_result`](Self::begin_frame_result) from a platform redraw/tick
+/// [`begin_frame`](Self::begin_frame) from a platform redraw/tick
 /// opportunity. If the scheduler chooses a future [`FramePlan::frame_start`],
 /// the driver keeps that plan queued and returns [`FrameBeginResult::WaitUntil`].
 ///
@@ -257,7 +257,7 @@ enum DriverBeginResult {
 ///
 /// 1. Call [`request`](Self::request) with non-empty [`FrameDemand`] when input,
 ///    animation, layout, or other app-visible work needs a frame.
-/// 2. Call [`begin_frame_result`](Self::begin_frame_result) from a redraw/tick
+/// 2. Call [`begin_frame`](Self::begin_frame) from a redraw/tick
 ///    opportunity. This is the preferred public method for consuming pending
 ///    demand into a planned frame.
 /// 3. If it returns [`FrameBeginResult::WaitUntil`], mirror that time into the
@@ -377,23 +377,6 @@ impl FrameDriver {
         self.pending_demand.insert(demand);
     }
 
-    /// Begins a frame when pending demand is ready to prepare.
-    ///
-    /// This is the lower-level entry point for hosts that only need to know
-    /// whether work is ready now. Prefer
-    /// [`begin_frame_result`](Self::begin_frame_result) when the host also
-    /// wants to distinguish "idle" from "waiting for a queued frame start" or
-    /// record expired queued-frame diagnostics.
-    #[must_use]
-    pub fn begin_frame(&mut self, opportunity: FrameOpportunity) -> Option<ActiveFrame> {
-        match self.begin_frame_result(opportunity) {
-            FrameBeginResult::Ready(frame) => Some(frame),
-            FrameBeginResult::WaitUntil(_)
-            | FrameBeginResult::Expired(_)
-            | FrameBeginResult::Idle => None,
-        }
-    }
-
     /// Begins a frame, waits for a queued frame start, or reports idleness.
     ///
     /// This is the normal host entry point for converting a platform frame
@@ -410,7 +393,7 @@ impl FrameDriver {
     /// commit deadline, the driver returns [`FrameBeginResult::Expired`]
     /// instead and records a dropped-frame summary.
     #[must_use]
-    pub fn begin_frame_result(&mut self, opportunity: FrameOpportunity) -> FrameBeginResult {
+    pub fn begin_frame(&mut self, opportunity: FrameOpportunity) -> FrameBeginResult {
         match self.take_next(opportunity) {
             DriverBeginResult::Idle => FrameBeginResult::Idle,
             DriverBeginResult::WaitUntil(frame_start) => FrameBeginResult::WaitUntil(frame_start),
@@ -636,12 +619,15 @@ mod tests {
         FrameOpportunity::new(tick, hints, DisplayTiming::fixed(REFRESH_INTERVAL))
     }
 
-    fn begin_at(driver: &mut FrameDriver, now: u64) -> Option<ActiveFrame> {
+    fn begin_at(driver: &mut FrameDriver, now: u64) -> FrameBeginResult {
         driver.begin_frame(opportunity(now, 0))
     }
 
-    fn begin_result_at(driver: &mut FrameDriver, now: u64) -> FrameBeginResult {
-        driver.begin_frame_result(opportunity(now, 0))
+    fn ready_at(driver: &mut FrameDriver, now: u64) -> ActiveFrame {
+        let FrameBeginResult::Ready(frame) = begin_at(driver, now) else {
+            panic!("expected ready frame");
+        };
+        frame
     }
 
     #[test]
@@ -676,8 +662,7 @@ mod tests {
     fn no_demand_does_not_plan_frame() {
         let mut driver = driver();
 
-        assert_eq!(begin_at(&mut driver, 0), None);
-        assert_eq!(begin_result_at(&mut driver, 0), FrameBeginResult::Idle);
+        assert!(matches!(begin_at(&mut driver, 0), FrameBeginResult::Idle));
         assert_eq!(driver.next_frame_start(), None);
     }
 
@@ -686,15 +671,17 @@ mod tests {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
 
-        assert_eq!(begin_at(&mut driver, 0), None);
-        assert_eq!(driver.next_frame_start(), Some(HostTime(90)));
-        assert_eq!(
-            begin_result_at(&mut driver, 89),
+        assert!(matches!(
+            begin_at(&mut driver, 0),
             FrameBeginResult::WaitUntil(HostTime(90))
-        );
-        assert_eq!(begin_at(&mut driver, 89), None);
+        ));
+        assert_eq!(driver.next_frame_start(), Some(HostTime(90)));
+        assert!(matches!(
+            begin_at(&mut driver, 89),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
-        let frame = begin_at(&mut driver, 90).expect("queued frame should be ready");
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(frame.tick().now, HostTime(0));
         assert_eq!(frame.build_start(), HostTime(90));
         assert_eq!(frame.plan().demand, FrameDemand::ANIMATION);
@@ -705,18 +692,15 @@ mod tests {
     }
 
     #[test]
-    fn begin_frame_result_returns_ready_frame() {
+    fn begin_frame_returns_ready_frame() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(
-            begin_result_at(&mut driver, 0),
+        assert!(matches!(
+            begin_at(&mut driver, 0),
             FrameBeginResult::WaitUntil(HostTime(90))
-        );
+        ));
 
-        let result = begin_result_at(&mut driver, 90);
-        let FrameBeginResult::Ready(frame) = result else {
-            panic!("expected ready frame");
-        };
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(frame.tick().now, HostTime(0));
         assert_eq!(frame.build_start(), HostTime(90));
         assert_eq!(frame.plan().sample_time, HostTime(100));
@@ -726,13 +710,13 @@ mod tests {
     fn expired_queued_frame_returns_drop_summary() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(
-            begin_result_at(&mut driver, 0),
+        assert!(matches!(
+            begin_at(&mut driver, 0),
             FrameBeginResult::WaitUntil(HostTime(90))
-        );
+        ));
         let state_before = driver.scheduler().state();
 
-        let result = begin_result_at(&mut driver, 101);
+        let result = begin_at(&mut driver, 101);
         let FrameBeginResult::Expired(summary) = result else {
             panic!("expected expired queued frame");
         };
@@ -753,9 +737,15 @@ mod tests {
     fn begin_frame_does_not_return_expired_queued_frame_as_ready() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
-        assert_eq!(begin_at(&mut driver, 101), None);
+        assert!(matches!(
+            begin_at(&mut driver, 101),
+            FrameBeginResult::Expired(_)
+        ));
         assert_eq!(driver.next_frame_start(), None);
     }
 
@@ -763,13 +753,16 @@ mod tests {
     fn stronger_demand_replans_with_combined_demand() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
         assert_eq!(driver.next_frame_start(), Some(HostTime(90)));
 
         driver.request(FrameDemand::INPUT);
         assert_eq!(driver.next_frame_start(), None);
 
-        let frame = begin_at(&mut driver, 1).expect("input should be ready immediately");
+        let frame = ready_at(&mut driver, 1);
         assert_eq!(frame.tick().now, HostTime(1));
         assert!(frame.plan().demand.contains(FrameDemand::INPUT));
         assert!(frame.plan().demand.contains(FrameDemand::ANIMATION));
@@ -780,19 +773,25 @@ mod tests {
     fn weaker_demand_waits_behind_queued_plan() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
         driver.request(FrameDemand::BACKGROUND);
         assert_eq!(driver.next_frame_start(), Some(HostTime(90)));
         assert!(driver.has_pending_demand());
         assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
 
-        let frame = begin_at(&mut driver, 90).expect("queued frame should be ready");
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(frame.plan().demand, FrameDemand::ANIMATION);
         assert!(driver.has_pending_demand());
         assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
 
-        assert_eq!(begin_at(&mut driver, 90), None);
+        assert!(matches!(
+            begin_at(&mut driver, 90),
+            FrameBeginResult::WaitUntil(HostTime(280))
+        ));
         assert_eq!(driver.next_frame_start(), Some(HostTime(280)));
     }
 
@@ -800,12 +799,15 @@ mod tests {
     fn covered_demand_does_not_create_extra_pending_work() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
         driver.request(FrameDemand::ANIMATION);
 
         assert_eq!(driver.pending_demand(), FrameDemand::NONE);
-        let frame = begin_at(&mut driver, 90).expect("queued frame should be ready");
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(frame.plan().demand, FrameDemand::ANIMATION);
     }
 
@@ -813,7 +815,10 @@ mod tests {
     fn clear_pending_frame_drops_plan_without_clearing_demand() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
         driver.request(FrameDemand::BACKGROUND);
 
         assert!(driver.clear_pending_frame());
@@ -826,10 +831,13 @@ mod tests {
     fn weaker_retained_demand_survives_stronger_frame_submission() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
         driver.request(FrameDemand::BACKGROUND);
-        let frame = begin_at(&mut driver, 90).expect("animation frame should be ready");
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
 
         let summary = driver.submit_frame(
@@ -848,7 +856,7 @@ mod tests {
     fn submit_frame_returns_summary_from_driver_lifecycle_facts() {
         let mut driver = driver();
         driver.request(FrameDemand::INPUT);
-        let frame = begin_at(&mut driver, 10).expect("input should start immediately");
+        let frame = ready_at(&mut driver, 10);
         let submission = FrameSubmission {
             submitted_at: HostTime(20),
             actual_present: None,
@@ -887,7 +895,7 @@ mod tests {
     fn discard_frame_returns_drop_summary_without_observe() {
         let mut driver = driver();
         driver.request(FrameDemand::INPUT);
-        let frame = begin_at(&mut driver, 10).expect("input should start immediately");
+        let frame = ready_at(&mut driver, 10);
         let plan = frame.plan();
         let state_before = driver.scheduler().state();
 
@@ -909,10 +917,13 @@ mod tests {
     fn retained_demand_survives_discarded_active_frame() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
-        assert_eq!(begin_at(&mut driver, 0), None);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
 
         driver.request(FrameDemand::BACKGROUND);
-        let frame = begin_at(&mut driver, 90).expect("animation frame should be ready");
+        let frame = ready_at(&mut driver, 90);
         assert_eq!(driver.pending_demand(), FrameDemand::BACKGROUND);
 
         let summary = driver.discard_frame(frame);
@@ -925,7 +936,7 @@ mod tests {
     fn pacing_only_submission_summary_has_no_actual_present() {
         let mut driver = driver();
         driver.request(FrameDemand::INPUT);
-        let frame = begin_at(&mut driver, 10).expect("input should start immediately");
+        let frame = ready_at(&mut driver, 10);
 
         let summary = driver.submit_frame(
             frame,
@@ -945,9 +956,11 @@ mod tests {
     fn actual_present_submission_summary_records_deadline_facts() {
         let mut driver = driver();
         driver.request(FrameDemand::INPUT);
-        let frame = driver
-            .begin_frame(predictive_opportunity(10, 3, 100, 90))
-            .expect("input should start immediately");
+        let FrameBeginResult::Ready(frame) =
+            driver.begin_frame(predictive_opportunity(10, 3, 100, 90))
+        else {
+            panic!("input should start immediately");
+        };
 
         let summary = driver.submit_frame(
             frame,

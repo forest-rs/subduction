@@ -35,7 +35,7 @@
 //!
 //! ```text
 //! platform tick -> FrameOpportunity
-//!               -> FrameDriver::begin_frame_result()
+//!               -> FrameDriver::begin_frame()
 //!               -> FrameBeginResult::Ready(ActiveFrame)
 //!               -> build frame
 //!               -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
@@ -64,7 +64,7 @@
 //!     OutputId(0),
 //! );
 //!
-//! match driver.begin_frame_result(opportunity) {
+//! match driver.begin_frame(opportunity) {
 //!     FrameBeginResult::Ready(frame) => {
 //!         let sample_time = frame.sample_time();
 //!         // Prepare app/model/render state for `sample_time`, submit renderer work,

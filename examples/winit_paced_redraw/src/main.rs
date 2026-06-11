@@ -184,6 +184,22 @@ impl WindowState {
                 self.arm_next_wake(started_at, event_loop);
                 return;
             }
+            FrameBeginResult::Expired(summary) => {
+                self.cancel_frame_start_wake();
+                // The host woke after the queued plan's commit deadline. Do
+                // not render against that stale plan; count it as a dropped
+                // content frame and ask for fresh demand if the work still
+                // matters.
+                let retry_demand = summary.demand;
+                self.surface_clock.frame_index += 1;
+                if !retry_demand.is_empty() {
+                    self.request_frame(retry_demand);
+                } else if self.surface_clock.driver.has_pending_demand() {
+                    self.window.request_redraw();
+                }
+                self.arm_next_wake(started_at, event_loop);
+                return;
+            }
             FrameBeginResult::Idle => {
                 self.cancel_frame_start_wake();
                 self.arm_next_wake(started_at, event_loop);

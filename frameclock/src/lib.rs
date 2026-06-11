@@ -80,6 +80,11 @@
 //!         // Mirror `frame_start` into the host timer queue and wait.
 //!         _ = frame_start;
 //!     }
+//!     FrameBeginResult::Expired(summary) => {
+//!         // The queued plan missed its commit deadline before it was released.
+//!         // Record the dropped-frame summary and request fresh demand if needed.
+//!         _ = summary;
+//!     }
 //!     FrameBeginResult::Idle => {
 //!         // Wait for input, animation, timers, or other app demand.
 //!     }

@@ -218,7 +218,7 @@ impl FrameSubmission {
 }
 
 /// Result of asking a [`FrameDriver`] to begin frame work.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FrameBeginResult {
     /// No demand or queued frame is waiting.
     Idle,
@@ -229,6 +229,19 @@ pub enum FrameBeginResult {
     WaitUntil(HostTime),
     /// A planned frame is ready for application update and rendering.
     Ready(ActiveFrame),
+    /// A queued frame missed its commit deadline before the host released it.
+    ///
+    /// The driver has dropped the planned frame without feeding scheduler
+    /// feedback. Hosts should record the summary and request fresh demand if
+    /// the work is still needed.
+    Expired(FrameTimingSummary),
+}
+
+enum DriverBeginResult {
+    Idle,
+    WaitUntil(HostTime),
+    Ready(PlannedFrame),
+    Expired(PlannedFrame),
 }
 
 /// Driver for pending demand, queued frame plans, and frame feedback.
@@ -252,8 +265,10 @@ pub enum FrameBeginResult {
 ///    opportunity. This is the preferred public method for consuming pending
 ///    demand into a planned frame.
 /// 3. If it returns [`FrameBeginResult::WaitUntil`], mirror that time into the
-///    host timer queue and sleep. If it returns [`FrameBeginResult::Idle`],
-///    wait for more demand.
+///    host timer queue and sleep. If it returns [`FrameBeginResult::Expired`],
+///    record the returned drop summary and request fresh demand if the work is
+///    still needed. If it returns [`FrameBeginResult::Idle`], wait for more
+///    demand.
 /// 4. If it returns [`FrameBeginResult::Ready`], sample app state at
 ///    [`ActiveFrame::sample_time`], then either submit it with
 ///    [`submit_frame`](Self::submit_frame) or drop it with
@@ -268,11 +283,17 @@ pub enum FrameBeginResult {
 ///
 /// # Queued plans
 ///
-/// Queued plans are replayed as decided. If a plan is created at tick `T` with
-/// a future frame start, a later wake releases the same [`FramePlan`],
-/// [`FrameTick`], and [`PresentHints`]. The returned [`ActiveFrame`] records
-/// the later wake time as [`ActiveFrame::build_start`], so diagnostics and
-/// budget calculations can still see that the host woke late.
+/// Queued plans are replayed as decided when they are released inside their
+/// valid work window. If a plan is created at tick `T` with a future frame
+/// start, a later on-time wake releases the same [`FramePlan`], [`FrameTick`],
+/// and [`PresentHints`]. The returned [`ActiveFrame`] records the later wake
+/// time as [`ActiveFrame::build_start`], so diagnostics and budget
+/// calculations can still see wake latency.
+///
+/// If the host does not release a queued plan until after
+/// [`FramePlan::commit_deadline`], the driver drops the plan and returns
+/// [`FrameBeginResult::Expired`] with a [`FrameDropReason::MissedDeadline`]
+/// summary instead of handing out a renderable frame.
 #[derive(Debug)]
 pub struct FrameDriver {
     scheduler: Scheduler,
@@ -365,12 +386,15 @@ impl FrameDriver {
     /// This is the lower-level entry point for hosts that only need to know
     /// whether work is ready now. Prefer
     /// [`begin_frame_result`](Self::begin_frame_result) when the host also
-    /// wants to distinguish "idle" from "waiting for a queued frame start".
+    /// wants to distinguish "idle" from "waiting for a queued frame start" or
+    /// record expired queued-frame diagnostics.
     #[must_use]
     pub fn begin_frame(&mut self, opportunity: FrameOpportunity) -> Option<ActiveFrame> {
         match self.begin_frame_result(opportunity) {
             FrameBeginResult::Ready(frame) => Some(frame),
-            FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => None,
+            FrameBeginResult::WaitUntil(_)
+            | FrameBeginResult::Expired(_)
+            | FrameBeginResult::Idle => None,
         }
     }
 
@@ -383,17 +407,26 @@ impl FrameDriver {
     /// returns [`FrameBeginResult::WaitUntil`] with the wake time the host
     /// should mirror into its timer queue.
     ///
-    /// When a queued frame becomes ready, the returned [`ActiveFrame`] carries
-    /// the original planning tick and plan. Its [`ActiveFrame::build_start`] is
-    /// the current opportunity time that released the queued frame.
+    /// When a queued frame becomes ready before its commit deadline, the
+    /// returned [`ActiveFrame`] carries the original planning tick and plan. Its
+    /// [`ActiveFrame::build_start`] is the current opportunity time that
+    /// released the queued frame. If the queued frame is released after its
+    /// commit deadline, the driver returns [`FrameBeginResult::Expired`]
+    /// instead and records a dropped-frame summary.
     #[must_use]
     pub fn begin_frame_result(&mut self, opportunity: FrameOpportunity) -> FrameBeginResult {
-        match self.take_ready(opportunity) {
-            Some(frame) => FrameBeginResult::Ready(ActiveFrame::new(frame, opportunity.tick.now)),
-            None => match self.next_frame_start() {
-                Some(frame_start) => FrameBeginResult::WaitUntil(frame_start),
-                None => FrameBeginResult::Idle,
-            },
+        match self.take_next(opportunity) {
+            DriverBeginResult::Idle => FrameBeginResult::Idle,
+            DriverBeginResult::WaitUntil(frame_start) => FrameBeginResult::WaitUntil(frame_start),
+            DriverBeginResult::Ready(frame) => {
+                FrameBeginResult::Ready(ActiveFrame::new(frame, opportunity.tick.now))
+            }
+            DriverBeginResult::Expired(frame) => {
+                let frame = ActiveFrame::new(frame, opportunity.tick.now);
+                FrameBeginResult::Expired(
+                    self.discard_frame_with_reason(frame, FrameDropReason::MissedDeadline),
+                )
+            }
         }
     }
 
@@ -481,25 +514,27 @@ impl FrameDriver {
             .expect("driver-created tick and plan describe the same frame")
     }
 
-    /// Returns a queued frame when it is ready, or plans pending demand.
+    /// Returns the next driver lifecycle result for a frame opportunity.
     ///
-    /// `opportunity` describes the current platform
-    /// redraw/tick opportunity. If demand exists but the scheduler-selected
-    /// frame start is still in the future, this stores the plan internally and
-    /// returns `None`; hosts should then arm their own timer for
-    /// [`next_frame_start`](Self::next_frame_start).
-    fn take_ready(&mut self, opportunity: FrameOpportunity) -> Option<PlannedFrame> {
+    /// This plans pending demand when needed, retains future-start plans, and
+    /// reports an expired result instead of returning a frame whose commit
+    /// deadline has already passed.
+    fn take_next(&mut self, opportunity: FrameOpportunity) -> DriverBeginResult {
         let tick = opportunity.tick;
         if let Some(frame) = self.pending_frame {
-            if tick.now >= frame.plan.frame_start {
-                self.pending_frame = None;
-                return Some(frame);
+            if tick.now < frame.plan.frame_start {
+                return DriverBeginResult::WaitUntil(frame.plan.frame_start);
             }
-            return None;
+
+            self.pending_frame = None;
+            if tick.now > frame.plan.commit_deadline {
+                return DriverBeginResult::Expired(frame);
+            }
+            return DriverBeginResult::Ready(frame);
         }
 
         if self.pending_demand.is_empty() {
-            return None;
+            return DriverBeginResult::Idle;
         }
 
         let demand = self.pending_demand;
@@ -516,11 +551,14 @@ impl FrameDriver {
             opportunity.hints,
             self.scheduler.safety_margin_ticks(),
         );
-        if tick.now >= frame.plan.frame_start {
-            Some(frame)
-        } else {
+        if tick.now < frame.plan.frame_start {
+            let frame_start = frame.plan.frame_start;
             self.pending_frame = Some(frame);
-            None
+            DriverBeginResult::WaitUntil(frame_start)
+        } else if tick.now > frame.plan.commit_deadline {
+            DriverBeginResult::Expired(frame)
+        } else {
+            DriverBeginResult::Ready(frame)
         }
     }
 
@@ -691,6 +729,43 @@ mod tests {
         assert_eq!(frame.tick().now, HostTime(0));
         assert_eq!(frame.build_start(), HostTime(90));
         assert_eq!(frame.plan().sample_time, HostTime(100));
+    }
+
+    #[test]
+    fn expired_queued_frame_returns_drop_summary() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert_eq!(
+            begin_result_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        );
+        let state_before = driver.scheduler().state();
+
+        let result = begin_result_at(&mut driver, 101);
+        let FrameBeginResult::Expired(summary) = result else {
+            panic!("expected expired queued frame");
+        };
+
+        assert_eq!(summary.frame_index, 0);
+        assert_eq!(summary.output, OutputId(0));
+        assert_eq!(summary.demand, FrameDemand::ANIMATION);
+        assert_eq!(summary.frame_start, HostTime(90));
+        assert_eq!(summary.commit_deadline, HostTime(100));
+        assert_eq!(summary.submitted_at, None);
+        assert_eq!(summary.drop_reason, Some(FrameDropReason::MissedDeadline));
+        assert_eq!(summary.scheduler_state, Some(state_before));
+        assert_eq!(driver.scheduler().state(), state_before);
+        assert_eq!(driver.next_frame_start(), None);
+    }
+
+    #[test]
+    fn begin_frame_does_not_return_expired_queued_frame_as_ready() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert_eq!(begin_at(&mut driver, 0), None);
+
+        assert_eq!(begin_at(&mut driver, 101), None);
+        assert_eq!(driver.next_frame_start(), None);
     }
 
     #[test]

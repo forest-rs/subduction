@@ -133,6 +133,8 @@ pub enum FrameDropReason {
     Discarded,
     /// Newer work replaced this frame before it was submitted.
     Superseded,
+    /// The frame was still queued after its commit deadline had passed.
+    MissedDeadline,
     /// The native surface, drawable, or swapchain image was unavailable.
     SurfaceUnavailable,
     /// The target output was unavailable, hidden, or no longer valid.

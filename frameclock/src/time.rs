@@ -5,19 +5,30 @@
 //!
 //! [`HostTime`] represents a point in time as platform-native monotonic ticks
 //! (e.g. `mach_absolute_time` on macOS, `QueryPerformanceCounter` on Windows).
+//! Backends create these values from their monotonic clock and pass them into
+//! [`FrameTick`](crate::FrameTick), [`PresentHints`](crate::PresentHints), and
+//! [`FrameSubmission`](crate::FrameSubmission).
 //!
 //! [`Timebase`] carries the rational conversion factor from ticks to
 //! nanoseconds, matching the pattern used by `mach_timebase_info` (numer/denom
 //! converts ticks → nanoseconds).
 //!
 //! [`Duration`] represents a duration in the same tick units as [`HostTime`].
-//! Conversion arithmetic uses `u128` intermediates to avoid overflow. Time and
-//! duration operators saturate instead of panicking or wrapping.
+//! Every time value passed through one [`FrameDriver`](crate::FrameDriver) or
+//! [`Scheduler`](crate::scheduler::Scheduler) should use the same clock domain
+//! and timebase. Conversion arithmetic uses `u128` intermediates to avoid
+//! overflow. Time and duration operators saturate instead of panicking or
+//! wrapping.
 
 use core::fmt;
 use core::ops::{Add, Sub};
 
 /// A point in time expressed as platform-native monotonic ticks.
+///
+/// Platform adapters construct this from their monotonic clock and pass it to
+/// frameclock in ticks, opportunities, presentation hints, and submission
+/// facts. Values for one driver/scheduler must come from the same monotonic
+/// clock domain.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct HostTime(pub u64);
 
@@ -126,6 +137,10 @@ impl fmt::Debug for HostTime {
 /// This matches the `mach_timebase_info` pattern on macOS. The correct
 /// instance for a given platform is provided by the platform adapter's
 /// `timebase()` function.
+///
+/// Use [`Timebase::NANOS`] when a backend chooses nanoseconds as its host tick
+/// unit. Do not mix values converted with different timebases inside one
+/// `FrameDriver` or `Scheduler`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Timebase {
     /// Numerator of the ticks-to-nanoseconds ratio.
@@ -183,7 +198,11 @@ impl fmt::Debug for Timebase {
 
 /// A duration in platform-native ticks.
 ///
-/// Arithmetic uses the same tick units as [`HostTime`].
+/// Arithmetic uses the same tick units as [`HostTime`]. Backends pass these to
+/// frameclock for refresh intervals, display timing, wake margins, and
+/// deadlines; app code can convert to or from nanoseconds with the backend's
+/// [`Timebase`] when it needs human-readable diagnostics or platform APIs that
+/// use nanoseconds.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Duration(pub u64);
 

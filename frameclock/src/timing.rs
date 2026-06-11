@@ -21,8 +21,8 @@
 //!    `CADisplayLink`, `requestAnimationFrame`).
 //! 2. The backend computes [`PresentHints`] from the tick and platform
 //!    knowledge (deadlines, desired present time).
-//! 3. The host combines those facts with [`DisplayTiming`] into a
-//!    [`FrameOpportunity`].
+//! 3. The host combines those facts with [`DisplayTiming`] for the tick's
+//!    current target output into a [`FrameOpportunity`].
 //! 4. [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) consumes the
 //!    opportunity plus [`FrameDemand`] to produce a [`FramePlan`] with a frame
 //!    start time, sampling time, target presentation time, and commit deadline.
@@ -39,7 +39,17 @@ pub use crate::demand::{FrameDemand, FrameDemandClass};
 use crate::output::OutputId;
 use crate::time::{Duration, HostTime};
 
-/// Fixed or variable display timing constraints for one output.
+/// Display timing constraints supplied with a [`FrameOpportunity`].
+///
+/// Backends or host adapters construct this from platform display facts and
+/// pass it to [`FrameOpportunity::new`]. The scheduler uses it to choose the
+/// delivery interval for a frame.
+///
+/// Treat this as a per-output, per-opportunity input. If a window or surface is
+/// dragged to another display, or if the platform reports a new refresh mode,
+/// the host should build the next [`FrameOpportunity`] with timing for the new
+/// target output. Do not cache one global `DisplayTiming` unless the backend
+/// truly has only one fixed timing model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DisplayTiming {
     min_interval: Duration,
@@ -48,7 +58,10 @@ pub struct DisplayTiming {
 }
 
 impl DisplayTiming {
-    /// Creates fixed-rate display timing.
+    /// Creates fixed-rate display timing for the current target output.
+    ///
+    /// Use this when the backend knows only the current refresh interval, or
+    /// when the platform does not expose a useful variable-refresh range.
     #[inline]
     #[must_use]
     pub const fn fixed(interval: Duration) -> Self {
@@ -59,7 +72,7 @@ impl DisplayTiming {
         }
     }
 
-    /// Creates variable-refresh display timing.
+    /// Creates variable-refresh display timing for the current target output.
     ///
     /// `min_interval` is the fastest direct display interval, `max_interval`
     /// is the slowest direct display interval, and `granularity` describes a
@@ -92,9 +105,10 @@ impl DisplayTiming {
     /// Creates fixed-rate display timing from a tick's timing facts.
     ///
     /// Prefer [`FrameTick::refresh_interval`] when it is present because it is
-    /// the backend's explicit cadence fact. If no refresh interval is reported,
-    /// this falls back to the delta from `tick.now` to
-    /// [`FrameTick::predicted_present`] and finally to `fallback_interval`.
+    /// the backend's explicit cadence fact for this tick's output. If no
+    /// refresh interval is reported, this falls back to the delta from
+    /// `tick.now` to [`FrameTick::predicted_present`] and finally to
+    /// `fallback_interval`.
     #[inline]
     #[must_use]
     pub fn from_tick(tick: &FrameTick, fallback_interval: Duration) -> Self {
@@ -191,7 +205,7 @@ fn round_up_to_multiple(needed: Duration, interval: Duration) -> Duration {
     interval.saturating_mul(count.max(1))
 }
 
-/// How presentation timing should be interpreted for one planning request.
+/// How [`PresentHints`] should be interpreted for one planning request.
 ///
 /// This is attached to [`PresentHints`], not [`FrameTick`], because it is part
 /// of the backend's scheduling contract: it tells the scheduler whether
@@ -220,11 +234,12 @@ impl PresentationTiming {
     }
 }
 
-/// A frame opportunity delivered by the backend.
+/// Platform timing facts used to create a [`FrameOpportunity`].
 ///
 /// Backends produce a `FrameTick` each time a new frame can be submitted. Not
-/// all fields are populated on every platform — [`Option`] fields reflect the
-/// capability-graded timing model.
+/// all fields are populated on every platform: [`Option`] fields reflect the
+/// capability-graded timing model. Hosts pass this to
+/// [`FrameOpportunity::new`] with [`PresentHints`] and [`DisplayTiming`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameTick {
     /// Current host time when the tick was generated.
@@ -248,11 +263,18 @@ pub struct FrameTick {
     pub prev_actual_present: Option<HostTime>,
 }
 
-/// A platform frame opportunity for scheduler and retained driver APIs.
+/// Platform frame facts passed to the scheduler or retained driver.
 ///
 /// Hosts construct this from the current display/frame callback. It packages
 /// the platform tick, backend submission constraints, and output timing model
 /// that the scheduler needs to plan a frame.
+/// [`Self::display_timing`] should describe the same output or surface named by
+/// [`FrameTick::output`].
+///
+/// Pass this to [`FrameDriver::begin_frame`](crate::FrameDriver::begin_frame)
+/// when using the retained lifecycle API, or to
+/// [`Scheduler::plan`](crate::scheduler::Scheduler::plan) when using the
+/// lower-level scheduler directly.
 ///
 /// `frame_index` lives on [`FrameTick`] and is owned by the host/backend. When
 /// using [`FrameDriver`](crate::FrameDriver), advance it after an
@@ -265,12 +287,15 @@ pub struct FrameOpportunity {
     pub tick: FrameTick,
     /// Backend submission constraints for the opportunity.
     pub hints: PresentHints,
-    /// Display timing constraints for the target output.
+    /// Display timing constraints for the tick's current target output.
+    ///
+    /// Refresh this when the window/surface moves between displays or when the
+    /// backend reports a changed display mode.
     pub display_timing: DisplayTiming,
 }
 
 impl FrameOpportunity {
-    /// Creates a frame opportunity from platform timing facts.
+    /// Creates a frame opportunity to pass to `FrameDriver` or `Scheduler`.
     #[inline]
     #[must_use]
     pub const fn new(tick: FrameTick, hints: PresentHints, display_timing: DisplayTiming) -> Self {
@@ -315,11 +340,15 @@ impl FrameOpportunity {
     }
 }
 
-/// The plan for evaluating a single frame.
+/// Scheduler output that tells the host how to prepare one frame.
 ///
 /// Produced by the [`Scheduler`](crate::scheduler::Scheduler) from a
-/// [`FrameOpportunity`] and [`FrameDemand`]. All engine evaluation and content
-/// selection should be driven by the times in this plan.
+/// [`FrameOpportunity`] and [`FrameDemand`]. With [`FrameDriver`](crate::FrameDriver),
+/// hosts usually read this from [`ActiveFrame::plan`](crate::ActiveFrame::plan)
+/// after [`FrameBeginResult::Ready`](crate::FrameBeginResult::Ready).
+///
+/// All engine evaluation and content selection should be driven by the times in
+/// this plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FramePlan {
     /// Demand that selected this frame.
@@ -351,10 +380,12 @@ pub struct FramePlan {
     pub frame_index: u64,
 }
 
-/// Submission constraints provided by the backend.
+/// Backend submission constraints carried by a [`FrameOpportunity`].
 ///
 /// Backends compute these from the current [`FrameTick`] and their own
-/// knowledge of the presentation pipeline.
+/// knowledge of the presentation pipeline. Hosts pass them to
+/// [`FrameOpportunity::new`]; `FrameDriver` and `Scheduler` use them to compute
+/// deadlines, target-present timing, and feedback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PresentHints {
     /// Whether [`desired_present`](Self::desired_present) can be used as
@@ -367,7 +398,7 @@ pub struct PresentHints {
 }
 
 impl PresentHints {
-    /// Creates hints with explicit presentation timing.
+    /// Creates hints with explicit presentation timing for a frame opportunity.
     ///
     /// If `presentation_timing` is [`PresentationTiming::PacingOnly`],
     /// `desired_present` is discarded. Pacing-only backends expose a commit
@@ -442,10 +473,13 @@ impl PresentHints {
     }
 }
 
-/// Timing feedback constructed by the caller at the end of each tick handler.
+/// Timing feedback passed to [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
 ///
-/// Fed back to the [`Scheduler`](crate::scheduler::Scheduler) so it can adapt
-/// pipeline depth and safety margins.
+/// Low-level scheduler integrations construct this with [`PresentFeedback::new`]
+/// after submitting a frame, or by resolving a [`PendingFeedback`]. Retained
+/// [`FrameDriver`](crate::FrameDriver) hosts usually do not construct it
+/// directly; [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame)
+/// derives it from [`FrameSubmission`](crate::FrameSubmission).
 ///
 /// This type intentionally separates two different claims:
 ///
@@ -480,7 +514,7 @@ pub struct PresentFeedback {
 }
 
 impl PresentFeedback {
-    /// Constructs feedback from timing observations and [`PresentHints`].
+    /// Constructs feedback to pass to [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
     ///
     /// This derives both the strict deadline signal and the weaker pacing
     /// signal.
@@ -536,12 +570,17 @@ impl PresentFeedback {
     }
 }
 
-/// Holds the data needed to construct [`PresentFeedback`] once the actual
-/// present time becomes available on the *next* frame.
+/// Stored submission facts for resolving [`PresentFeedback`] on a later tick.
 ///
 /// Actual present time for frame N is typically only known at frame N+1
 /// (e.g. from `CADisplayLink.timestamp`). This type captures what we know at
 /// submission time so the feedback can be resolved one frame later.
+///
+/// Use this in low-level [`Scheduler`](crate::scheduler::Scheduler)
+/// integrations that receive previous-frame present feedback. Retained
+/// [`FrameDriver`](crate::FrameDriver) integrations can often pass immediate
+/// submission facts through [`FrameSubmission`](crate::FrameSubmission)
+/// instead.
 ///
 /// # Usage
 ///
@@ -564,8 +603,10 @@ pub struct PendingFeedback {
 }
 
 impl PendingFeedback {
-    /// Resolves this pending feedback into a [`PresentFeedback`], using the
-    /// actual present time reported by the backend (if available).
+    /// Resolves this pending value into feedback for `Scheduler::observe`.
+    ///
+    /// Pass the actual present time reported by the next platform tick when it
+    /// is available, or `None` when the backend cannot report it.
     #[must_use]
     pub fn resolve(self, actual_present: Option<HostTime>) -> PresentFeedback {
         PresentFeedback::new(

@@ -14,7 +14,7 @@
 //!
 //! [`RafLoop`]: subduction_backend_web::RafLoop
 //! [`DomPresenter`]: subduction_backend_web::DomPresenter
-//! [`Scheduler`]: frameclock::Scheduler
+//! [`Scheduler`]: frameclock::scheduler::Scheduler
 
 // This crate only runs in the browser; suppress dead-code warnings when
 // cargo-checking on a native host target.
@@ -44,9 +44,11 @@ use web_sys::{
     WebGlUniformLocation,
 };
 
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PresentFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PresentFeedback,
-    Scheduler, SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
 };
 use kurbo::Size;
 use subduction_backend_web::RafLoop;
@@ -170,7 +172,7 @@ struct AnimState {
     sizes: Vec<(f64, f64)>,
     layer_ids: Vec<LayerId>,
     start_us: u64,
-    timebase: frameclock::Timebase,
+    timebase: Timebase,
     webgl: Option<WebGlState>,
     wgpu: Option<WgpuState>,
 }

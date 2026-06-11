@@ -14,7 +14,8 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use frameclock::{FrameTick, HostTime, OutputId, Timebase};
+use frameclock::time::Timebase;
+use frameclock::{FrameTick, HostTime, OutputId};
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink as CVDisplayLinkRaw, CVTimeStamp, kCVReturnSuccess};
 

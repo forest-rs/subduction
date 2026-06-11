@@ -5,7 +5,8 @@
 
 use std::sync::OnceLock;
 
-use frameclock::{HostTime, Timebase};
+use frameclock::HostTime;
+use frameclock::time::Timebase;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 /// Cached QPC frequency — constant for the lifetime of the system.

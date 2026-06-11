@@ -17,7 +17,12 @@ use crate::scheduler::{Scheduler, SchedulerConfig};
 use crate::time::HostTime;
 use crate::timing::{FrameOpportunity, FramePlan, FrameTick, PresentFeedback, PresentHints};
 
-/// A scheduler plan paired with the platform facts used to make it.
+/// A queued scheduler plan paired with the platform facts used to make it.
+///
+/// `FrameDriver` stores this internally while waiting for
+/// [`FramePlan::frame_start`]. Hosts can inspect the current value through
+/// [`FrameDriver::pending_frame`], but normal frame preparation receives an
+/// [`ActiveFrame`] from [`FrameBeginResult::Ready`] instead.
 ///
 /// The tick and hints must stay with the plan because diagnostics and
 /// presentation feedback should be resolved against the same platform
@@ -39,6 +44,9 @@ pub struct PlannedFrame {
 impl PlannedFrame {
     /// Creates a planned frame from a [`FrameTick`], [`FramePlan`], and
     /// matching [`PresentHints`].
+    ///
+    /// Most hosts do not call this directly; [`FrameDriver`] creates
+    /// `PlannedFrame` values when it consumes pending demand.
     #[inline]
     #[must_use]
     pub const fn new(
@@ -56,11 +64,17 @@ impl PlannedFrame {
     }
 }
 
-/// A planned frame that has been handed to the host for preparation.
+/// A planned frame returned to the host for preparation.
 ///
-/// `ActiveFrame` is the normal host handle for frame work. It carries the
-/// scheduler plan plus the original planning facts needed to resolve feedback
-/// and build a [`FrameTimingSummary`] when the host submits the frame.
+/// `FrameDriver::begin_frame` returns this inside
+/// [`FrameBeginResult::Ready`]. It is the normal host handle for frame work:
+/// use [`ActiveFrame::sample_time`] or [`ActiveFrame::plan`] to prepare app
+/// state, then pass the same value to [`FrameDriver::submit_frame`] or
+/// [`FrameDriver::discard_frame`].
+///
+/// The handle carries the scheduler plan plus the original planning facts
+/// needed to resolve feedback and build a [`FrameTimingSummary`] when the host
+/// submits the frame.
 ///
 /// Treat an `ActiveFrame` as a single-use lifecycle token. A host should either
 /// pass it to [`FrameDriver::submit_frame`] after renderer submission or to
@@ -119,17 +133,28 @@ impl ActiveFrame {
     }
 }
 
-/// Host submission facts for an [`ActiveFrame`].
+/// Submission facts passed to [`FrameDriver::submit_frame`].
+///
+/// Construct this after the host has submitted, committed, or otherwise handed
+/// the [`ActiveFrame`] to its renderer/platform presentation path. It contains
+/// the submission timestamp and optional actual-present timestamp that
+/// `FrameDriver` needs to build feedback and return a [`FrameTimingSummary`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameSubmission {
-    /// Host time when the frame was submitted/committed.
+    /// Host time when the frame was submitted or committed.
+    ///
+    /// Pass the timestamp closest to the point where the frame leaves app-side
+    /// control and enters the renderer, compositor, or presentation backend.
     pub submitted_at: HostTime,
-    /// Actual presentation time, if the platform reported it.
+    /// Actual presentation time, if the platform reported it for this frame.
+    ///
+    /// Use `None` when the platform reports actual present later, reports only
+    /// previous-frame present times, or exposes no actual-present feedback.
     pub actual_present: Option<HostTime>,
 }
 
 impl FrameSubmission {
-    /// Creates frame submission facts.
+    /// Creates submission facts for [`FrameDriver::submit_frame`].
     #[inline]
     #[must_use]
     pub const fn new(submitted_at: HostTime, actual_present: Option<HostTime>) -> Self {
@@ -140,7 +165,7 @@ impl FrameSubmission {
     }
 }
 
-/// Result of asking a [`FrameDriver`] to begin frame work.
+/// Result returned by [`FrameDriver::begin_frame`].
 #[derive(Debug)]
 pub enum FrameBeginResult {
     /// No demand or queued frame is waiting.
@@ -151,6 +176,9 @@ pub enum FrameBeginResult {
     /// call [`FrameDriver::begin_frame`] again from the wake/redraw path.
     WaitUntil(HostTime),
     /// A planned frame is ready for application update and rendering.
+    ///
+    /// Prepare the frame, then pass this [`ActiveFrame`] to
+    /// [`FrameDriver::submit_frame`] or [`FrameDriver::discard_frame`].
     Ready(ActiveFrame),
     /// A queued frame missed its commit deadline before the host released it.
     ///
@@ -277,7 +305,11 @@ impl FrameDriver {
         }
     }
 
-    /// Adds app-visible frame demand.
+    /// Adds app-visible frame demand for a future [`begin_frame`](Self::begin_frame) call.
+    ///
+    /// Call this when input, animation, layout, resize, timers, or background
+    /// visual work make a frame necessary. The driver keeps the demand until it
+    /// can plan a frame for a later [`FrameOpportunity`].
     ///
     /// If a frame is already queued, stronger demand invalidates that queued
     /// plan so the next [`begin_frame`](Self::begin_frame) call replans with the

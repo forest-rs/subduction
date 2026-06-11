@@ -5,7 +5,8 @@
 //!
 //! [`OutputId`] is a lightweight handle identifying the display output or
 //! presentation surface a frame tick targets. Platform adapters assign these
-//! identifiers; `frameclock` treats them as opaque.
+//! identifiers; `frameclock` treats them as opaque and carries them through
+//! plans, feedback, and diagnostics.
 
 use core::fmt;
 
@@ -13,6 +14,11 @@ use core::fmt;
 ///
 /// Platform adapters assign output IDs to distinguish multiple displays or
 /// surfaces. The scheduler passes them through without interpreting the value.
+///
+/// Use the ID that matches the [`DisplayTiming`](crate::DisplayTiming) supplied
+/// in the same frame opportunity. If a window or surface moves to another
+/// display, adapters should update both the `OutputId` and display timing they
+/// put into subsequent ticks/opportunities.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct OutputId(pub u32);
 

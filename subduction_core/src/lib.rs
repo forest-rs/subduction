@@ -21,7 +21,10 @@
 //!   Backend (tick source)
 //!       │
 //!       ▼
-//!   frameclock::FrameTick ──► frameclock::Scheduler::plan() ──► frameclock::FramePlan
+//!   frameclock::FrameTick ──► frameclock::scheduler::Scheduler::plan()
+//!                                           │
+//!                                           ▼
+//!                         frameclock::timing::FramePlan
 //!                                           │
 //!                 ┌─────────────────────────┘
 //!                 ▼
@@ -29,7 +32,7 @@
 //!                                                    │
 //!                 ┌──────────────────────────────────┘
 //!                 ▼
-//!   frameclock::PresentFeedback ──► frameclock::Scheduler::observe()
+//!   frameclock::timing::PresentFeedback ──► frameclock::scheduler::Scheduler::observe()
 //! ```
 //!
 //! **[`layer`]** — Struct-of-arrays layer tree with generational handles.

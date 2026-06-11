@@ -21,8 +21,10 @@ re-exports for the old timing module paths while local callers migrate to direct
 
 For timing callers, the main source changes are:
 
-- import `frameclock::{FrameTick, FramePlan, Scheduler, SchedulerConfig, ...}`
-  instead of `subduction_core::{timing, scheduler, time, clock}`;
+- import common host types from `frameclock::{FrameTick, SchedulerConfig, ...}`
+  and lower-level types such as `Scheduler` and `FramePlan` from
+  `frameclock::scheduler` and `frameclock::timing` instead of
+  `subduction_core::{timing, scheduler, time, clock}`;
 - use `FramePlan::sample_time` instead of `FramePlan::semantic_time`;
 - use `FramePlan::target_present` instead of `FramePlan::present_time`;
 - choose scheduler presets by timing capability:

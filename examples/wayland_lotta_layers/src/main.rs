@@ -17,10 +17,9 @@
 use lotta_layers_common::LAYER_SIZE;
 use wayland_client::Connection;
 
-use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, PresentFeedback, Scheduler,
-    SchedulerConfig,
-};
+use frameclock::scheduler::Scheduler;
+use frameclock::timing::PresentFeedback;
+use frameclock::{DisplayTiming, Duration, FrameDemand, FrameOpportunity, SchedulerConfig};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::LayerStore;
 

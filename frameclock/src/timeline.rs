@@ -12,8 +12,19 @@
 //!
 //! Rate and epoch media are updated smoothly (via EMA) each time a new
 //! observation is fed in, avoiding jitter while tracking drift.
+//!
+//! This module is a helper for hosts that need to map frameclock host times
+//! into an external timeline, such as video PTS or an audio-master media clock.
+//! The scheduler does not use `AffineClock` directly. A media layer feeds
+//! observations from the media backend, then queries with
+//! [`ActiveFrame::sample_time`](crate::ActiveFrame::sample_time) or
+//! [`FramePlan::target_present`](crate::timing::FramePlan::target_present) to
+//! choose content for the frame being prepared.
 
-/// Result of feeding an observation to an [`AffineClock`].
+/// Result returned by [`AffineClock::update_or_reanchor`].
+///
+/// Use this for diagnostics or media-sync policy that wants to distinguish
+/// normal drift correction from seeks, loops, and other discontinuities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AffineClockUpdate {
     /// The observation was ignored because it contained non-finite media time.
@@ -27,10 +38,15 @@ pub enum AffineClockUpdate {
     Reanchored,
 }
 
-/// A smoothed affine mapping from host time (ticks) to media time (seconds).
+/// A smoothed affine mapping from host time ticks to media time seconds.
 ///
-/// Feed observations via [`update`](Self::update) and query via
-/// [`media_time_at`](Self::media_time_at).
+/// Media or playback code creates this when it needs to choose external
+/// timeline content for a frameclock-planned host time. Feed observations via
+/// [`update`](Self::update) or [`update_or_reanchor`](Self::update_or_reanchor),
+/// and query via [`media_time_at`](Self::media_time_at) using host ticks from
+/// an [`ActiveFrame`](crate::ActiveFrame) or [`FramePlan`](crate::timing::FramePlan).
+///
+/// Ordinary UI/render hosts that only need frame pacing can ignore this type.
 #[derive(Clone, Debug)]
 pub struct AffineClock {
     /// Current estimated rate (media seconds per host tick).
@@ -54,8 +70,7 @@ pub struct AffineClock {
 }
 
 impl AffineClock {
-    /// Creates a new clock with the given initial rate and EMA smoothing
-    /// factors.
+    /// Creates a new media-clock mapper.
     ///
     /// `initial_rate` is in media-seconds per host-tick (e.g. for nanosecond
     /// ticks, this would be `1e-9`). It is also the initial rate that
@@ -76,7 +91,7 @@ impl AffineClock {
         }
     }
 
-    /// Queries the estimated media time at the given host time.
+    /// Queries the estimated media time at a host tick.
     ///
     /// Returns `None` if no observations have been fed yet.
     #[must_use]
@@ -87,7 +102,7 @@ impl AffineClock {
         Some(self.media_time_at_initialized(host_ticks))
     }
 
-    /// Feeds an observation of `(host_time, media_time)` to update the
+    /// Feeds a `(host_ticks, media_time_seconds)` observation to update the
     /// mapping.
     ///
     /// On the first call, this sets the mapping exactly. Subsequent calls

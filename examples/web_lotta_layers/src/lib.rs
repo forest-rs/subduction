@@ -31,9 +31,11 @@ use lotta_layers_common::LAYER_SIZE;
 use wasm_bindgen::prelude::*;
 use web_sys::{Document, HtmlElement};
 
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PresentFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PresentFeedback,
-    Scheduler, SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
 };
 use subduction_backend_web::DomPresenter;
 use subduction_backend_web::LayerRoot;
@@ -79,7 +81,7 @@ struct AnimState {
     child_ids: Vec<LayerId>,
     fps_element: HtmlElement,
     start_us: u64,
-    timebase: frameclock::Timebase,
+    timebase: Timebase,
     prev_time: f64,
 }
 

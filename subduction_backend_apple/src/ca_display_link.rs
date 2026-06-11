@@ -20,7 +20,8 @@ use alloc::boxed::Box;
 use core::cell::Cell;
 use core::fmt;
 
-use frameclock::{FrameTick, HostTime, OutputId, Timebase};
+use frameclock::time::Timebase;
+use frameclock::{FrameTick, HostTime, OutputId};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};

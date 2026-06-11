@@ -16,20 +16,28 @@
 //!
 //! # API Surfaces
 //!
-//! The root module re-exports the frame-planning vocabulary used by both
-//! retained [`FrameDriver`] hosts and lower-level [`Scheduler`] integrations:
-//! demand, opportunities, active frames, submissions, scheduler configuration,
-//! display timing, feedback, host time, timebase conversion, output ids, and
-//! frame summaries.
+//! The root module re-exports the common retained-host integration surface:
+//! frame demand, timing facts needed to build a [`FrameOpportunity`],
+//! [`FrameDriver`] lifecycle types, [`SchedulerConfig`], host time, output ids,
+//! and frame summaries.
 //!
-//! The modules group the same responsibilities more explicitly:
+//! More specialized APIs live under their modules:
 //!
+//! - [`scheduler`] exposes [`Scheduler`](scheduler::Scheduler),
+//!   [`DegradationPolicy`](scheduler::DegradationPolicy), and adaptation state
+//!   for custom low-level integrations.
 //! - [`diagnostics`] exposes explicit event structs,
 //!   [`DiagnosticsSink`](diagnostics::DiagnosticsSink), and
 //!   [`FrameTimingSummaryBuilder`](diagnostics::FrameTimingSummaryBuilder) for
 //!   telemetry adapters and tests.
-//! - [`scheduler`], [`timing`], [`time`], [`timeline`], [`driver`], and
-//!   [`demand`] expose the same public types grouped by responsibility.
+//! - [`time`] exposes [`Timebase`](time::Timebase) for backend clock
+//!   conversion.
+//! - [`timeline`] exposes [`AffineClock`](timeline::AffineClock) for host-time
+//!   to external-timeline mapping.
+//! - [`timing`] and [`driver`] expose lower-level lifecycle and presentation
+//!   feedback types such as [`PresentFeedback`](timing::PresentFeedback),
+//!   [`PendingFeedback`](timing::PendingFeedback), and
+//!   [`PlannedFrame`](driver::PlannedFrame).
 //!
 //! # Core Flow
 //!
@@ -91,6 +99,19 @@
 //! }
 //! ```
 //!
+//! `FrameDemand` is host-owned pending work. Request `INPUT` for discrete user
+//! action, `CONTINUOUS_INPUT` while an interaction is active, `ANIMATION` while
+//! a visual timeline is running, and `BACKGROUND` for deferrable visual work.
+//! `FrameDemandClass` is the derived ordering used by
+//! [`FrameDemand::dominant_class`] and [`FrameDemand::preempts`]; use it for
+//! diagnostics or adapter policy that needs to match frameclock's demand order.
+//!
+//! `DisplayTiming` should come from the backend/platform facts for the
+//! opportunity's current target output. If a window or surface moves to another
+//! display, or the platform reports a changed display mode, build the next
+//! [`FrameOpportunity`] with timing for that new output instead of reusing stale
+//! app-global display timing.
+//!
 //! # Crate Features
 //!
 //! - `std` (disabled by default): reserved for future standard-library
@@ -108,14 +129,10 @@ pub mod time;
 pub mod timeline;
 pub mod timing;
 
-pub use demand::{FrameDemand, FrameDemandClass};
-pub use diagnostics::{FrameDropReason, FrameTimingBasis, FrameTimingSummary};
-pub use driver::{ActiveFrame, FrameBeginResult, FrameDriver, FrameSubmission, PlannedFrame};
+pub use demand::FrameDemand;
+pub use diagnostics::FrameTimingSummary;
+pub use driver::{ActiveFrame, FrameBeginResult, FrameDriver, FrameSubmission};
 pub use output::OutputId;
-pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
-pub use time::{Duration, HostTime, Timebase};
-pub use timeline::{AffineClock, AffineClockUpdate};
-pub use timing::{
-    DisplayTiming, FrameOpportunity, FramePlan, FrameTick, PendingFeedback, PresentFeedback,
-    PresentHints, PresentationTiming,
-};
+pub use scheduler::SchedulerConfig;
+pub use time::{Duration, HostTime};
+pub use timing::{DisplayTiming, FrameOpportunity, FrameTick, PresentHints};

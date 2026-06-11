@@ -20,9 +20,10 @@
 
 use std::time::Duration as StdDuration;
 
+use frameclock::timing::FramePlan;
 use frameclock::{
-    Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameOpportunity, FramePlan,
-    FrameSubmission, HostTime, OutputId, SchedulerConfig,
+    Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameOpportunity, FrameSubmission,
+    HostTime, OutputId, SchedulerConfig,
 };
 use understory_timing::{TimerId, TimerInstant, TimerQueue};
 use web_time::Instant;

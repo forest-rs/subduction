@@ -39,7 +39,8 @@ pub enum DegradationPolicy {
     Fixed,
 }
 
-/// Configuration for the [`Scheduler`].
+/// Configuration passed to [`Scheduler::new`] or
+/// [`FrameDriver::new`](crate::FrameDriver::new).
 #[derive(Clone, Copy, Debug)]
 pub struct SchedulerConfig {
     /// Initial pipeline depth.
@@ -213,8 +214,14 @@ fn f64_ticks_to_u64(ticks: f64) -> u64 {
     ticks as u64
 }
 
-/// Frame scheduler that converts [`FrameOpportunity`] values into
+/// Low-level planner that converts [`FrameOpportunity`] values into
 /// [`FramePlan`]s and adapts over time.
+///
+/// Custom integrations call [`Scheduler::plan`] when they are ready to make a
+/// frame plan, then call [`Scheduler::observe`] with [`PresentFeedback`] after
+/// submission. Most host applications should start with
+/// [`FrameDriver`](crate::FrameDriver), which owns queued demand, retained
+/// frame-start waits, and timing-summary construction around this scheduler.
 ///
 /// # Pipeline depth
 ///
@@ -256,7 +263,10 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// Creates a new scheduler with the given configuration.
+    /// Creates a low-level scheduler with the given configuration.
+    ///
+    /// Use [`FrameDriver::new`](crate::FrameDriver::new) instead when the host
+    /// wants frameclock to own pending demand and queued frame lifecycle state.
     #[must_use]
     pub fn new(mut config: SchedulerConfig) -> Self {
         config.min_depth = config.min_depth.max(1);
@@ -277,7 +287,7 @@ impl Scheduler {
         }
     }
 
-    /// Produces a [`FramePlan`] for the given frame opportunity and demand.
+    /// Produces a [`FramePlan`] from a frame opportunity and demand.
     ///
     /// Hosts should usually call this only with non-empty [`FrameDemand`].
     /// `FrameDemand::NONE` is accepted for passive pacing diagnostics or
@@ -435,6 +445,10 @@ impl Scheduler {
     }
 
     /// Feeds presentation feedback to adapt scheduling parameters.
+    ///
+    /// Call this after submitting a frame planned by [`Self::plan`]. Hosts using
+    /// [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame) do not
+    /// call this directly because the driver observes feedback internally.
     pub fn observe(&mut self, feedback: &PresentFeedback) {
         // Update build cost EMA.
         let build_ticks = feedback

@@ -15,9 +15,11 @@ use core::cell::RefCell;
 use core::ffi::c_void;
 
 use bytemuck::{Pod, Zeroable};
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PendingFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PendingFeedback,
-    Scheduler, SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
 };
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -368,7 +370,7 @@ struct AnimState {
     scheduler: Scheduler,
     sub_ids: Vec<LayerId>,
     start_ticks: u64,
-    timebase: frameclock::Timebase,
+    timebase: Timebase,
     pending_feedback: Option<PendingFeedback>,
 
     // wgpu shared state

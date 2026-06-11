@@ -12,9 +12,11 @@ use frameclock::diagnostics::{
     Diagnostics, DiagnosticsSink, FramePlanEvent, FrameTickEvent, FrameTimingSummaryBuilder,
     PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };
+use frameclock::scheduler::Scheduler;
+use frameclock::timing::PresentFeedback;
 use frameclock::{
     DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, FrameTimingSummary,
-    HostTime, OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
+    HostTime, OutputId, PresentHints, SchedulerConfig,
 };
 
 const FRAME_COUNT: u64 = 90;

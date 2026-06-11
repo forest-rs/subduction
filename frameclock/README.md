@@ -27,11 +27,20 @@ platform tick -> FrameOpportunity
               -> FrameTimingSummary
 ```
 
-Use `FrameDemand` to distinguish latency-sensitive input from continuous input,
-animation, and deferrable background work. Use `DisplayTiming` to describe the
-target output's fixed or variable refresh constraints. Use
-`FramePlan::frame_start` to arm an event-loop wake or request redraw when the
-start time is already due. Use `FramePlan::sample_time` for animation and
+Use `FrameDemand` as the host-owned reason a frame is needed. Request
+`INPUT` for discrete user action, `CONTINUOUS_INPUT` while scrolling/resizing or
+dragging, `ANIMATION` while a visual timeline is active, and `BACKGROUND` for
+deferrable visual work. With `FrameDriver`, call `request(demand)` when those
+causes arrive; with the low-level scheduler, pass the demand to
+`Scheduler::plan(opportunity, demand)`.
+
+Use `DisplayTiming` to describe the current target output's fixed or variable
+refresh constraints. It should come from the backend/platform facts for the
+same output or surface as the `FrameTick`; refresh it when a window moves
+between displays or the platform reports a changed display mode.
+
+Use `FramePlan::frame_start` to arm an event-loop wake or request redraw when
+the start time is already due. Use `FramePlan::sample_time` for animation and
 simulation sampling. Use `FramePlan::target_present` only when code
 specifically needs the predicted display time.
 
@@ -39,6 +48,9 @@ specifically needs the predicted display time.
 Ordinary render loops should stay idle instead of calling `Scheduler::plan`
 with empty demand. Passing `NONE` is reserved for hosts that intentionally want
 a passive pacing plan for diagnostics or backend bookkeeping.
+`FrameDemandClass` is the derived ordering/classification used by
+`FrameDemand::dominant_class` and `FrameDemand::preempts`; it is mainly for
+diagnostics and adapter policy that needs to match frameclock's demand order.
 
 `FrameDriver` is the retained lifecycle helper for hosts that need to queue
 demand and a future frame-start plan between event-loop turns. It owns pending
@@ -60,26 +72,27 @@ assemble summary events by hand.
 
 ## API Surfaces
 
-The root module re-exports the frame-planning vocabulary used by both retained
-`FrameDriver` hosts and lower-level `Scheduler` integrations:
+The root module re-exports the common retained-host integration surface:
 
 - `FrameDriver`, `FrameOpportunity`, `ActiveFrame`, and `FrameSubmission`
-- `FrameDemand` and `FrameDemandClass`
-- `Scheduler`, `SchedulerConfig`, `SchedulerState`, and `DegradationPolicy`
-- `FrameTick`, `FrameOpportunity`, `FramePlan`, `PresentHints`,
-  `PresentationTiming`, `PresentFeedback`, `PendingFeedback`, and
-  `DisplayTiming`
-- `HostTime`, `Duration`, `Timebase`, and `OutputId`
-- `FrameTimingSummary`, `FrameTimingBasis`, and `FrameDropReason`
-- `AffineClock` and `AffineClockUpdate`
+- `FrameDemand`
+- `SchedulerConfig`
+- `FrameTick`, `PresentHints`, and `DisplayTiming`
+- `HostTime`, `Duration`, and `OutputId`
+- `FrameTimingSummary`
 
-The modules group the same responsibilities more explicitly:
+Specialized APIs live under their modules:
 
 - `frameclock::diagnostics` for event structs, `DiagnosticsSink`, and
   `FrameTimingSummaryBuilder`.
-- `frameclock::scheduler`, `frameclock::timing`, `frameclock::time`,
-  `frameclock::timeline`, `frameclock::driver`, and `frameclock::demand` for
-  the same public types grouped by responsibility.
+- `frameclock::scheduler` for `Scheduler`, `DegradationPolicy`, and adaptation
+  state used by custom low-level integrations.
+- `frameclock::timing` for presentation feedback, pending feedback, frame
+  plans, and lower-level timing details.
+- `frameclock::time` for `Timebase` and clock conversion.
+- `frameclock::timeline` for `AffineClock`.
+- `frameclock::driver` and `frameclock::demand` for lower-level lifecycle and
+  demand policy types.
 
 ```rust,ignore
 use frameclock::{
@@ -125,6 +138,11 @@ match driver.begin_frame(opportunity) {
 `DisplayTiming::fixed(interval)` is the right model when a backend has only a
 current refresh interval, or when the platform does not expose direct control
 over variable presentation timing.
+
+Display timing is not app-global state. It belongs to the current target output
+for a frame opportunity. If a window is dragged from a 60 Hz display to a 120 Hz
+display, or if a platform display link reports a new interval/range, the next
+`FrameOpportunity` should carry timing for that new output.
 
 `DisplayTiming::variable(min_interval, max_interval, granularity)` describes a
 display range. The `granularity` argument is intentionally conservative:

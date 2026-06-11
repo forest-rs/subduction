@@ -9,11 +9,17 @@
 
 use core::ops::{BitOr, BitOrAssign};
 
-/// Dominant scheduling class for a [`FrameDemand`] set.
+/// Scheduling class derived from a [`FrameDemand`] set.
 ///
-/// Variants are ordered from least urgent to most urgent. The scheduler and
-/// higher-level frame drivers use this ordering to decide whether newly arrived
-/// demand should preempt an already queued frame plan.
+/// Hosts normally do not construct this directly. Use
+/// [`FrameDemand::dominant_class`] when diagnostics, adapters, or policy code
+/// need to explain how a demand set will be treated, and use
+/// [`FrameDemand::preempts`] when deciding whether newly arrived demand should
+/// replace an already queued plan.
+///
+/// Variants are ordered from least urgent to most urgent. `FrameDriver` and the
+/// scheduler use the same ordering, so adapter code should use this type
+/// instead of keeping a parallel priority table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FrameDemandClass {
     /// No frame is currently needed.
@@ -31,10 +37,18 @@ pub enum FrameDemandClass {
     Input = 4,
 }
 
-/// Why the host is requesting frame work.
+/// Host-owned reason that frame work is needed.
 ///
-/// Demand is a compact bit set because several causes can be pending at once.
-/// The scheduler derives a policy from the strongest pending demand: input is
+/// Hosts create and accumulate `FrameDemand` from app events: input, animation,
+/// resize, layout invalidation, timers, or background visual work. With the
+/// retained API, pass it to [`FrameDriver::request`](crate::FrameDriver::request)
+/// when demand arrives. With the low-level scheduler, pass it as the second
+/// argument to [`Scheduler::plan`](crate::scheduler::Scheduler::plan) for the
+/// current frame opportunity.
+///
+/// Demand is a compact bit set because several causes can be pending at once:
+/// for example input can arrive while animation is already running. The
+/// scheduler derives policy from the strongest pending demand: input is
 /// latency-first, continuous input is latency-sensitive but allowed to choose a
 /// sustainable cadence, animation prefers even pacing, and background work can
 /// be deferred.
@@ -50,14 +64,27 @@ impl FrameDemand {
     /// passive pacing plan for diagnostics or backend bookkeeping.
     pub const NONE: Self = Self(0);
     /// Smooth visual work such as animation or media playback.
+    ///
+    /// Request this while a timeline is active. Stop requesting it when the
+    /// animation becomes idle so the host can sleep.
     pub const ANIMATION: Self = Self(1 << 0);
     /// Latency-sensitive one-shot input such as key presses, clicks, or IME.
+    ///
+    /// Request this for a prompt response to discrete user action. It takes
+    /// precedence over animation/background demand.
     pub const INPUT: Self = Self(1 << 1);
     /// Continuous user input such as scrolling, resize, pointer movement, or
     /// gestures.
+    ///
+    /// Request this while the continuous interaction remains active. It keeps
+    /// latency important while still allowing sustainable pacing when work is
+    /// too slow for every hardware tick.
     pub const CONTINUOUS_INPUT: Self = Self(1 << 2);
     /// Deferrable visual work where power and batching matter more than
     /// immediate latency.
+    ///
+    /// Request this for work that should eventually be displayed but does not
+    /// need input or animation latency.
     pub const BACKGROUND: Self = Self(1 << 3);
 
     /// Returns an empty demand set.
@@ -96,6 +123,10 @@ impl FrameDemand {
     }
 
     /// Returns the strongest scheduling class present in this demand set.
+    ///
+    /// Use this for diagnostics and policy reporting. Hosts that only need to
+    /// know whether new demand should replace a queued plan should call
+    /// [`Self::preempts`] instead.
     #[inline]
     #[must_use]
     pub const fn dominant_class(self) -> FrameDemandClass {

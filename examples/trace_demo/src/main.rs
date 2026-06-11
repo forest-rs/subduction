@@ -12,9 +12,12 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use frameclock::diagnostics::{FramePlanEvent, FrameTickEvent, PresentFeedbackEvent, SubmitEvent};
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PresentFeedback;
 use frameclock::{
     DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, HostTime, OutputId,
-    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase,
+    PresentHints, SchedulerConfig,
 };
 use subduction_core::trace::{
     FrameSummaryBuilder, PhaseBeginEvent, PhaseEndEvent, PhaseKind, TraceSink, Tracer,

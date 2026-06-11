@@ -7,13 +7,24 @@
 //! `frameclock` does not depend on Tracy, Spoor, or any runtime collector.
 //! Adapter crates can implement [`DiagnosticsSink`] and map these events into
 //! their preferred instrumentation system.
+//!
+//! Normal retained hosts can often use the [`FrameTimingSummary`] returned by
+//! [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame) or
+//! [`FrameDriver::discard_frame`](crate::FrameDriver::discard_frame) without
+//! touching this module. The explicit events and builder are for lower-level
+//! scheduler integrations, telemetry adapters, and tests that need the full
+//! frame lifecycle narrative.
 
 use crate::output::OutputId;
 use crate::scheduler::SchedulerState;
 use crate::time::{Duration, HostTime};
 use crate::timing::{FrameDemand, FramePlan, FrameTick, PresentFeedback, PresentationTiming};
 
-/// Emitted when a platform adapter receives or constructs a display-frame tick.
+/// Diagnostics event created from a [`FrameTick`] when a frame opportunity arrives.
+///
+/// Platform adapters or [`FrameDriver`](crate::FrameDriver) create this with
+/// [`FrameTickEvent::from`] and pass it to a [`DiagnosticsSink`] or
+/// [`FrameTimingSummaryBuilder`].
 #[derive(Clone, Copy, Debug)]
 pub struct FrameTickEvent {
     /// Monotonic frame counter.
@@ -40,7 +51,12 @@ impl From<&FrameTick> for FrameTickEvent {
     }
 }
 
-/// Emitted after the scheduler produces a [`FramePlan`].
+/// Diagnostics event created after the scheduler produces a [`FramePlan`].
+///
+/// Construct this with [`FramePlanEvent::new`] and pass it to a
+/// [`DiagnosticsSink`] or [`FrameTimingSummaryBuilder`]. Hosts using
+/// [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame) do not need
+/// to create it manually for frame summaries.
 #[derive(Clone, Copy, Debug)]
 pub struct FramePlanEvent {
     /// Monotonic frame counter.
@@ -87,7 +103,12 @@ impl FramePlanEvent {
     }
 }
 
-/// Emitted when a frame is submitted to the display pipeline.
+/// Diagnostics event recorded when a frame is submitted to the display pipeline.
+///
+/// Low-level integrations create this after renderer/platform submission and
+/// feed it to a [`DiagnosticsSink`] or [`FrameTimingSummaryBuilder`].
+/// [`FrameDriver`](crate::FrameDriver) creates the equivalent event internally
+/// from [`FrameSubmission`](crate::FrameSubmission).
 #[derive(Clone, Copy, Debug)]
 pub struct SubmitEvent {
     /// Monotonic frame counter.
@@ -98,7 +119,12 @@ pub struct SubmitEvent {
     pub expected_present: Option<HostTime>,
 }
 
-/// Emitted when presentation feedback is resolved.
+/// Diagnostics event created from resolved [`PresentFeedback`].
+///
+/// Low-level integrations create this with [`PresentFeedbackEvent::new`] after
+/// resolving feedback and pass it to a [`DiagnosticsSink`] or
+/// [`FrameTimingSummaryBuilder`]. [`FrameDriver`](crate::FrameDriver) creates
+/// it internally during [`submit_frame`](crate::FrameDriver::submit_frame).
 #[derive(Clone, Copy, Debug)]
 pub struct PresentFeedbackEvent {
     /// Monotonic frame counter.
@@ -141,7 +167,7 @@ pub enum FrameDropReason {
     OutputUnavailable,
 }
 
-/// Emitted when a planned frame is dropped before submission.
+/// Diagnostics event created when a planned frame is dropped before submission.
 ///
 /// Dropped-frame diagnostics are lifecycle facts, not scheduler feedback. They
 /// should be recorded for traces and summaries without feeding
@@ -168,7 +194,11 @@ impl FrameDropEvent {
     }
 }
 
-/// Emitted when scheduler adaptation state is sampled.
+/// Diagnostics event created when scheduler adaptation state is sampled.
+///
+/// Low-level integrations pass this to a [`DiagnosticsSink`] or
+/// [`FrameTimingSummaryBuilder`] when they want frame summaries to include the
+/// scheduler state observed near submit/drop time.
 #[derive(Clone, Copy, Debug)]
 pub struct SchedulerStateEvent {
     /// Current scheduler state.
@@ -190,7 +220,8 @@ pub enum FrameTimingBasis {
     SubmissionOnly,
 }
 
-/// Per-frame summary of frameclock-owned timing and pacing facts.
+/// Per-frame summary returned by [`FrameDriver`](crate::FrameDriver) or built
+/// from diagnostics events.
 ///
 /// This is a compact aggregate for logs, counters, trace rows, and diagnostics
 /// UIs that do not need a host-specific frame-loop trace. It intentionally does
@@ -245,12 +276,16 @@ pub struct FrameTimingSummary {
     pub scheduler_state: Option<SchedulerState>,
 }
 
-/// Builds a [`FrameTimingSummary`] from frameclock diagnostics events.
+/// Builder used by low-level integrations to assemble a [`FrameTimingSummary`].
 ///
 /// Create one builder per planned frame, feed it the events observed for that
 /// frame, then call [`finish`](Self::finish). Event order is not significant.
 /// The builder returns `None` if the required tick and plan are missing or if
 /// they do not describe the same frame.
+///
+/// Hosts using [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame)
+/// or [`FrameDriver::discard_frame`](crate::FrameDriver::discard_frame) usually
+/// do not need this builder; the driver returns a `FrameTimingSummary` directly.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameTimingSummaryBuilder {
     tick: Option<FrameTickEvent>,
@@ -403,10 +438,12 @@ fn classify_timing_basis(
     FrameTimingBasis::SubmissionOnly
 }
 
-/// Receives frameclock diagnostics events.
+/// Trait implemented by telemetry adapters that receive frameclock events.
 ///
 /// All methods have default no-op implementations so sinks can implement only
-/// the events they need.
+/// the events they need. Low-level integrations or adapter crates call these
+/// methods through [`Diagnostics`] as frame ticks, plans, submissions, feedback,
+/// drops, and summaries occur.
 pub trait DiagnosticsSink {
     /// Called when a display-frame tick is available.
     fn on_frame_tick(&mut self, event: &FrameTickEvent) {
@@ -471,12 +508,20 @@ impl DiagnosticsSink for FrameTimingSummaryBuilder {
 }
 
 /// A diagnostics sink that discards all events.
+///
+/// Use this directly, or use [`Diagnostics::none`], when an integration wants
+/// to keep diagnostics call sites present without installing a collector.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopDiagnostics;
 
 impl DiagnosticsSink for NoopDiagnostics {}
 
-/// Thin wrapper around an optional diagnostics sink.
+/// Optional diagnostics dispatcher used by low-level integrations.
+///
+/// Construct this with [`Diagnostics::new`] when a telemetry sink is present,
+/// or [`Diagnostics::none`] when diagnostics are disabled. Integration code can
+/// then call the event methods unconditionally while the wrapper handles the
+/// optional sink.
 pub struct Diagnostics<'a> {
     sink: Option<&'a mut dyn DiagnosticsSink>,
 }
@@ -488,7 +533,7 @@ impl core::fmt::Debug for Diagnostics<'_> {
 }
 
 impl<'a> Diagnostics<'a> {
-    /// Creates diagnostics that dispatch to `sink`.
+    /// Creates a dispatcher that forwards events to `sink`.
     #[must_use]
     pub fn new(sink: &'a mut dyn DiagnosticsSink) -> Self {
         Self { sink: Some(sink) }

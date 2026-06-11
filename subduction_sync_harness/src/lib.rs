@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::string::String;
-use frameclock::PresentationTiming;
+use frameclock::timing::PresentationTiming;
 
 /// Runtime pathology toggles for stress tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

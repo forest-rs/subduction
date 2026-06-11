@@ -49,7 +49,8 @@ pub use surface::DCompSurfacePresenter;
 pub use tick::{FrameEventTickSource, TickSource, WM_APP_TICK, compute_hints, make_tick};
 pub use windows::Win32::Graphics::DirectComposition::DCOMPOSITION_FRAME_STATISTICS;
 
-use frameclock::{FrameTick, HostTime, PresentHints, Timebase};
+use frameclock::time::Timebase;
+use frameclock::{FrameTick, HostTime, PresentHints};
 
 /// Returns the current host time using QPC (`QueryPerformanceCounter`).
 #[must_use]
@@ -76,7 +77,7 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin_ns: u64) -> Present
 mod tests {
     use super::*;
     use frameclock::OutputId;
-    use frameclock::PresentationTiming;
+    use frameclock::timing::PresentationTiming;
 
     #[test]
     fn timebase_is_valid() {

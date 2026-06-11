@@ -12,9 +12,11 @@
 
 use core::cell::RefCell;
 
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PendingFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PendingFeedback,
-    Scheduler, SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
 };
 use lotta_layers_common::LAYER_SIZE;
 use objc2::rc::Retained;
@@ -155,7 +157,7 @@ struct AnimState {
     /// of group `g`.
     child_ids: Vec<LayerId>,
     start_ticks: u64,
-    timebase: frameclock::Timebase,
+    timebase: Timebase,
     pending_feedback: Option<PendingFeedback>,
     recorder: RecorderSink,
 }

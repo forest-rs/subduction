@@ -24,7 +24,8 @@
 //! - `trace-rich` (implies `trace`) — gates `LayerChange` and `DamageRect`
 //!   events plus the corresponding `TraceSink` methods.
 
-use frameclock::{HostTime, OutputId, PresentationTiming};
+use frameclock::timing::PresentationTiming;
+use frameclock::{HostTime, OutputId};
 
 pub use frameclock::diagnostics::{
     FramePlanEvent, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
@@ -504,10 +505,9 @@ const fn phase_index(phase: PhaseKind) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frameclock::{
-        Duration, FrameDemand, FramePlan, FrameTick, HostTime, OutputId, PresentationTiming,
-        SchedulerState,
-    };
+    use frameclock::scheduler::SchedulerState;
+    use frameclock::timing::FramePlan;
+    use frameclock::{Duration, FrameDemand, FrameTick, HostTime, OutputId};
 
     fn sample_tick() -> FrameTickEvent {
         FrameTickEvent {

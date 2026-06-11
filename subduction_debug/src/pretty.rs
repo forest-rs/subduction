@@ -9,7 +9,7 @@
 
 use std::io::Write;
 
-use frameclock::Timebase;
+use frameclock::time::Timebase;
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,

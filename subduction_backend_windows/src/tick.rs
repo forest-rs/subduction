@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use frameclock::{FrameTick, HostTime, OutputId, PresentHints, PresentationTiming};
+use frameclock::timing::PresentationTiming;
+use frameclock::{FrameTick, HostTime, OutputId, PresentHints};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;

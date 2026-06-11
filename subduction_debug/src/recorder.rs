@@ -10,7 +10,8 @@
 //! Rich events ([`on_layer_changes`](TraceSink::on_layer_changes),
 //! [`on_damage_rects`](TraceSink::on_damage_rects)) store only the count.
 
-use frameclock::{Duration, FrameDemand, HostTime, OutputId, PresentationTiming};
+use frameclock::timing::PresentationTiming;
+use frameclock::{Duration, FrameDemand, HostTime, OutputId};
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,

@@ -22,7 +22,7 @@
 //! `TickForwarder` before touching non-thread-safe frame state.
 //!
 //! Apple-specific adapters that drive `ProMotion` should treat
-//! [`frameclock::FramePlan::frame_interval`] as the scheduler's cadence
+//! [`frameclock::timing::FramePlan::frame_interval`] as the scheduler's cadence
 //! decision and translate it into the platform's preferred frame-rate API.
 
 #![no_std]
@@ -61,6 +61,8 @@ pub use cv_display_link::DisplayLinkError;
 #[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
 pub use threading::{TickForwarder, TickSender};
 
+use frameclock::time::Timebase;
+use frameclock::timing::PresentationTiming;
 use frameclock::{Duration, FrameTick, HostTime, PresentHints};
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
@@ -81,7 +83,7 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin: Duration) -> Prese
         .max(tick.now);
 
     PresentHints::new(
-        frameclock::PresentationTiming::Predictive,
+        PresentationTiming::Predictive,
         desired_present,
         latest_commit,
     )
@@ -93,18 +95,18 @@ pub fn now() -> HostTime {
     mach_time::now()
 }
 
-/// Returns the Mach absolute time [`Timebase`](frameclock::Timebase).
+/// Returns the Mach absolute time [`Timebase`].
 #[must_use]
-pub fn timebase() -> frameclock::Timebase {
+pub fn timebase() -> Timebase {
     mach_time::timebase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frameclock::{
-        OutputId, PendingFeedback, PresentFeedback, PresentationTiming, Scheduler, SchedulerConfig,
-    };
+    use frameclock::scheduler::Scheduler;
+    use frameclock::timing::{PendingFeedback, PresentFeedback};
+    use frameclock::{OutputId, SchedulerConfig};
 
     #[test]
     fn compute_present_hints_with_prediction() {

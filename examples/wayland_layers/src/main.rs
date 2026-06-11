@@ -12,14 +12,13 @@
 //! Run with: `cargo run -p wayland_layers`
 //!
 //! [`WaylandPresenter`]: subduction_backend_wayland::WaylandPresenter
-//! [`Scheduler`]: frameclock::Scheduler
+//! [`Scheduler`]: frameclock::scheduler::Scheduler
 
 use wayland_client::Connection;
 
-use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, PresentFeedback, Scheduler,
-    SchedulerConfig,
-};
+use frameclock::scheduler::Scheduler;
+use frameclock::timing::PresentFeedback;
+use frameclock::{DisplayTiming, Duration, FrameDemand, FrameOpportunity, SchedulerConfig};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::transform::Transform3d;

@@ -3,7 +3,8 @@
 
 //! Present-hint computation for Wayland ticks.
 
-use frameclock::{Duration, FrameTick, PresentHints, PresentationTiming};
+use frameclock::timing::PresentationTiming;
+use frameclock::{Duration, FrameTick, PresentHints};
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
 ///
@@ -29,9 +30,10 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin: Duration) -> Prese
 #[cfg(test)]
 mod tests {
     use super::compute_present_hints;
+    use frameclock::FrameTick;
     use frameclock::OutputId;
+    use frameclock::timing::PresentationTiming;
     use frameclock::{Duration, HostTime};
-    use frameclock::{FrameTick, PresentationTiming};
 
     fn tick(predicted_present: Option<HostTime>) -> FrameTick {
         FrameTick {

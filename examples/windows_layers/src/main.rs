@@ -15,9 +15,11 @@
 
 use std::cell::UnsafeCell;
 
+use frameclock::scheduler::Scheduler;
+use frameclock::time::Timebase;
+use frameclock::timing::PendingFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, HostTime, PendingFeedback, Scheduler,
-    SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, HostTime, SchedulerConfig,
 };
 use subduction_backend_windows::{
     self as backend, DCompPresenter, DCompSurfacePresenter, Presenter as _, TickSource,
@@ -68,7 +70,7 @@ struct AnimState {
     scheduler: Scheduler,
     sub_ids: Vec<LayerId>,
     start_ticks: u64,
-    timebase: frameclock::Timebase,
+    timebase: Timebase,
     frame_index: u64,
     prev_present_time: Option<HostTime>,
     pending_feedback: Option<PendingFeedback>,

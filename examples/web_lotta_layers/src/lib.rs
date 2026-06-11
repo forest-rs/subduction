@@ -31,16 +31,14 @@ use lotta_layers_common::LAYER_SIZE;
 use wasm_bindgen::prelude::*;
 use web_sys::{Document, HtmlElement};
 
-use frameclock::scheduler::Scheduler;
 use frameclock::time::Timebase;
-use frameclock::timing::PresentFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
+    FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, OutputId, SchedulerConfig,
 };
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
 use subduction_backend_web::DomPresenter;
 use subduction_backend_web::LayerRoot;
 use subduction_backend_web::Presenter as _;
-use subduction_backend_web::RafLoop;
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::output::Color;
 
@@ -73,7 +71,7 @@ fn layer_color_css(index: usize) -> String {
 
 struct AnimState {
     store: LayerStore,
-    scheduler: Scheduler,
+    frame_clock: WebFrameClock,
     presenter: DomPresenter,
     num_groups: usize,
     layers_per_group: usize,
@@ -145,12 +143,12 @@ pub fn main() -> Result<(), JsValue> {
     let fps_element = create_fps_overlay(&document)?;
     container.append_child(&fps_element)?;
 
-    let timebase = subduction_backend_web::timebase();
-    let start_us = subduction_backend_web::now().ticks();
+    let timebase = frameclock_web::timebase();
+    let start_us = frameclock_web::now().ticks();
 
     let state = Rc::new(RefCell::new(AnimState {
         store,
-        scheduler: Scheduler::new(SchedulerConfig::pacing_only()),
+        frame_clock: WebFrameClock::new(SchedulerConfig::pacing_only(), DEFAULT_REFRESH_INTERVAL),
         presenter,
         num_groups,
         layers_per_group,
@@ -224,16 +222,18 @@ fn create_fps_overlay(doc: &Document) -> Result<HtmlElement, JsValue> {
 fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let mut s = state.borrow_mut();
 
-    let build_start = subduction_backend_web::now();
-
-    let safety = Duration(s.scheduler.safety_margin_ticks());
-    let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let opportunity = FrameOpportunity::new(
-        tick,
-        hints,
-        DisplayTiming::from_tick(&tick, Duration(16_667)),
-    );
-    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
+    s.frame_clock.request(FrameDemand::ANIMATION);
+    let frame = match s.frame_clock.begin_frame(tick) {
+        FrameBeginResult::Ready(frame) => frame,
+        FrameBeginResult::Expired(summary) => {
+            if !summary.demand.is_empty() {
+                s.frame_clock.request(summary.demand);
+            }
+            return;
+        }
+        FrameBeginResult::Idle | FrameBeginResult::WaitUntil(_) => return,
+    };
+    let plan = frame.plan();
 
     let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);
     let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_us);
@@ -272,8 +272,8 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let changes = store.evaluate();
     presenter.apply(store, &changes);
 
-    let submitted_at = subduction_backend_web::now();
-
-    let feedback = PresentFeedback::new(&hints, build_start, submitted_at, None);
-    s.scheduler.observe(&feedback);
+    let submitted_at = frameclock_web::now();
+    let _ = s
+        .frame_clock
+        .submit_frame(frame, FrameSubmission::new(submitted_at, None));
 }

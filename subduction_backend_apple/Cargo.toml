@@ -1,6 +1,6 @@
 [package]
 name = "subduction_backend_apple"
-description = "Apple backend for subduction (CADisplayLink, CVDisplayLink, CALayer, CAMetalLayer)"
+description = "Apple layer presenters for subduction (CALayer, CAMetalLayer)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -11,16 +11,13 @@ keywords = ["compositing", "macos", "ios", "calayer", "core-animation"]
 categories = ["os::macos-apis", "rendering::engine"]
 
 [features]
-default = ["ca-display-link"]
+default = []
 appkit = ["dep:objc2-app-kit"]
-cv-display-link = ["dep:objc2-core-video", "dep:dispatch2", "dispatch2/alloc"]
-ca-display-link = ["objc2-quartz-core/CADisplayLink"]
 
 [lints]
 workspace = true
 
 [dependencies]
-frameclock = { workspace = true }
 subduction_core = { workspace = true }
 
 hashbrown = { version = "0.17.0", default-features = false, features = [
@@ -51,17 +48,6 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
   "CGColor",
   "objc2",
-] }
-
-# cv-display-link feature deps (legacy macOS only)
-objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
-  "CVDisplayLink",
-  "CVBase",
-  "CVReturn",
-  "CVHostTime",
-] }
-dispatch2 = { version = "0.3", optional = true, default-features = false, features = [
-  "alloc",
 ] }
 
 # appkit feature deps

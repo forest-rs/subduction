@@ -10,14 +10,15 @@ publish = false
 
 [features]
 default = ["ca-display-link"]
-ca-display-link = ["subduction_backend_apple/ca-display-link"]
-cv-display-link = ["subduction_backend_apple/cv-display-link"]
+ca-display-link = ["frameclock_apple/ca-display-link"]
+cv-display-link = ["frameclock_apple/cv-display-link"]
 
 [lints]
 workspace = true
 
 [dependencies]
 frameclock = { workspace = true }
+frameclock_apple = { workspace = true, default-features = false }
 subduction_core = { workspace = true, features = ["trace"] }
 subduction_backend_apple = { path = "../../subduction_backend_apple", default-features = false, features = [
   "appkit",

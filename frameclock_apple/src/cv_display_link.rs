@@ -1,11 +1,7 @@
-// Copyright 2026 the Subduction Authors
+// Copyright 2026 the Frameclock Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `CVDisplayLink` integration for predictive frame timing.
-//!
-//! Wraps `CVDisplayLink` in a safe Rust API that produces [`FrameTick`] events.
-//!
-//! [`FrameTick`]: frameclock::FrameTick
 
 use alloc::boxed::Box;
 use core::ffi::c_void;
@@ -56,25 +52,8 @@ struct CallbackState {
 }
 
 /// Safe wrapper around `CVDisplayLink` that produces [`FrameTick`] events.
-///
-/// `DisplayLink` is `!Send` because the underlying `CVDisplayLink` is not
-/// thread-safe for mutation. The callback itself runs on a `CoreVideo`
-/// background thread by design — it uses only atomics and the `Send + Sync`
-/// [`TickSender`].
-///
-/// # Example
-///
-/// ```ignore
-/// let forwarder = TickForwarder::new(|tick| { /* handle on main thread */ });
-/// let link = DisplayLink::new(forwarder.sender(), OutputId(0))?;
-/// link.start()?;
-/// ```
 pub struct DisplayLink {
-    /// Retained reference to the underlying `CVDisplayLink`.
-    /// `CFRetained` handles release on drop.
     raw: CFRetained<CVDisplayLinkRaw>,
-    /// Pinned callback state whose pointer is shared with the C callback.
-    /// Must outlive `raw` (declared after, dropped after).
     _state: Pin<Box<CallbackState>>,
 }
 
@@ -87,7 +66,7 @@ impl fmt::Debug for DisplayLink {
 }
 
 impl DisplayLink {
-    /// Returns the Mach absolute time timebase (numer/denom → nanoseconds).
+    /// Returns the Mach absolute time timebase.
     #[must_use]
     pub fn timebase() -> Timebase {
         crate::mach_time::timebase()
@@ -100,9 +79,6 @@ impl DisplayLink {
     }
 
     /// Creates a new display link targeting all active displays.
-    ///
-    /// The link is created but **not started**. Call [`start`](Self::start) to
-    /// begin receiving ticks.
     ///
     /// # Errors
     ///
@@ -118,9 +94,7 @@ impl DisplayLink {
             output,
         });
 
-        // Create the CVDisplayLink.
         let mut link_ptr: *mut CVDisplayLinkRaw = core::ptr::null_mut();
-        // SAFETY: link_ptr is a valid out-pointer.
         let ret = unsafe {
             CVDisplayLinkRaw::create_with_active_cg_displays(NonNull::new_unchecked(&mut link_ptr))
         };
@@ -128,14 +102,9 @@ impl DisplayLink {
             return Err(DisplayLinkError::CreateFailed(ret));
         }
         let raw_nn = NonNull::new(link_ptr).ok_or(DisplayLinkError::CreateFailed(ret))?;
-        // SAFETY: create_with_active_cg_displays follows the Create Rule,
-        // returning a +1 retained reference.
         let raw = unsafe { CFRetained::from_raw(raw_nn) };
 
-        // Set the output callback, passing a pointer to the pinned state.
         let state_ptr: *const CallbackState = &*state;
-        // SAFETY: display_link_callback matches the expected C signature,
-        // and state_ptr will remain valid as long as this DisplayLink exists.
         let ret = unsafe {
             raw.set_output_callback(Some(display_link_callback), state_ptr as *mut c_void)
         };
@@ -146,13 +115,11 @@ impl DisplayLink {
         Ok(Self { raw, _state: state })
     }
 
-    /// Starts the display link. Ticks will begin arriving on the main thread
-    /// via the [`TickSender`].
+    /// Starts the display link.
     ///
     /// # Errors
     ///
-    /// Returns [`DisplayLinkError::StartFailed`] if already running or if
-    /// `CoreVideo` reports an error.
+    /// Returns [`DisplayLinkError::StartFailed`] if `CoreVideo` reports an error.
     #[expect(
         deprecated,
         reason = "CVDisplayLink API is deprecated by Apple but still functional"
@@ -169,8 +136,7 @@ impl DisplayLink {
     ///
     /// # Errors
     ///
-    /// Returns [`DisplayLinkError::StopFailed`] if not running or if
-    /// `CoreVideo` reports an error.
+    /// Returns [`DisplayLinkError::StopFailed`] if `CoreVideo` reports an error.
     #[expect(
         deprecated,
         reason = "CVDisplayLink API is deprecated by Apple but still functional"
@@ -190,21 +156,12 @@ impl Drop for DisplayLink {
         reason = "CVDisplayLink API is deprecated by Apple but still functional"
     )]
     fn drop(&mut self) {
-        // Stop if running (ignore errors during drop).
-        // CFRetained handles the release automatically.
         if self.raw.is_running() {
             let _ = self.raw.stop();
         }
     }
 }
 
-/// The C callback invoked by `CoreVideo` on its background thread.
-///
-/// # Safety
-///
-/// - `user_info` must point to a valid, pinned `CallbackState`.
-/// - `in_now` and `in_output_time` must be valid `CVTimeStamp` pointers
-///   (guaranteed by `CoreVideo`).
 unsafe extern "C-unwind" fn display_link_callback(
     _display_link: NonNull<CVDisplayLinkRaw>,
     in_now: NonNull<CVTimeStamp>,
@@ -213,7 +170,6 @@ unsafe extern "C-unwind" fn display_link_callback(
     _flags_out: NonNull<u64>,
     user_info: *mut c_void,
 ) -> i32 {
-    // SAFETY: user_info is the pinned CallbackState pointer we set in `new`.
     let state = unsafe { &*(user_info.cast::<CallbackState>()) };
 
     let now_ts = unsafe { in_now.as_ref() };
@@ -221,9 +177,6 @@ unsafe extern "C-unwind" fn display_link_callback(
 
     let now = HostTime(now_ts.hostTime);
     let predicted_present = HostTime(out_ts.hostTime);
-
-    // Compute refresh interval from the difference between output and now
-    // timestamps' hostTime values.
     let refresh_interval = if out_ts.hostTime > now_ts.hostTime {
         Some(out_ts.hostTime - now_ts.hostTime)
     } else {

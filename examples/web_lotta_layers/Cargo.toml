@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 frameclock = { workspace = true }
+frameclock_web = { workspace = true }
 lotta_layers_common = { path = "../lotta_layers_common" }
 subduction_core = { workspace = true }
 subduction_backend_web = { path = "../../subduction_backend_web" }

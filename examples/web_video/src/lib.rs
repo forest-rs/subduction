@@ -30,15 +30,14 @@ use alloc::string::{String, ToString as _};
 use core::cell::RefCell;
 use core::f64::consts::TAU;
 
-use frameclock::scheduler::Scheduler;
 use frameclock::time::Timebase;
 use frameclock::timeline::AffineClock;
-use frameclock::timing::{PresentFeedback, PresentationTiming};
+use frameclock::timing::PresentationTiming;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, HostTime, OutputId,
+    Duration, FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, HostTime, OutputId,
     SchedulerConfig,
 };
-use subduction_backend_web::RafLoop;
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::transform::Transform3d;
@@ -84,7 +83,7 @@ struct VideoUi {
 struct VideoState {
     store: LayerStore,
     presenter: DomPresenter,
-    scheduler: Scheduler,
+    frame_clock: WebFrameClock,
     timebase: Timebase,
     app_start: HostTime,
     media_clock: AffineClock,
@@ -326,8 +325,8 @@ pub fn main() -> Result<(), JsValue> {
         "position: absolute; min-width: 220px; padding: 6px 8px; border-radius: 8px; background: rgba(9,15,30,0.78); color: #f2f6ff; font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;",
     )?;
 
-    let timebase = subduction_backend_web::timebase();
-    let app_start = subduction_backend_web::now();
+    let timebase = frameclock_web::timebase();
+    let app_start = frameclock_web::now();
     let mut media_clock = AffineClock::new(seconds_per_tick(timebase), 0.08, 0.08);
     media_clock.update(app_start.ticks(), 0.0);
 
@@ -337,7 +336,7 @@ pub fn main() -> Result<(), JsValue> {
     let state = Rc::new(RefCell::new(VideoState {
         store,
         presenter,
-        scheduler: Scheduler::new(scheduler_cfg),
+        frame_clock: WebFrameClock::new(scheduler_cfg, DEFAULT_REFRESH_INTERVAL),
         timebase,
         app_start,
         media_clock,
@@ -418,7 +417,7 @@ fn bind_controls(state: &Rc<RefCell<VideoState>>) -> Result<(), JsValue> {
             let normalized = s.ui.seek.value_as_number().clamp(0.0, 1000.0) / 1000.0;
             let next_time = dur * normalized;
             s.video.set_current_time(next_time);
-            let host = subduction_backend_web::now();
+            let host = frameclock_web::now();
             reanchor_media_clock(&mut s.media_clock, host, next_time);
         }
     }) as Box<dyn FnMut(_)>);
@@ -434,7 +433,7 @@ fn bind_controls(state: &Rc<RefCell<VideoState>>) -> Result<(), JsValue> {
         let mut s = ended_state.borrow_mut();
         s.video.set_current_time(0.0);
         let _ = s.video.play();
-        reanchor_media_clock(&mut s.media_clock, subduction_backend_web::now(), 0.0);
+        reanchor_media_clock(&mut s.media_clock, frameclock_web::now(), 0.0);
     }) as Box<dyn FnMut(_)>);
     state
         .borrow()
@@ -454,15 +453,19 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     };
     s.prev_tick_us = Some(tick.now.ticks());
 
-    let build_start = subduction_backend_web::now();
-    let safety = Duration(s.scheduler.safety_margin_ticks());
-    let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let opportunity = FrameOpportunity::new(
-        tick,
-        hints,
-        DisplayTiming::from_tick(&tick, Duration(16_667)),
-    );
-    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
+    s.frame_clock.request(FrameDemand::ANIMATION);
+    let frame = match s.frame_clock.begin_frame(tick) {
+        FrameBeginResult::Ready(frame) => frame,
+        FrameBeginResult::Expired(summary) => {
+            if !summary.demand.is_empty() {
+                s.frame_clock.request(summary.demand);
+            }
+            return;
+        }
+        FrameBeginResult::Idle | FrameBeginResult::WaitUntil(_) => return,
+    };
+    let build_start = frame.build_start();
+    let plan = frame.plan();
 
     let mut semantic_seconds = ticks_to_secs(
         s.timebase,
@@ -631,15 +634,14 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     } else {
         s.last_gpu_stall_ms = 0.0;
     }
-    let submitted_at = subduction_backend_web::now();
-
-    let feedback = PresentFeedback::new(&hints, build_start, submitted_at, None);
-    s.scheduler.observe(&feedback);
+    let submitted_at = frameclock_web::now();
+    let summary = s
+        .frame_clock
+        .submit_frame(frame, FrameSubmission::new(submitted_at, None));
 
     let build_ms = submitted_at.ticks().saturating_sub(build_start.ticks()) as f64 / 1000.0;
     let frame_budget_ms = frame_dur * 1000.0;
-    let hard_miss =
-        plan.target_present.is_some() && submitted_at.ticks() > hints.latest_commit().ticks();
+    let hard_miss = summary.pacing_overrun.unwrap_or(false);
     let soft_miss = build_ms > frame_budget_ms * 1.20;
 
     let audio_delta_ms = if let Some(audio) = s.audio.as_ref() {
@@ -705,7 +707,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
 
     s.ui.hud.set_text_content(Some(&format!(
         "PresentationTiming: {presentation_timing_label}\nTs: {ts_ms:.3}ms\nTp: {tp_label}\npipeline depth: {}\nmissed deadlines: {}\ninj(timer/decode/gpu): {:+.2} / {:.2} / {:.2} ms",
-        s.scheduler.pipeline_depth(),
+        s.frame_clock.driver().scheduler().pipeline_depth(),
         report.missed_frames,
         s.last_timer_jitter_ms,
         s.last_decode_jitter_ms,
@@ -809,9 +811,9 @@ fn busy_wait_ms(ms: f64) {
     if ms <= 0.0 {
         return;
     }
-    let start = subduction_backend_web::now().ticks();
+    let start = frameclock_web::now().ticks();
     let target = start.saturating_add((ms * 1000.0) as u64);
-    while subduction_backend_web::now().ticks() < target {}
+    while frameclock_web::now().ticks() < target {}
 }
 
 fn phase_delta_ms(a_phase: f64, b_phase: f64) -> f64 {

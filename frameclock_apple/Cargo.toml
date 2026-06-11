@@ -1,0 +1,46 @@
+[package]
+name = "frameclock_apple"
+description = "Apple display-link timing adapters for frameclock"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["frame-pacing", "timing", "macos", "ios", "core-animation"]
+categories = ["os::macos-apis", "rendering::engine"]
+
+[features]
+default = ["ca-display-link"]
+cv-display-link = ["dep:objc2-core-video", "dep:dispatch2", "dispatch2/alloc"]
+ca-display-link = ["objc2-quartz-core/CADisplayLink"]
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true }
+
+objc2 = { version = "0.6", default-features = false, features = ["alloc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSObject",
+  "NSRunLoop",
+  "NSObjCRuntime",
+  "NSString",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "CFCGTypes",
+] }
+objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
+  "CVDisplayLink",
+  "CVBase",
+  "CVReturn",
+  "CVHostTime",
+] }
+dispatch2 = { version = "0.3", optional = true, default-features = false, features = [
+  "alloc",
+] }

@@ -1,20 +1,19 @@
 [package]
 name = "subduction_backend_web"
-description = "Web backend for subduction (requestAnimationFrame, WebGL/WebGPU)"
+description = "Web DOM presenter backend for subduction"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["compositing", "wasm", "webgl", "webgpu"]
+keywords = ["compositing", "wasm", "web", "dom"]
 categories = ["wasm", "rendering::engine"]
 
 [lints]
 workspace = true
 
 [dependencies]
-frameclock = { workspace = true }
 kurbo = { workspace = true }
 subduction_core = { workspace = true }
 wasm-bindgen = { workspace = true }

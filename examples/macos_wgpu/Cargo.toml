@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 frameclock = { workspace = true }
+frameclock_apple = { workspace = true, features = ["ca-display-link"] }
 subduction_core = { workspace = true }
 subduction_backend_apple = { path = "../../subduction_backend_apple" }
 wgpu = { workspace = true }

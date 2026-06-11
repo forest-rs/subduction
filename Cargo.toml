@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
   "frameclock",
+  "frameclock_web",
+  "frameclock_apple",
   "subduction_backend_apple",
   "subduction_backend_web",
   "subduction_backend_wgpu",
@@ -60,7 +62,9 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/subduction"
 
 [workspace.dependencies]
-frameclock = { path = "frameclock" }
+frameclock = { version = "0.0.1", path = "frameclock" }
+frameclock_apple = { version = "0.0.1", path = "frameclock_apple", default-features = false }
+frameclock_web = { version = "0.0.1", path = "frameclock_web" }
 subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }
 invalidation = "0.2.0"
@@ -68,7 +72,7 @@ kurbo = { version = "0.13", default-features = false, features = ["libm"] }
 color = { version = "0.3.2", default-features = false, features = ["libm"] }
 wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
-wasm-bindgen = "0.2"
+wasm-bindgen = { version = "0.2", default-features = false }
 web-sys = "0.3"
 web-time = { version = "1.1.0" }
 

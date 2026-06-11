@@ -6,15 +6,15 @@
 //! Creates a dark container with six animated elements (a WebGL canvas, a WebGPU
 //! canvas, and four colored divs) that orbit and pulse opacity, demonstrating the
 //! web backend's building blocks: [`RafLoop`] for timing, [`DomPresenter`] for
-//! presentation, and [`Scheduler`] for frame planning.
+//! presentation, and [`WebFrameClock`] for frame planning.
 //!
 //! Build with: `wasm-pack build --target web examples/web_layers`
 //!
 //! Then serve `examples/web_layers/` and open `index.html` in a browser.
 //!
-//! [`RafLoop`]: subduction_backend_web::RafLoop
+//! [`RafLoop`]: frameclock_web::RafLoop
 //! [`DomPresenter`]: subduction_backend_web::DomPresenter
-//! [`Scheduler`]: frameclock::scheduler::Scheduler
+//! [`WebFrameClock`]: frameclock_web::WebFrameClock
 
 // This crate only runs in the browser; suppress dead-code warnings when
 // cargo-checking on a native host target.
@@ -44,14 +44,12 @@ use web_sys::{
     WebGlUniformLocation,
 };
 
-use frameclock::scheduler::Scheduler;
 use frameclock::time::Timebase;
-use frameclock::timing::PresentFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
+    FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, OutputId, SchedulerConfig,
 };
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
 use kurbo::Size;
-use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::output::Color;
@@ -166,7 +164,7 @@ struct WgpuState {
 
 struct AnimState {
     store: LayerStore,
-    scheduler: Scheduler,
+    frame_clock: WebFrameClock,
     presenter: DomPresenter,
     /// Element sizes indexed by raw layer slot index.
     sizes: Vec<(f64, f64)>,
@@ -246,12 +244,12 @@ pub fn main() -> Result<(), JsValue> {
         }
     }
 
-    let timebase = subduction_backend_web::timebase();
-    let start_us = subduction_backend_web::now().ticks();
+    let timebase = frameclock_web::timebase();
+    let start_us = frameclock_web::now().ticks();
 
     let state = Rc::new(RefCell::new(AnimState {
         store,
-        scheduler: Scheduler::new(SchedulerConfig::pacing_only()),
+        frame_clock: WebFrameClock::new(SchedulerConfig::pacing_only(), DEFAULT_REFRESH_INTERVAL),
         presenter,
         layer_ids,
         sizes,
@@ -597,16 +595,18 @@ fn render_wgpu(gpu: &WgpuState, t: f32) {
 fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let mut s = state.borrow_mut();
 
-    let build_start = subduction_backend_web::now();
-
-    let safety = Duration(s.scheduler.safety_margin_ticks());
-    let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let opportunity = FrameOpportunity::new(
-        tick,
-        hints,
-        DisplayTiming::from_tick(&tick, Duration(16_667)),
-    );
-    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
+    s.frame_clock.request(FrameDemand::ANIMATION);
+    let frame = match s.frame_clock.begin_frame(tick) {
+        FrameBeginResult::Ready(frame) => frame,
+        FrameBeginResult::Expired(summary) => {
+            if !summary.demand.is_empty() {
+                s.frame_clock.request(summary.demand);
+            }
+            return;
+        }
+        FrameBeginResult::Idle | FrameBeginResult::WaitUntil(_) => return,
+    };
+    let plan = frame.plan();
 
     // Elapsed seconds for animation.
     let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);
@@ -635,10 +635,10 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
         render_wgpu(gpu, time_f32);
     }
 
-    let submitted_at = subduction_backend_web::now();
-
-    let feedback = PresentFeedback::new(&hints, build_start, submitted_at, None);
-    s.scheduler.observe(&feedback);
+    let submitted_at = frameclock_web::now();
+    let _ = s
+        .frame_clock
+        .submit_frame(frame, FrameSubmission::new(submitted_at, None));
 }
 
 fn animate_transforms(

@@ -21,6 +21,9 @@ use frameclock::timing::PendingFeedback;
 use frameclock::{
     DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
 };
+#[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
+use frameclock_apple::TickForwarder;
+use frameclock_apple::{DisplayLink, compute_present_hints};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -33,11 +36,7 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::CALayer;
-#[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
-use subduction_backend_apple::TickForwarder;
-use subduction_backend_apple::{
-    DisplayLink, LayerPresenter, LayerRoot, Presenter as _, compute_present_hints,
-};
+use subduction_backend_apple::{LayerPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::output::Color;
 use subduction_core::trace::{

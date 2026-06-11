@@ -1,0 +1,18 @@
+[package]
+name = "frameclock_web"
+description = "Browser timing adapters for frameclock"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["frame-pacing", "timing", "wasm", "web"]
+categories = ["wasm", "no-std", "rendering::engine"]
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true }
+wasm-bindgen = { workspace = true }

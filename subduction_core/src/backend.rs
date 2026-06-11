@@ -4,39 +4,25 @@
 //! Backend contract for platform integrations.
 //!
 //! Subduction splits platform-specific work into *backend* crates. Each
-//! backend provides the following pieces:
+//! backend provides the following piece:
 //!
-//! - **Tick source** — Produces [`FrameTick`] values via a platform mechanism
-//!   (e.g. `CADisplayLink` callback, `requestAnimationFrame`). This is
-//!   backend-specific and not abstracted by a trait because the setup and
-//!   lifecycle differ fundamentally across platforms.
+//! - **Presenter** — Implements the [`Presenter`] trait to apply evaluated
+//!   frame changes to a platform-native tree, such as `CALayer`, DOM elements,
+//!   DirectComposition visuals, or Wayland subsurfaces.
 //!
-//! - **Time** — `now() -> HostTime` and `timebase() -> Timebase` free
-//!   functions that read the platform's monotonic clock.
-//!
-//! - **Hint computation** — A `compute_present_hints(&FrameTick, Duration)
-//!   -> PresentHints` free function. This is stateless and varies by
-//!   platform (Apple uses predicted present times; web has pacing-only
-//!   timing), so it stays as a free function rather than a trait method.
-//!
-//! - **Presenter** — Implements the [`Presenter`] trait to apply frame
-//!   changes to a platform-native tree (e.g. `CALayer`, DOM elements).
-//!
-//! - **Feedback** — Uses [`PresentFeedback::new`] to report timing
-//!   observations back to the [`Scheduler`](crate::scheduler::Scheduler),
-//!   preserving `missed_deadline: None` when the backend lacks enough timing
-//!   information to classify a frame honestly.
+//! Frame timing is owned by `frameclock` and adapter crates such as
+//! `frameclock_apple` and `frameclock_web`. Those crates produce
+//! `frameclock::FrameTick` values, compute present hints, expose host-time
+//! helpers, and drive retained `frameclock::FrameDriver` state. Application
+//! code wires a timing adapter together with a `Presenter`.
 //!
 //! # Crate boundaries
 //!
-//! `subduction_core` owns the data model, evaluation, scheduling, and this
-//! contract module. Backend crates depend on `subduction_core` and provide
-//! platform glue. Application code depends on both and wires them together
-//! in a frame loop.
-//!
-//! [`FrameTick`]: crate::timing::FrameTick
-//! [`PresentFeedback::new`]: crate::timing::PresentFeedback::new
-//! [`PresentHints`]: crate::timing::PresentHints
+//! `subduction_core` owns the layer data model, evaluation, and this presenter
+//! contract. Backend crates depend on `subduction_core` and provide native
+//! presentation glue. Application code depends on `subduction_core`, one
+//! presenter backend, and one timing adapter, then wires them together in a
+//! frame loop.
 
 use crate::layer::{FrameChanges, LayerStore};
 
@@ -47,20 +33,19 @@ use crate::layer::{FrameChanges, LayerStore};
 ///
 /// # Frame loop pseudocode
 ///
-/// A typical frame callback wires the pieces together like this:
+/// A typical frame callback wires a `frameclock` adapter to a presenter like
+/// this:
 ///
 /// ```rust,ignore
 /// fn on_frame(tick: FrameTick) {
-///     let hints = compute_present_hints(&tick, safety);
-///     let opportunity = FrameOpportunity::new(
-///         tick,
-///         hints,
-///         DisplayTiming::fixed(Duration(tick.refresh_interval.unwrap_or(16_666_667))),
-///     );
-///     let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
+///     frame_clock.request(FrameDemand::ANIMATION);
+///     let FrameBeginResult::Ready(frame) = frame_clock.begin_frame(tick) else {
+///         return;
+///     };
+///     let sample_time = frame.sample_time();
 ///
-///     // Animate: update layer properties using plan.sample_time
-///     store.set_transform(layer, animated_transform(plan.sample_time));
+///     // Animate: update layer properties using sample_time.
+///     store.set_transform(layer, animated_transform(sample_time));
 ///
 ///     // Evaluate: drain dirty channels, recompute world properties
 ///     let changes = store.evaluate();
@@ -68,9 +53,8 @@ use crate::layer::{FrameChanges, LayerStore};
 ///     // Present: apply incremental changes to the native tree
 ///     presenter.apply(&store, &changes);
 ///
-///     // Feedback: report timing observations for adaptation
-///     let feedback = PresentFeedback::new(&hints, build_start, now(), actual);
-///     scheduler.observe(&feedback);
+///     // Feedback: report submission through the timing adapter.
+///     frame_clock.submit_frame(frame, FrameSubmission::new(now(), actual));
 /// }
 /// ```
 pub trait Presenter {

@@ -91,21 +91,21 @@ impl DisplayTiming {
 
     /// Creates fixed-rate display timing from a tick's timing facts.
     ///
-    /// If the tick carries a predicted present time, this uses the delta from
-    /// `tick.now` to that prediction because it is already in host-time ticks.
-    /// Otherwise it falls back to [`FrameTick::refresh_interval`] and finally
-    /// to `fallback_interval`.
+    /// Prefer [`FrameTick::refresh_interval`] when it is present because it is
+    /// the backend's explicit cadence fact. If no refresh interval is reported,
+    /// this falls back to the delta from `tick.now` to
+    /// [`FrameTick::predicted_present`] and finally to `fallback_interval`.
     #[inline]
     #[must_use]
     pub fn from_tick(tick: &FrameTick, fallback_interval: Duration) -> Self {
         let interval = tick
-            .predicted_present
-            .map(|present| present.saturating_duration_since(tick.now))
-            .filter(|interval| !interval.is_zero())
+            .refresh_interval
+            .filter(|ticks| *ticks > 0)
+            .map(Duration)
             .or_else(|| {
-                tick.refresh_interval
-                    .filter(|ticks| *ticks > 0)
-                    .map(Duration)
+                tick.predicted_present
+                    .map(|present| present.saturating_duration_since(tick.now))
+                    .filter(|interval| !interval.is_zero())
             })
             .unwrap_or(fallback_interval);
         Self::fixed(interval)
@@ -580,6 +580,48 @@ impl PendingFeedback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tick_with_timing(
+        now: u64,
+        predicted: Option<u64>,
+        refresh_interval: Option<u64>,
+    ) -> FrameTick {
+        FrameTick {
+            now: HostTime(now),
+            predicted_present: predicted.map(HostTime),
+            refresh_interval,
+            frame_index: 0,
+            output: OutputId(0),
+            prev_actual_present: None,
+        }
+    }
+
+    #[test]
+    fn display_timing_from_tick_prefers_reported_refresh_interval() {
+        let tick = tick_with_timing(10_000_000, Some(11_000_000), Some(16_666_667));
+
+        let display = DisplayTiming::from_tick(&tick, Duration(8_333_333));
+
+        assert_eq!(display, DisplayTiming::fixed(Duration(16_666_667)));
+    }
+
+    #[test]
+    fn display_timing_from_tick_falls_back_to_predicted_delta() {
+        let tick = tick_with_timing(10_000_000, Some(26_666_667), None);
+
+        let display = DisplayTiming::from_tick(&tick, Duration(8_333_333));
+
+        assert_eq!(display, DisplayTiming::fixed(Duration(16_666_667)));
+    }
+
+    #[test]
+    fn display_timing_from_tick_ignores_stale_prediction() {
+        let tick = tick_with_timing(20_000_000, Some(10_000_000), None);
+
+        let display = DisplayTiming::from_tick(&tick, Duration(16_666_667));
+
+        assert_eq!(display, DisplayTiming::fixed(Duration(16_666_667)));
+    }
 
     #[test]
     fn pacing_only_hints_discard_desired_present() {

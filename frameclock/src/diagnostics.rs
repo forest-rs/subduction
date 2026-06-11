@@ -11,7 +11,7 @@
 use crate::output::OutputId;
 use crate::scheduler::SchedulerState;
 use crate::time::{Duration, HostTime};
-use crate::timing::{FrameDemand, FramePlan, FrameTick, PresentFeedback, TimingConfidence};
+use crate::timing::{FrameDemand, FramePlan, FrameTick, PresentFeedback, PresentationTiming};
 
 /// Emitted when a platform adapter receives or constructs a display-frame tick.
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +26,6 @@ pub struct FrameTickEvent {
     pub predicted_present: Option<HostTime>,
     /// Refresh interval in host-time ticks, if known.
     pub refresh_interval: Option<u64>,
-    /// Timing confidence for this tick.
-    pub confidence: TimingConfidence,
 }
 
 impl From<&FrameTick> for FrameTickEvent {
@@ -38,7 +36,6 @@ impl From<&FrameTick> for FrameTickEvent {
             now: tick.now,
             predicted_present: tick.predicted_present,
             refresh_interval: tick.refresh_interval,
-            confidence: tick.confidence,
         }
     }
 }
@@ -60,6 +57,8 @@ pub struct FramePlanEvent {
     pub sample_time: HostTime,
     /// Intended presentation time, if known.
     pub target_present: Option<HostTime>,
+    /// How presentation timing should be interpreted for this plan.
+    pub presentation_timing: PresentationTiming,
     /// Latest known commit/submission deadline.
     pub commit_deadline: HostTime,
     /// Current scheduler pipeline depth.
@@ -80,6 +79,7 @@ impl FramePlanEvent {
             frame_start: plan.frame_start,
             sample_time: plan.sample_time,
             target_present: plan.target_present,
+            presentation_timing: plan.presentation_timing,
             commit_deadline: plan.commit_deadline,
             pipeline_depth: plan.pipeline_depth,
             safety_margin_ticks,
@@ -180,9 +180,9 @@ pub struct SchedulerStateEvent {
 pub enum FrameTimingBasis {
     /// A platform-reported actual present timestamp was recorded.
     ActualPresent,
-    /// A predicted or requested present timestamp was used, but no actual
-    /// present timestamp was recorded.
-    PredictedPresent,
+    /// A target present timestamp was used, but no actual present timestamp
+    /// was recorded.
+    TargetPresent,
     /// The platform exposed pacing/deadline information but no reliable
     /// present timestamp.
     PacingOnly,
@@ -204,8 +204,8 @@ pub struct FrameTimingSummary {
     pub output: OutputId,
     /// What kind of timing evidence this summary contains.
     pub timing_basis: FrameTimingBasis,
-    /// Timing confidence for the originating frame tick.
-    pub confidence: TimingConfidence,
+    /// How presentation timing should be interpreted for this frame.
+    pub presentation_timing: PresentationTiming,
     /// Host time when the frame tick was generated or received.
     pub tick_time: HostTime,
     /// Predicted presentation time from the originating tick, if known.
@@ -353,7 +353,7 @@ impl FrameTimingSummaryBuilder {
             frame_index: plan.frame_index,
             output: plan.output,
             timing_basis,
-            confidence: tick.confidence,
+            presentation_timing: plan.presentation_timing,
             tick_time: tick.now,
             predicted_present: tick.predicted_present,
             refresh_interval: tick.refresh_interval,
@@ -389,7 +389,7 @@ fn classify_timing_basis(
         return FrameTimingBasis::ActualPresent;
     }
 
-    if tick.confidence == TimingConfidence::PacingOnly {
+    if plan.presentation_timing == PresentationTiming::PacingOnly {
         return FrameTimingBasis::PacingOnly;
     }
 
@@ -397,7 +397,7 @@ fn classify_timing_basis(
         || tick.predicted_present.is_some()
         || submit.and_then(|submit| submit.expected_present).is_some()
     {
-        return FrameTimingBasis::PredictedPresent;
+        return FrameTimingBasis::TargetPresent;
     }
 
     FrameTimingBasis::SubmissionOnly
@@ -561,7 +561,6 @@ mod tests {
             now: HostTime(1_000),
             predicted_present: Some(HostTime(2_000)),
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Predictive,
         }
     }
 
@@ -574,6 +573,7 @@ mod tests {
             frame_start: HostTime(1_500),
             sample_time: HostTime(2_000),
             target_present: Some(HostTime(2_000)),
+            presentation_timing: PresentationTiming::Predictive,
             commit_deadline: HostTime(1_900),
             pipeline_depth: 1,
             safety_margin_ticks: 500,
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn timing_summary_classifies_predicted_present() {
+    fn timing_summary_classifies_target_present() {
         let tick = sample_tick();
         let plan = sample_plan();
         let submit = SubmitEvent {
@@ -723,7 +723,7 @@ mod tests {
             .finish()
             .expect("matching tick and plan should produce a summary");
 
-        assert_eq!(summary.timing_basis, FrameTimingBasis::PredictedPresent);
+        assert_eq!(summary.timing_basis, FrameTimingBasis::TargetPresent);
         assert_eq!(summary.actual_present, None);
     }
 
@@ -731,9 +731,9 @@ mod tests {
     fn timing_summary_classifies_pacing_only() {
         let mut tick = sample_tick();
         tick.predicted_present = None;
-        tick.confidence = TimingConfidence::PacingOnly;
         let mut plan = sample_plan();
         plan.target_present = None;
+        plan.presentation_timing = PresentationTiming::PacingOnly;
         let submit = SubmitEvent {
             frame_index: 7,
             submitted_at: HostTime(1_850),
@@ -755,9 +755,9 @@ mod tests {
     fn timing_summary_classifies_submission_only() {
         let mut tick = sample_tick();
         tick.predicted_present = None;
-        tick.confidence = TimingConfidence::Estimated;
         let mut plan = sample_plan();
         plan.target_present = None;
+        plan.presentation_timing = PresentationTiming::Estimated;
         let submit = SubmitEvent {
             frame_index: 7,
             submitted_at: HostTime(1_850),

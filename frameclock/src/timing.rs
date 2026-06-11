@@ -5,7 +5,7 @@
 //!
 //! This module defines the types that flow between backends and the scheduler:
 //!
-//! - [`TimingConfidence`] — how much the platform can tell us about presentation
+//! - [`PresentationTiming`] — whether presentation timestamps are available
 //! - [`DisplayTiming`] — fixed/variable display timing constraints
 //! - [`FrameTick`] — a frame opportunity delivered by the backend
 //! - [`FrameRequest`] — one scheduler planning request
@@ -191,22 +191,33 @@ fn round_up_to_multiple(needed: Duration, interval: Duration) -> Duration {
     interval.saturating_mul(count.max(1))
 }
 
-/// How reliable the predicted present time is.
+/// How presentation timing should be interpreted for one planning request.
 ///
-/// Platforms differ in how well they can predict when pixels will appear on
-/// screen. This enum labels the tick's timing facts for diagnostics and for
-/// presentation-truth handling. Conservative scheduling policy is selected by
-/// [`SchedulerConfig`](crate::scheduler::SchedulerConfig): for example, hosts
-/// should normally pair [`TimingConfidence::Estimated`] ticks with
+/// This is attached to [`PresentHints`], not [`FrameTick`], because it is part
+/// of the backend's scheduling contract: it tells the scheduler whether
+/// [`PresentHints::desired_present`] may be reported as presentation truth.
+///
+/// Adaptive scheduling policy is still selected by
+/// [`SchedulerConfig`](crate::scheduler::SchedulerConfig). For example, hosts
+/// should normally pair [`PresentationTiming::Estimated`] hints with
 /// [`SchedulerConfig::estimated`](crate::scheduler::SchedulerConfig::estimated).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TimingConfidence {
+pub enum PresentationTiming {
     /// Strong predicted present time available (e.g. macOS `CVDisplayLink`).
     Predictive,
     /// Vsync-ish timing but less strict (e.g. Android Choreographer).
     Estimated,
     /// No reliable present time; frame pacing only (e.g. Web `rAF`, X11 fallback).
     PacingOnly,
+}
+
+impl PresentationTiming {
+    /// Returns whether this timing mode can report a target present time.
+    #[inline]
+    #[must_use]
+    pub const fn has_target_present(self) -> bool {
+        matches!(self, Self::Predictive | Self::Estimated)
+    }
 }
 
 /// A frame opportunity delivered by the backend.
@@ -222,13 +233,6 @@ pub struct FrameTick {
     pub predicted_present: Option<HostTime>,
     /// Display refresh interval in host-time ticks, if known.
     pub refresh_interval: Option<u64>,
-    /// Confidence level for timing information in this tick.
-    ///
-    /// This is a semantic label for the tick. The scheduler still relies on
-    /// the actual presence or absence of [`predicted_present`](Self::predicted_present)
-    /// and [`PresentHints::desired_present`] when deciding whether a plan has
-    /// presentation truth.
-    pub confidence: TimingConfidence,
     /// Host-owned monotonically increasing frame counter for this output.
     ///
     /// Keep this stable for the full lifecycle of one planned content frame:
@@ -301,9 +305,11 @@ pub struct FramePlan {
     pub sample_time: HostTime,
     /// Intended display time, if known.
     pub target_present: Option<HostTime>,
+    /// How [`target_present`](Self::target_present) should be interpreted.
+    pub presentation_timing: PresentationTiming,
     /// Latest time by which the frame must be committed/submitted.
     pub commit_deadline: HostTime,
-    /// Current pipeline depth (1–3).
+    /// Current scheduler pipeline depth.
     pub pipeline_depth: u8,
     /// Which output this frame targets.
     pub output: OutputId,
@@ -320,10 +326,89 @@ pub struct FramePlan {
 /// knowledge of the presentation pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PresentHints {
+    /// Whether [`desired_present`](Self::desired_present) can be used as
+    /// presentation timing.
+    presentation_timing: PresentationTiming,
     /// Target present time, if known.
-    pub desired_present: Option<HostTime>,
+    desired_present: Option<HostTime>,
     /// Latest time by which a commit must occur to hit the desired present.
-    pub latest_commit: HostTime,
+    latest_commit: HostTime,
+}
+
+impl PresentHints {
+    /// Creates hints with explicit presentation timing.
+    ///
+    /// If `presentation_timing` is [`PresentationTiming::PacingOnly`],
+    /// `desired_present` is discarded. Pacing-only backends expose a commit
+    /// boundary but not presentation truth.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        presentation_timing: PresentationTiming,
+        desired_present: Option<HostTime>,
+        latest_commit: HostTime,
+    ) -> Self {
+        let desired_present = if presentation_timing.has_target_present() {
+            desired_present
+        } else {
+            None
+        };
+        Self {
+            presentation_timing,
+            desired_present,
+            latest_commit,
+        }
+    }
+
+    /// Returns how [`Self::desired_present`] should be interpreted.
+    #[inline]
+    #[must_use]
+    pub const fn presentation_timing(self) -> PresentationTiming {
+        self.presentation_timing
+    }
+
+    /// Returns the target present time when this backend can provide one.
+    #[inline]
+    #[must_use]
+    pub const fn desired_present(self) -> Option<HostTime> {
+        self.desired_present
+    }
+
+    /// Returns the latest time by which the frame should be committed.
+    #[inline]
+    #[must_use]
+    pub const fn latest_commit(self) -> HostTime {
+        self.latest_commit
+    }
+
+    /// Creates predictive present hints.
+    #[inline]
+    #[must_use]
+    pub const fn predictive(desired_present: HostTime, latest_commit: HostTime) -> Self {
+        Self::new(
+            PresentationTiming::Predictive,
+            Some(desired_present),
+            latest_commit,
+        )
+    }
+
+    /// Creates estimated present hints.
+    #[inline]
+    #[must_use]
+    pub const fn estimated(desired_present: HostTime, latest_commit: HostTime) -> Self {
+        Self::new(
+            PresentationTiming::Estimated,
+            Some(desired_present),
+            latest_commit,
+        )
+    }
+
+    /// Creates pacing-only hints with no presentation timestamp.
+    #[inline]
+    #[must_use]
+    pub const fn pacing_only(latest_commit: HostTime) -> Self {
+        Self::new(PresentationTiming::PacingOnly, None, latest_commit)
+    }
 }
 
 /// Timing feedback constructed by the caller at the end of each tick handler.
@@ -376,7 +461,7 @@ impl PresentFeedback {
     ///
     /// The derivation rules are:
     ///
-    /// - If both `actual_present` and `hints.desired_present` are known, a
+    /// - If both `actual_present` and [`PresentHints::desired_present`] are known, a
     ///   frame is missed when `actual_present > desired_present`.
     /// - Otherwise, the result is `None`: without actual presentation
     ///   feedback, commit timing is useful pacing evidence but not real
@@ -392,7 +477,11 @@ impl PresentFeedback {
         submitted_at: HostTime,
         actual_present: Option<HostTime>,
     ) -> Self {
-        let expected_present = hints.desired_present;
+        let expected_present = if hints.presentation_timing().has_target_present() {
+            hints.desired_present()
+        } else {
+            None
+        };
         // Only report deadline truth when the backend can honestly support it.
         let missed_deadline = match (actual_present, expected_present) {
             (Some(actual), Some(expected)) => Some(actual > expected),
@@ -400,7 +489,7 @@ impl PresentFeedback {
             (None, Some(_)) => None,
         };
         let pacing_overrun = if missed_deadline.is_none() {
-            Some(submitted_at > hints.latest_commit)
+            Some(submitted_at > hints.latest_commit())
         } else {
             None
         };
@@ -462,11 +551,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pacing_only_hints_discard_desired_present() {
+        let hints = PresentHints::new(
+            PresentationTiming::PacingOnly,
+            Some(HostTime(2_000_000)),
+            HostTime(1_000_000),
+        );
+
+        assert_eq!(hints.presentation_timing(), PresentationTiming::PacingOnly);
+        assert_eq!(hints.desired_present(), None);
+        assert_eq!(hints.latest_commit(), HostTime(1_000_000));
+    }
+
+    #[test]
     fn new_with_actual_present_compares_to_expected() {
-        let hints = PresentHints {
-            desired_present: Some(HostTime(2_000_000)),
-            latest_commit: HostTime(1_800_000),
-        };
+        let hints = PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000));
         let fb = PresentFeedback::new(
             &hints,
             HostTime(1_700_000),
@@ -491,10 +590,7 @@ mod tests {
 
     #[test]
     fn new_without_actual_present_uses_commit_deadline_as_pacing_evidence() {
-        let hints = PresentHints {
-            desired_present: Some(HostTime(2_000_000)),
-            latest_commit: HostTime(1_800_000),
-        };
+        let hints = PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000));
         // submitted_at > latest_commit is weak pacing evidence until the
         // backend reports actual present.
         let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
@@ -509,10 +605,7 @@ mod tests {
 
     #[test]
     fn new_without_desired_present_is_unknown() {
-        let hints = PresentHints {
-            desired_present: None,
-            latest_commit: HostTime(1_000_000),
-        };
+        let hints = PresentHints::pacing_only(HostTime(1_000_000));
         let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(1_100_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.expected_present, None);
@@ -521,10 +614,7 @@ mod tests {
 
     #[test]
     fn new_with_actual_present_but_no_expected_present_is_unknown() {
-        let hints = PresentHints {
-            desired_present: None,
-            latest_commit: HostTime(1_000_000),
-        };
+        let hints = PresentHints::pacing_only(HostTime(1_000_000));
         let fb = PresentFeedback::new(
             &hints,
             HostTime(900_000),
@@ -539,10 +629,7 @@ mod tests {
     #[test]
     fn pending_feedback_resolve_with_actual_present() {
         let pending = PendingFeedback {
-            hints: PresentHints {
-                desired_present: Some(HostTime(2_000_000)),
-                latest_commit: HostTime(1_800_000),
-            },
+            hints: PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000)),
             build_start: HostTime(1_700_000),
             submitted_at: HostTime(1_750_000),
         };
@@ -563,10 +650,7 @@ mod tests {
     #[test]
     fn pending_feedback_resolve_without_actual_present() {
         let pending = PendingFeedback {
-            hints: PresentHints {
-                desired_present: Some(HostTime(2_000_000)),
-                latest_commit: HostTime(1_800_000),
-            },
+            hints: PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000)),
             build_start: HostTime(1_700_000),
             submitted_at: HostTime(1_750_000),
         };
@@ -581,10 +665,7 @@ mod tests {
     #[test]
     fn pending_feedback_without_expected_present_stays_unknown() {
         let pending = PendingFeedback {
-            hints: PresentHints {
-                desired_present: None,
-                latest_commit: HostTime(1_800_000),
-            },
+            hints: PresentHints::pacing_only(HostTime(1_800_000)),
             build_start: HostTime(1_700_000),
             submitted_at: HostTime(1_950_000),
         };
@@ -597,10 +678,7 @@ mod tests {
 
     #[test]
     fn pacing_only_on_time_submission_reports_no_overrun() {
-        let hints = PresentHints {
-            desired_present: None,
-            latest_commit: HostTime(1_000_000),
-        };
+        let hints = PresentHints::pacing_only(HostTime(1_000_000));
         let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(950_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.pacing_overrun, Some(false));

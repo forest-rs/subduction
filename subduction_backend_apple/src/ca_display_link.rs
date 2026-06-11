@@ -20,7 +20,7 @@ use alloc::boxed::Box;
 use core::cell::Cell;
 use core::fmt;
 
-use frameclock::{FrameTick, HostTime, OutputId, Timebase, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, Timebase};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -100,7 +100,6 @@ impl DisplayLinkTarget {
             now,
             predicted_present: Some(predicted_present),
             refresh_interval: Some(refresh_interval),
-            confidence: TimingConfidence::Predictive,
             frame_index,
             output: ivars.output,
             prev_actual_present,

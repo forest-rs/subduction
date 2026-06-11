@@ -18,7 +18,6 @@ use crate::scheduler::{Scheduler, SchedulerConfig};
 use crate::time::{Duration, HostTime};
 use crate::timing::{
     DisplayTiming, FramePlan, FrameRequest, FrameTick, PresentFeedback, PresentHints,
-    TimingConfidence,
 };
 
 /// A platform frame opportunity for retained driver lifecycle APIs.
@@ -60,7 +59,7 @@ impl FrameOpportunity {
     /// interval but no reliable predicted present timestamp. The returned
     /// opportunity uses:
     ///
-    /// - [`TimingConfidence::PacingOnly`],
+    /// - [`PresentationTiming::PacingOnly`](crate::PresentationTiming::PacingOnly),
     /// - no predicted or desired present time,
     /// - `latest_commit = now + refresh_interval`, saturating at `u64::MAX`,
     /// - [`DisplayTiming::fixed`] with `refresh_interval`.
@@ -79,17 +78,14 @@ impl FrameOpportunity {
             now,
             predicted_present: None,
             refresh_interval: Some(refresh_interval.ticks()),
-            confidence: TimingConfidence::PacingOnly,
             frame_index,
             output,
             prev_actual_present: None,
         };
-        let hints = PresentHints {
-            desired_present: None,
-            latest_commit: now
-                .checked_add(refresh_interval)
+        let hints = PresentHints::pacing_only(
+            now.checked_add(refresh_interval)
                 .unwrap_or(HostTime(u64::MAX)),
-        };
+        );
         Self::new(tick, hints, DisplayTiming::fixed(refresh_interval))
     }
 }
@@ -585,7 +581,7 @@ mod tests {
     };
     use crate::output::OutputId;
     use crate::time::Duration;
-    use crate::timing::{PresentFeedback, TimingConfidence};
+    use crate::timing::{PresentFeedback, PresentationTiming};
 
     use super::*;
 
@@ -604,7 +600,6 @@ mod tests {
             now: HostTime(now),
             predicted_present: None,
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            confidence: TimingConfidence::PacingOnly,
             frame_index,
             output: OutputId(0),
             prev_actual_present: None,
@@ -612,10 +607,7 @@ mod tests {
     }
 
     fn hints(deadline: u64) -> PresentHints {
-        PresentHints {
-            desired_present: None,
-            latest_commit: HostTime(deadline),
-        }
+        PresentHints::pacing_only(HostTime(deadline))
     }
 
     fn opportunity(now: u64, frame_index: u64) -> FrameOpportunity {
@@ -636,15 +628,11 @@ mod tests {
             now: HostTime(now),
             predicted_present: Some(HostTime(desired_present)),
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            confidence: TimingConfidence::Predictive,
             frame_index,
             output: OutputId(0),
             prev_actual_present: None,
         };
-        let hints = PresentHints {
-            desired_present: Some(HostTime(desired_present)),
-            latest_commit: HostTime(latest_commit),
-        };
+        let hints = PresentHints::predictive(HostTime(desired_present), HostTime(latest_commit));
         FrameOpportunity::new(tick, hints, DisplayTiming::fixed(REFRESH_INTERVAL))
     }
 
@@ -667,12 +655,15 @@ mod tests {
             opportunity.tick.refresh_interval,
             Some(REFRESH_INTERVAL.ticks())
         );
-        assert_eq!(opportunity.tick.confidence, TimingConfidence::PacingOnly);
         assert_eq!(opportunity.tick.frame_index, 42);
         assert_eq!(opportunity.tick.output, OutputId(9));
-        assert_eq!(opportunity.hints.desired_present, None);
         assert_eq!(
-            opportunity.hints.latest_commit,
+            opportunity.hints.presentation_timing(),
+            PresentationTiming::PacingOnly
+        );
+        assert_eq!(opportunity.hints.desired_present(), None);
+        assert_eq!(
+            opportunity.hints.latest_commit(),
             HostTime(12 + REFRESH_INTERVAL.ticks())
         );
         assert_eq!(

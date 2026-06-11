@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::string::String;
-use frameclock::TimingConfidence;
+use frameclock::PresentationTiming;
 
 /// Runtime pathology toggles for stress tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,8 +26,8 @@ pub struct PathologyToggles {
 /// Per-frame metrics sample fed into [`SyncTracker::observe`].
 #[derive(Clone, Copy, Debug)]
 pub struct SyncSample {
-    /// Timing capability for this frame.
-    pub confidence: TimingConfidence,
+    /// Presentation timing class for this frame.
+    pub presentation_timing: PresentationTiming,
     /// Signed phase error between media and overlay timelines, in ms.
     pub phase_error_ms: f64,
     /// Miss determined from explicit present deadline semantics.
@@ -123,7 +123,11 @@ impl<const N: usize> SyncTracker<N> {
             self.missed_frames as f64 * 1000.0 / self.total_frames as f64
         };
 
-        let grade = grade_for(sample.confidence, sample.phase_error_ms.abs(), miss_rate);
+        let grade = grade_for(
+            sample.presentation_timing,
+            sample.phase_error_ms.abs(),
+            miss_rate,
+        );
 
         SyncReport {
             grade,
@@ -170,14 +174,14 @@ impl<const N: usize> SyncTracker<N> {
 }
 
 fn grade_for(
-    conf: TimingConfidence,
+    presentation_timing: PresentationTiming,
     phase_error_abs_ms: f64,
     miss_rate_per_1000: f64,
 ) -> SyncGrade {
-    let (a_phase, b_phase, c_phase, a_miss, b_miss, c_miss) = match conf {
-        TimingConfidence::Predictive => (16.0, 32.0, 50.0, 1.0, 5.0, 15.0),
-        TimingConfidence::Estimated => (24.0, 45.0, 70.0, 3.0, 10.0, 25.0),
-        TimingConfidence::PacingOnly => (35.0, 65.0, 100.0, 10.0, 30.0, 80.0),
+    let (a_phase, b_phase, c_phase, a_miss, b_miss, c_miss) = match presentation_timing {
+        PresentationTiming::Predictive => (16.0, 32.0, 50.0, 1.0, 5.0, 15.0),
+        PresentationTiming::Estimated => (24.0, 45.0, 70.0, 3.0, 10.0, 25.0),
+        PresentationTiming::PacingOnly => (35.0, 65.0, 100.0, 10.0, 30.0, 80.0),
     };
 
     if phase_error_abs_ms < a_phase && miss_rate_per_1000 < a_miss {
@@ -201,7 +205,7 @@ mod tests {
         let mut i = 0;
         while i < 10 {
             let report = t.observe(SyncSample {
-                confidence: TimingConfidence::PacingOnly,
+                presentation_timing: PresentationTiming::PacingOnly,
                 phase_error_ms: 10.0,
                 hard_miss: i < 2,
                 soft_miss: false,
@@ -218,7 +222,7 @@ mod tests {
     fn predictive_thresholds_are_stricter() {
         let mut t = SyncTracker::<4>::new(16.67);
         let p = t.observe(SyncSample {
-            confidence: TimingConfidence::Predictive,
+            presentation_timing: PresentationTiming::Predictive,
             phase_error_ms: 40.0,
             hard_miss: false,
             soft_miss: false,
@@ -227,7 +231,7 @@ mod tests {
         assert_eq!(p.grade, SyncGrade::C);
 
         let e = t.observe(SyncSample {
-            confidence: TimingConfidence::Estimated,
+            presentation_timing: PresentationTiming::Estimated,
             phase_error_ms: 40.0,
             hard_miss: false,
             soft_miss: false,

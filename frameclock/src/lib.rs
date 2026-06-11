@@ -119,5 +119,5 @@ pub use time::{Duration, HostTime, Timebase};
 pub use timeline::{AffineClock, AffineClockUpdate};
 pub use timing::{
     DisplayTiming, FramePlan, FrameRequest, FrameTick, PendingFeedback, PresentFeedback,
-    PresentHints, TimingConfidence,
+    PresentHints, PresentationTiming,
 };

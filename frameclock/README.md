@@ -66,8 +66,9 @@ The root module re-exports the frame-planning vocabulary used by both retained
 - `FrameDriver`, `FrameOpportunity`, `ActiveFrame`, and `FrameSubmission`
 - `FrameDemand` and `FrameDemandClass`
 - `Scheduler`, `SchedulerConfig`, `SchedulerState`, and `DegradationPolicy`
-- `FrameTick`, `FrameRequest`, `FramePlan`, `PresentHints`, `PresentFeedback`,
-  `PendingFeedback`, `DisplayTiming`, and `TimingConfidence`
+- `FrameTick`, `FrameRequest`, `FramePlan`, `PresentHints`,
+  `PresentationTiming`, `PresentFeedback`, `PendingFeedback`, and
+  `DisplayTiming`
 - `HostTime`, `Duration`, `Timebase`, and `OutputId`
 - `FrameTimingSummary`, `FrameTimingBasis`, and `FrameDropReason`
 - `AffineClock` and `AffineClockUpdate`

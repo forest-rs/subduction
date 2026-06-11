@@ -53,17 +53,14 @@ pub fn timebase() -> Timebase {
 /// accepted for API compatibility but unused.
 #[must_use]
 pub fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> PresentHints {
-    PresentHints {
-        desired_present: None,
-        latest_commit: tick.now,
-    }
+    PresentHints::pacing_only(tick.now)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use frameclock::OutputId;
-    use frameclock::TimingConfidence;
+    use frameclock::PresentationTiming;
 
     #[test]
     fn timebase_is_microsecond() {
@@ -79,14 +76,14 @@ mod tests {
             now: HostTime(16_000),
             predicted_present: None,
             refresh_interval: None,
-            confidence: TimingConfidence::PacingOnly,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
         let hints = compute_present_hints(&tick, Duration(1_000));
 
-        assert_eq!(hints.desired_present, None);
-        assert_eq!(hints.latest_commit, HostTime(16_000));
+        assert_eq!(hints.presentation_timing(), PresentationTiming::PacingOnly);
+        assert_eq!(hints.desired_present(), None);
+        assert_eq!(hints.latest_commit(), HostTime(16_000));
     }
 }

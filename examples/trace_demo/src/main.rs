@@ -14,7 +14,7 @@ use std::io::BufWriter;
 use frameclock::diagnostics::{FramePlanEvent, FrameTickEvent, PresentFeedbackEvent, SubmitEvent};
 use frameclock::{
     DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
-    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase, TimingConfidence,
+    PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase,
 };
 use subduction_core::trace::{
     FrameSummaryBuilder, PhaseBeginEvent, PhaseEndEvent, PhaseKind, TraceSink, Tracer,
@@ -48,7 +48,6 @@ fn main() {
             now: HostTime(now_ticks),
             predicted_present: Some(HostTime(now_ticks + refresh_interval)),
             refresh_interval: Some(refresh_interval),
-            confidence: TimingConfidence::Predictive,
             frame_index,
             output: OutputId(0),
             prev_actual_present: if frame_index > 0 {
@@ -64,10 +63,10 @@ fn main() {
         recorder.on_frame_tick(&tick_event);
 
         // 2. Hints + plan
-        let hints = PresentHints {
-            desired_present: tick.predicted_present,
-            latest_commit: HostTime(now_ticks + refresh_interval - 2_000_000),
-        };
+        let hints = PresentHints::predictive(
+            HostTime(now_ticks + refresh_interval),
+            HostTime(now_ticks + refresh_interval - 2_000_000),
+        );
 
         let plan_start = HostTime(now_ticks + 50_000);
         emit_phase_begin(

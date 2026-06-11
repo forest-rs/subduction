@@ -24,7 +24,7 @@
 //! - `trace-rich` (implies `trace`) — gates `LayerChange` and `DamageRect`
 //!   events plus the corresponding `TraceSink` methods.
 
-use frameclock::{HostTime, OutputId, TimingConfidence};
+use frameclock::{HostTime, OutputId, PresentationTiming};
 
 pub use frameclock::diagnostics::{
     FramePlanEvent, FrameTickEvent, FrameTimingSummary, FrameTimingSummaryBuilder,
@@ -99,8 +99,8 @@ pub struct FrameSummary {
     pub frame_index: u64,
     /// Which output.
     pub output: OutputId,
-    /// Timing confidence.
-    pub confidence: TimingConfidence,
+    /// Presentation timing class.
+    pub presentation_timing: PresentationTiming,
     /// Host time when the tick was generated.
     pub now: HostTime,
     /// Intended present time, if known.
@@ -464,7 +464,7 @@ impl FrameSummaryBuilder {
         FrameSummary {
             frame_index: self.tick.frame_index,
             output: self.tick.output,
-            confidence: self.tick.confidence,
+            presentation_timing: self.plan.presentation_timing,
             now: self.tick.now,
             target_present: self.plan.target_present,
             sample_time: self.plan.sample_time,
@@ -505,8 +505,8 @@ const fn phase_index(phase: PhaseKind) -> usize {
 mod tests {
     use super::*;
     use frameclock::{
-        Duration, FrameDemand, FramePlan, FrameTick, HostTime, OutputId, SchedulerState,
-        TimingConfidence,
+        Duration, FrameDemand, FramePlan, FrameTick, HostTime, OutputId, PresentationTiming,
+        SchedulerState,
     };
 
     fn sample_tick() -> FrameTickEvent {
@@ -516,7 +516,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(1_016_667)),
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Predictive,
         }
     }
 
@@ -529,6 +528,7 @@ mod tests {
             frame_start: HostTime(1_013_500),
             sample_time: HostTime(1_016_667),
             target_present: Some(HostTime(1_016_667)),
+            presentation_timing: PresentationTiming::Predictive,
             commit_deadline: HostTime(1_014_000),
             pipeline_depth: 2,
             safety_margin_ticks: 500,
@@ -541,7 +541,6 @@ mod tests {
             now: HostTime(100),
             predicted_present: Some(HostTime(200)),
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Predictive,
             frame_index: 7,
             output: OutputId(1),
             prev_actual_present: None,
@@ -561,6 +560,7 @@ mod tests {
             frame_start: HostTime(800),
             sample_time: HostTime(1000),
             target_present: Some(HostTime(1000)),
+            presentation_timing: PresentationTiming::Predictive,
             commit_deadline: HostTime(900),
             pipeline_depth: 2,
             output: OutputId(0),
@@ -580,7 +580,7 @@ mod tests {
         sink.on_frame_summary(&FrameSummary {
             frame_index: 0,
             output: OutputId(0),
-            confidence: TimingConfidence::PacingOnly,
+            presentation_timing: PresentationTiming::PacingOnly,
             now: HostTime(0),
             target_present: None,
             sample_time: HostTime(0),

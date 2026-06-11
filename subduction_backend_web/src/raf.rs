@@ -8,13 +8,12 @@
 //! [`DOMHighResTimeStamp`][mdn] (milliseconds from `performance.now()`),
 //! which is converted to microsecond [`HostTime`] ticks.
 //!
-//! Timing confidence is [`PacingOnly`] — the browser provides frame pacing but
+//! Presentation timing is pacing-only — the browser provides frame pacing but
 //! no predicted present time.
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/API/DOMHighResTimeStamp
 //! [`FrameTick`]: frameclock::FrameTick
 //! [`HostTime`]: frameclock::HostTime
-//! [`PacingOnly`]: frameclock::TimingConfidence::PacingOnly
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -23,7 +22,7 @@ use core::cell::{Cell, RefCell};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 
-use frameclock::{FrameTick, HostTime, OutputId, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId};
 
 // Direct global bindings instead of `web_sys::Window` methods — avoids
 // fetching (and unwrapping) the Window/Performance objects on every frame.
@@ -127,7 +126,6 @@ impl RafLoop {
                 now,
                 predicted_present: None,
                 refresh_interval: None,
-                confidence: TimingConfidence::PacingOnly,
                 frame_index,
                 output: inner.output,
                 prev_actual_present: None,

@@ -75,20 +75,20 @@ impl<W: Write> TraceSink for PrettyPrintSink<W> {
     fn on_frame_tick(&mut self, e: &FrameTickEvent) {
         let _ = writeln!(
             self.writer,
-            "[tick] frame={} output={} now={:.1}µs confidence={:?}",
+            "[tick] frame={} output={} now={:.1}µs",
             e.frame_index,
             e.output.0,
             self.host_us(e.now),
-            e.confidence,
         );
     }
 
     fn on_frame_plan(&mut self, e: &FramePlanEvent) {
         let _ = writeln!(
             self.writer,
-            "[plan] frame={} demand={:?} interval={:.1}µs start={:.1}µs deadline={:.1}µs depth={} margin={}t",
+            "[plan] frame={} demand={:?} timing={:?} interval={:.1}µs start={:.1}µs deadline={:.1}µs depth={} margin={}t",
             e.frame_index,
             e.demand,
+            e.presentation_timing,
             self.ticks_to_us(e.frame_interval.ticks()),
             self.host_us(e.frame_start),
             self.host_us(e.commit_deadline),
@@ -181,7 +181,6 @@ mod tests {
     use super::*;
     use frameclock::HostTime;
     use frameclock::OutputId;
-    use frameclock::TimingConfidence;
 
     #[test]
     fn pretty_print_tick() {
@@ -192,7 +191,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: None,
             refresh_interval: None,
-            confidence: TimingConfidence::PacingOnly,
         });
         let output = String::from_utf8(sink.writer).unwrap();
         assert!(output.contains("[tick]"), "got: {output}");

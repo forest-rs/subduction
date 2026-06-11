@@ -76,7 +76,7 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin_ns: u64) -> Present
 mod tests {
     use super::*;
     use frameclock::OutputId;
-    use frameclock::TimingConfidence;
+    use frameclock::PresentationTiming;
 
     #[test]
     fn timebase_is_valid() {
@@ -98,16 +98,16 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(2_000_000)),
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Estimated,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
         let hints = compute_present_hints(&tick, 2_000_000);
 
-        assert_eq!(hints.desired_present, Some(HostTime(2_000_000)));
+        assert_eq!(hints.presentation_timing(), PresentationTiming::Estimated);
+        assert_eq!(hints.desired_present(), Some(HostTime(2_000_000)));
         // latest_commit should be before desired_present
-        assert!(hints.latest_commit.ticks() < 2_000_000);
+        assert!(hints.latest_commit().ticks() < 2_000_000);
     }
 
     #[test]
@@ -118,7 +118,6 @@ mod tests {
         assert_eq!(tick.prev_actual_present, Some(prev));
         assert!(tick.predicted_present.is_some());
         assert!(tick.refresh_interval.is_some());
-        assert_eq!(tick.confidence, TimingConfidence::Estimated);
     }
 
     #[test]
@@ -143,14 +142,13 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: None,
             refresh_interval: None,
-            confidence: TimingConfidence::Estimated,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
         let hints = compute_present_hints(&tick, 2_000_000);
 
-        assert_eq!(hints.desired_present, None);
-        assert_eq!(hints.latest_commit, HostTime(1_000_000));
+        assert_eq!(hints.desired_present(), None);
+        assert_eq!(hints.latest_commit(), HostTime(1_000_000));
     }
 }

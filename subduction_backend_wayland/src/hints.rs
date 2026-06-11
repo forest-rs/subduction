@@ -3,7 +3,7 @@
 
 //! Present-hint computation for Wayland ticks.
 
-use frameclock::{Duration, FrameTick, PresentHints};
+use frameclock::{Duration, FrameTick, PresentHints, PresentationTiming};
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin.
 ///
@@ -19,10 +19,11 @@ pub fn compute_present_hints(tick: &FrameTick, safety_margin: Duration) -> Prese
         .and_then(|present| present.checked_sub(safety_margin))
         .unwrap_or(tick.now);
 
-    PresentHints {
+    PresentHints::new(
+        PresentationTiming::Estimated,
         desired_present,
         latest_commit,
-    }
+    )
 }
 
 #[cfg(test)]
@@ -30,14 +31,13 @@ mod tests {
     use super::compute_present_hints;
     use frameclock::OutputId;
     use frameclock::{Duration, HostTime};
-    use frameclock::{FrameTick, TimingConfidence};
+    use frameclock::{FrameTick, PresentationTiming};
 
     fn tick(predicted_present: Option<HostTime>) -> FrameTick {
         FrameTick {
             now: HostTime(1_000_000),
             predicted_present,
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Estimated,
             frame_index: 7,
             output: OutputId(0),
             prev_actual_present: None,
@@ -48,23 +48,24 @@ mod tests {
     fn compute_present_hints_with_prediction() {
         let hints = compute_present_hints(&tick(Some(HostTime(2_000_000))), Duration(500_000));
 
-        assert_eq!(hints.desired_present, Some(HostTime(2_000_000)));
-        assert_eq!(hints.latest_commit, HostTime(1_500_000));
+        assert_eq!(hints.presentation_timing(), PresentationTiming::Estimated);
+        assert_eq!(hints.desired_present(), Some(HostTime(2_000_000)));
+        assert_eq!(hints.latest_commit(), HostTime(1_500_000));
     }
 
     #[test]
     fn compute_present_hints_without_prediction() {
         let hints = compute_present_hints(&tick(None), Duration(500_000));
 
-        assert_eq!(hints.desired_present, None);
-        assert_eq!(hints.latest_commit, HostTime(1_000_000));
+        assert_eq!(hints.desired_present(), None);
+        assert_eq!(hints.latest_commit(), HostTime(1_000_000));
     }
 
     #[test]
     fn compute_present_hints_with_underflowing_margin_falls_back_to_now() {
         let hints = compute_present_hints(&tick(Some(HostTime(200_000))), Duration(500_000));
 
-        assert_eq!(hints.desired_present, Some(HostTime(200_000)));
-        assert_eq!(hints.latest_commit, HostTime(1_000_000));
+        assert_eq!(hints.desired_present(), Some(HostTime(200_000)));
+        assert_eq!(hints.latest_commit(), HostTime(1_000_000));
     }
 }

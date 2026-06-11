@@ -14,7 +14,7 @@ use frameclock::diagnostics::{
 };
 use frameclock::{
     DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, FrameTimingSummary, HostTime,
-    OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig, TimingConfidence,
+    OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
 };
 
 const FRAME_COUNT: u64 = 90;
@@ -85,7 +85,6 @@ fn main() {
                 now,
                 predicted_present: Some(predicted_present),
                 refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-                confidence: TimingConfidence::Predictive,
                 frame_index,
                 output,
                 prev_actual_present: if frame_index > 0 { Some(now) } else { None },
@@ -94,12 +93,12 @@ fn main() {
             summary.record_frame_tick(&tick_event);
             diagnostics.frame_tick(&tick_event);
 
-            let hints = PresentHints {
-                desired_present: tick.predicted_present,
-                latest_commit: predicted_present
+            let hints = PresentHints::predictive(
+                predicted_present,
+                predicted_present
                     .checked_sub(SAFETY_MARGIN)
                     .unwrap_or(tick.now),
-            };
+            );
 
             let plan = scheduler.plan(FrameRequest::new(
                 tick,

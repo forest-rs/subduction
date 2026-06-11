@@ -38,7 +38,6 @@ pub fn export(bytes: &[u8], timebase: Timebase, writer: &mut dyn Write) -> io::R
                     "s": "g",
                     "args": {
                         "frame_index": e.frame_index,
-                        "confidence": format!("{:?}", e.confidence),
                     }
                 }));
             }
@@ -53,6 +52,7 @@ pub fn export(bytes: &[u8], timebase: Timebase, writer: &mut dyn Write) -> io::R
                     "s": "g",
                     "args": {
                         "frame_index": e.frame_index,
+                        "presentation_timing": format!("{:?}", e.presentation_timing),
                         "pipeline_depth": e.pipeline_depth,
                         "safety_margin_ticks": e.safety_margin_ticks,
                     }
@@ -181,7 +181,6 @@ mod tests {
     use crate::recorder::RecorderSink;
     use frameclock::HostTime;
     use frameclock::OutputId;
-    use frameclock::TimingConfidence;
     use subduction_core::trace::{
         FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind, TraceSink,
     };
@@ -195,7 +194,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: None,
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::PacingOnly,
         });
         rec.on_phase_begin(&PhaseBeginEvent {
             frame_index: 0,

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use frameclock::{FrameTick, HostTime, OutputId, PresentHints, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, PresentHints, PresentationTiming};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;
@@ -209,7 +209,6 @@ pub fn make_tick(
         } else {
             None
         },
-        confidence: TimingConfidence::Estimated,
         frame_index,
         output: OutputId(0),
         prev_actual_present: prev_present_time,
@@ -222,12 +221,13 @@ pub fn compute_hints(tick: &FrameTick, safety_margin_ns: u64) -> PresentHints {
     let timebase = crate::timing::timebase();
     let margin_ticks = safety_margin_ns * u64::from(timebase.denom) / u64::from(timebase.numer);
 
-    PresentHints {
-        desired_present: tick.predicted_present,
-        latest_commit: HostTime(
+    PresentHints::new(
+        PresentationTiming::Estimated,
+        tick.predicted_present,
+        HostTime(
             tick.predicted_present
                 .map(|p| p.ticks().saturating_sub(margin_ticks))
                 .unwrap_or(tick.now.ticks()),
         ),
-    }
+    )
 }

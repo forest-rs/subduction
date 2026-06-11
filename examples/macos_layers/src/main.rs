@@ -429,7 +429,7 @@ fn on_tick(tick: FrameTick) {
         s.recorder.on_submit(&SubmitEvent {
             frame_index,
             submitted_at: submit_start,
-            expected_present: hints.desired_present,
+            expected_present: hints.desired_present(),
         });
         let submit_end = DisplayLink::now();
         s.recorder.on_phase_end(&PhaseEndEvent {

@@ -10,7 +10,7 @@
 
 use crate::demand::{FrameDemand, FrameDemandClass};
 use crate::time::{Duration, HostTime};
-use crate::timing::{DisplayTiming, FramePlan, FrameRequest, PresentFeedback, TimingConfidence};
+use crate::timing::{DisplayTiming, FramePlan, FrameRequest, PresentFeedback, PresentationTiming};
 
 /// Controls how the scheduler adapts pipeline depth in response to deadline
 /// misses and hits.
@@ -182,6 +182,35 @@ impl Ema {
     }
 }
 
+fn sanitize_ema_alpha(alpha: f64) -> f64 {
+    if !alpha.is_finite() {
+        return 1.0;
+    }
+    alpha.clamp(0.0, 1.0)
+}
+
+fn sanitize_safety_multiplier(multiplier: f64) -> f64 {
+    if !multiplier.is_finite() || multiplier < 0.0 {
+        return 1.0;
+    }
+    multiplier
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite non-negative tick values are clamped before conversion"
+)]
+fn f64_ticks_to_u64(ticks: f64) -> u64 {
+    if !ticks.is_finite() || ticks <= 0.0 {
+        return 0;
+    }
+    if ticks >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    ticks as u64
+}
+
 /// Frame scheduler that converts [`FrameRequest`]s into [`FramePlan`]s and
 /// adapts over time.
 ///
@@ -233,6 +262,8 @@ impl Scheduler {
         config.initial_depth = config
             .initial_depth
             .clamp(config.min_depth, config.max_depth);
+        config.ema_alpha = sanitize_ema_alpha(config.ema_alpha);
+        config.safety_multiplier = sanitize_safety_multiplier(config.safety_multiplier);
 
         Self {
             pipeline_depth: config.initial_depth,
@@ -264,24 +295,31 @@ impl Scheduler {
             build_cost,
         );
         let schedule_delta = self.schedule_delta(request.demand, frame_interval, source_interval);
-        let platform_present = hints.desired_present.or(tick.predicted_present);
+        let presentation_timing = hints.presentation_timing();
+        let platform_present = if presentation_timing.has_target_present() {
+            hints
+                .desired_present()
+                .filter(|present| *present >= tick.now)
+        } else {
+            None
+        };
         let base_present = platform_present
             .unwrap_or_else(|| tick.now.checked_add(source_interval).unwrap_or(tick.now));
         let scheduled_present = base_present
             .checked_add(schedule_delta)
             .unwrap_or(base_present);
-        let commit_deadline = hints
-            .latest_commit
+        let base_commit_deadline = hints.latest_commit().max(tick.now);
+        let commit_deadline = base_commit_deadline
             .checked_add(schedule_delta)
-            .unwrap_or(hints.latest_commit);
+            .unwrap_or(base_commit_deadline);
 
-        let (target_present, sample_time) = match tick.confidence {
-            TimingConfidence::Predictive | TimingConfidence::Estimated => {
+        let (target_present, sample_time) = match presentation_timing {
+            PresentationTiming::Predictive | PresentationTiming::Estimated => {
                 let target_present = platform_present.map(|_| scheduled_present);
                 let sample_time = target_present.unwrap_or(scheduled_present);
                 (target_present, sample_time)
             }
-            TimingConfidence::PacingOnly => {
+            PresentationTiming::PacingOnly => {
                 // No reliable present time; sample at the scheduler-selected
                 // pacing target but do not report it as presentation truth.
                 (None, scheduled_present)
@@ -294,6 +332,7 @@ impl Scheduler {
             frame_start: self.frame_start(tick.now, commit_deadline, request.demand),
             sample_time,
             target_present,
+            presentation_timing,
             commit_deadline,
             pipeline_depth: self.pipeline_depth,
             output: tick.output,
@@ -391,14 +430,7 @@ impl Scheduler {
             return Duration::ZERO;
         }
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "EMA samples are non-negative host-time ticks and clamp before conversion"
-        )]
-        {
-            Duration(self.build_cost_ema.get().max(0.0) as u64)
-        }
+        Duration(f64_ticks_to_u64(self.build_cost_ema.get()))
     }
 
     /// Feeds presentation feedback to adapt scheduling parameters.
@@ -411,14 +443,8 @@ impl Scheduler {
         self.build_cost_ema.update(build_ticks as f64);
 
         // Update safety margin.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "EMA-smoothed build cost in ticks fits in u64"
-        )]
-        {
-            self.safety_margin_ticks =
-                (self.build_cost_ema.get() * self.config.safety_multiplier) as u64;
-        }
+        self.safety_margin_ticks =
+            f64_ticks_to_u64(self.build_cost_ema.get() * self.config.safety_multiplier);
 
         // Adapt pipeline depth according to degradation policy.
         //
@@ -516,34 +542,44 @@ mod tests {
 
     const REFRESH_INTERVAL: Duration = Duration(16_666_667);
 
-    fn make_tick(confidence: TimingConfidence, now: u64, predicted: Option<u64>) -> FrameTick {
+    fn make_tick(now: u64, predicted: Option<u64>) -> FrameTick {
         FrameTick {
             now: HostTime(now),
             predicted_present: predicted.map(HostTime),
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            confidence,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         }
     }
 
-    fn make_hints(deadline: u64) -> PresentHints {
-        PresentHints {
-            desired_present: None,
-            latest_commit: HostTime(deadline),
+    fn make_hints(
+        presentation_timing: PresentationTiming,
+        predicted: Option<u64>,
+        deadline: u64,
+    ) -> PresentHints {
+        if let Some(predicted) = predicted
+            && presentation_timing.has_target_present()
+        {
+            return PresentHints::new(
+                presentation_timing,
+                Some(HostTime(predicted)),
+                HostTime(deadline),
+            );
         }
+
+        PresentHints::new(presentation_timing, None, HostTime(deadline))
     }
 
     fn make_request(
-        confidence: TimingConfidence,
+        presentation_timing: PresentationTiming,
         now: u64,
         predicted: Option<u64>,
         deadline: u64,
         demand: FrameDemand,
     ) -> FrameRequest {
-        let tick = make_tick(confidence, now, predicted);
-        let hints = make_hints(deadline);
+        let tick = make_tick(now, predicted);
+        let hints = make_hints(presentation_timing, predicted, deadline);
         FrameRequest {
             tick,
             hints,
@@ -558,7 +594,7 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1000,
             Some(2000),
             1800,
@@ -579,7 +615,7 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::PacingOnly,
+            PresentationTiming::PacingOnly,
             1_000_000,
             None,
             17_000_000,
@@ -599,7 +635,7 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1000,
             Some(2000),
             1800,
@@ -626,7 +662,7 @@ mod tests {
         sched.observe(&feedback);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000,
             Some(2_000),
             2_000,
@@ -638,13 +674,33 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_sanitizes_non_finite_float_config() {
+        let mut config = SchedulerConfig::predictive();
+        config.ema_alpha = f64::NAN;
+        config.safety_multiplier = f64::INFINITY;
+        let mut sched = Scheduler::new(config);
+        let feedback = PresentFeedback {
+            submitted_at: HostTime(1_200),
+            build_start: HostTime(1_000),
+            expected_present: None,
+            actual_present: None,
+            missed_deadline: Some(false),
+            pacing_overrun: None,
+        };
+
+        sched.observe(&feedback);
+
+        assert_eq!(sched.safety_margin_ticks(), 200);
+    }
+
+    #[test]
     fn frame_start_clamps_to_tick_now_when_start_is_due() {
         let mut config = SchedulerConfig::predictive();
         config.minimum_frame_start_margin = Duration(1_000);
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_500,
             Some(2_000),
             1_800,
@@ -655,13 +711,34 @@ mod tests {
     }
 
     #[test]
+    fn stale_predictive_present_is_ignored() {
+        let mut config = SchedulerConfig::predictive();
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+        let tick = make_tick(2_000, Some(1_500));
+        let request = FrameRequest {
+            tick,
+            hints: PresentHints::predictive(HostTime(1_500), HostTime(1_250)),
+            demand: FrameDemand::ANIMATION,
+            display_timing: DisplayTiming::fixed(REFRESH_INTERVAL),
+        };
+
+        let plan = sched.plan(request);
+
+        assert_eq!(plan.target_present, None);
+        assert_eq!(plan.sample_time, HostTime(2_000) + REFRESH_INTERVAL);
+        assert_eq!(plan.commit_deadline, HostTime(2_000));
+        assert_eq!(plan.frame_start, HostTime(2_000));
+    }
+
+    #[test]
     fn input_demand_starts_immediately() {
         let mut config = SchedulerConfig::predictive();
         config.minimum_frame_start_margin = Duration(250);
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000,
             Some(2_000),
             1_800,
@@ -690,7 +767,7 @@ mod tests {
         sched.observe(&feedback);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000_000,
             Some(17_666_667),
             16_666_667,
@@ -721,7 +798,7 @@ mod tests {
         sched.observe(&feedback);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000_000,
             Some(50_000_000),
             50_000_000,
@@ -753,17 +830,13 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
             refresh_interval: Some(8_333_333),
-            confidence: TimingConfidence::Predictive,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
         let request = FrameRequest {
             tick,
-            hints: PresentHints {
-                desired_present: tick.predicted_present,
-                latest_commit: HostTime(8_333_333),
-            },
+            hints: PresentHints::predictive(HostTime(9_333_333), HostTime(8_333_333)),
             demand: FrameDemand::ANIMATION,
             display_timing: DisplayTiming::variable(
                 Duration(8_333_333),
@@ -799,17 +872,13 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
             refresh_interval: Some(8_333_333),
-            confidence: TimingConfidence::Predictive,
             frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
         let request = FrameRequest {
             tick,
-            hints: PresentHints {
-                desired_present: tick.predicted_present,
-                latest_commit: HostTime(8_333_333),
-            },
+            hints: PresentHints::predictive(HostTime(9_333_333), HostTime(8_333_333)),
             demand: FrameDemand::ANIMATION,
             display_timing: DisplayTiming::variable(
                 Duration(8_333_333),
@@ -857,7 +926,7 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000,
             Some(2_000),
             1_800,
@@ -884,7 +953,7 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Predictive,
+            PresentationTiming::Predictive,
             1_000,
             Some(2_000),
             1_800,
@@ -1033,19 +1102,20 @@ mod tests {
     }
 
     #[test]
-    fn estimated_confidence_uses_predicted_present() {
+    fn estimated_presentation_timing_uses_desired_present() {
         let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
 
         let plan = sched.plan(make_request(
-            TimingConfidence::Estimated,
+            PresentationTiming::Estimated,
             1000,
             Some(2000),
             1800,
             FrameDemand::ANIMATION,
         ));
 
-        // Estimated behaves like Predictive: uses predicted_present.
+        // Estimated behaves like Predictive for target selection; hosts choose
+        // a more conservative SchedulerConfig separately.
         assert_eq!(plan.target_present, Some(HostTime(2000)));
         assert_eq!(plan.sample_time, HostTime(2000));
     }

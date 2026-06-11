@@ -32,7 +32,7 @@ use core::f64::consts::TAU;
 
 use frameclock::{
     AffineClock, DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
-    PresentFeedback, Scheduler, SchedulerConfig, Timebase, TimingConfidence,
+    PresentFeedback, PresentationTiming, Scheduler, SchedulerConfig, Timebase,
 };
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
@@ -225,7 +225,7 @@ pub fn main() -> Result<(), JsValue> {
     )?;
     timecode.set_attribute(
         "title",
-        "Truth strip: frame index, intended present bucket, beat index, and timing confidence.",
+        "Truth strip: frame index, intended present bucket, beat index, and presentation timing.",
     )?;
 
     let hud = element(&document, "pre")?;
@@ -235,7 +235,7 @@ pub fn main() -> Result<(), JsValue> {
     )?;
     hud.set_attribute(
         "title",
-        "Scheduler HUD: timing confidence, Ts/Tp, pipeline depth, and deadline misses.",
+        "Scheduler HUD: presentation timing, Ts/Tp, pipeline depth, and deadline misses.",
     )?;
 
     let graph = element(&document, "pre")?;
@@ -635,7 +635,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let build_ms = submitted_at.ticks().saturating_sub(build_start.ticks()) as f64 / 1000.0;
     let frame_budget_ms = frame_dur * 1000.0;
     let hard_miss =
-        plan.target_present.is_some() && submitted_at.ticks() > hints.latest_commit.ticks();
+        plan.target_present.is_some() && submitted_at.ticks() > hints.latest_commit().ticks();
     let soft_miss = build_ms > frame_budget_ms * 1.20;
 
     let audio_delta_ms = if let Some(audio) = s.audio.as_ref() {
@@ -660,7 +660,8 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let play_label = if s.video.paused() { "Play" } else { "Pause" };
     s.ui.play_button.set_text_content(Some(play_label));
 
-    let confidence = confidence_label(tick.confidence);
+    let presentation_timing = plan.presentation_timing;
+    let presentation_timing_label = presentation_timing_label(presentation_timing);
     let ts_ms = ticks_to_secs(s.timebase, plan.sample_time.ticks()) * 1000.0;
     let tp_label = if let Some(tp) = plan.target_present {
         format!("{:.3}ms", ticks_to_secs(s.timebase, tp.ticks()) * 1000.0)
@@ -670,8 +671,8 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
 
     let present_bucket = (phase_target * emu_refresh_hz).floor().max(0.0) as u64;
     let timecode_text = format!(
-        "F {:06} | PT_BUCKET {:08} | beat {:05} | conf {}",
-        tick.frame_index, present_bucket, beat_idx, confidence
+        "F {:06} | PT_BUCKET {:08} | beat {:05} | timing {}",
+        tick.frame_index, present_bucket, beat_idx, presentation_timing_label
     );
     s.ui.timecode.set_text_content(Some(&timecode_text));
 
@@ -682,7 +683,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     };
 
     let report = s.sync.observe(SyncSample {
-        confidence: tick.confidence,
+        presentation_timing,
         phase_error_ms,
         hard_miss,
         soft_miss,
@@ -699,7 +700,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let _ = s.ui.sync_grade.style().set_property("color", color);
 
     s.ui.hud.set_text_content(Some(&format!(
-        "TimingConfidence: {confidence}\nTs: {ts_ms:.3}ms\nTp: {tp_label}\npipeline depth: {}\nmissed deadlines: {}\ninj(timer/decode/gpu): {:+.2} / {:.2} / {:.2} ms",
+        "PresentationTiming: {presentation_timing_label}\nTs: {ts_ms:.3}ms\nTp: {tp_label}\npipeline depth: {}\nmissed deadlines: {}\ninj(timer/decode/gpu): {:+.2} / {:.2} / {:.2} ms",
         s.scheduler.pipeline_depth(),
         report.missed_frames,
         s.last_timer_jitter_ms,
@@ -774,11 +775,11 @@ fn play_click(ctx: &AudioContext) {
     osc.stop_with_when(now + 0.045).ok();
 }
 
-fn confidence_label(c: TimingConfidence) -> &'static str {
-    match c {
-        TimingConfidence::Predictive => "Predictive",
-        TimingConfidence::Estimated => "Estimated",
-        TimingConfidence::PacingOnly => "PacingOnly",
+fn presentation_timing_label(presentation_timing: PresentationTiming) -> &'static str {
+    match presentation_timing {
+        PresentationTiming::Predictive => "Predictive",
+        PresentationTiming::Estimated => "Estimated",
+        PresentationTiming::PacingOnly => "PacingOnly",
     }
 }
 

@@ -3,11 +3,9 @@
 
 //! `CVDisplayLink` integration for predictive frame timing.
 //!
-//! Wraps `CVDisplayLink` in a safe Rust API that produces [`FrameTick`] events
-//! with [`TimingConfidence::Predictive`].
+//! Wraps `CVDisplayLink` in a safe Rust API that produces [`FrameTick`] events.
 //!
 //! [`FrameTick`]: frameclock::FrameTick
-//! [`TimingConfidence::Predictive`]: frameclock::TimingConfidence::Predictive
 
 use alloc::boxed::Box;
 use core::ffi::c_void;
@@ -16,7 +14,7 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use frameclock::{FrameTick, HostTime, OutputId, Timebase, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId, Timebase};
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink as CVDisplayLinkRaw, CVTimeStamp, kCVReturnSuccess};
 
@@ -237,7 +235,6 @@ unsafe extern "C-unwind" fn display_link_callback(
         now,
         predicted_present: Some(predicted_present),
         refresh_interval,
-        confidence: TimingConfidence::Predictive,
         frame_index,
         output: state.output,
         prev_actual_present: None,

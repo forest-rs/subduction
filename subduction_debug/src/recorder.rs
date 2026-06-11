@@ -10,7 +10,7 @@
 //! Rich events ([`on_layer_changes`](TraceSink::on_layer_changes),
 //! [`on_damage_rects`](TraceSink::on_damage_rects)) store only the count.
 
-use frameclock::{Duration, FrameDemand, HostTime, OutputId, TimingConfidence};
+use frameclock::{Duration, FrameDemand, HostTime, OutputId, PresentationTiming};
 use subduction_core::trace::{
     DamageRect, FramePlanEvent, FrameSummary, FrameTickEvent, LayerChange, PhaseBeginEvent,
     PhaseEndEvent, PhaseKind, PresentFeedbackEvent, SubmitEvent, TraceSink,
@@ -94,11 +94,11 @@ impl RecorderSink {
         }
     }
 
-    fn write_confidence(&mut self, c: TimingConfidence) {
-        self.write_u8(match c {
-            TimingConfidence::Predictive => 0,
-            TimingConfidence::Estimated => 1,
-            TimingConfidence::PacingOnly => 2,
+    fn write_presentation_timing(&mut self, presentation_timing: PresentationTiming) {
+        self.write_u8(match presentation_timing {
+            PresentationTiming::Predictive => 0,
+            PresentationTiming::Estimated => 1,
+            PresentationTiming::PacingOnly => 2,
         });
     }
 
@@ -120,7 +120,6 @@ impl TraceSink for RecorderSink {
         self.write_u64(e.now.ticks());
         self.write_option_u64(e.predicted_present.map(|t| t.ticks()));
         self.write_option_u64(e.refresh_interval);
-        self.write_confidence(e.confidence);
     }
 
     fn on_frame_plan(&mut self, e: &FramePlanEvent) {
@@ -132,6 +131,7 @@ impl TraceSink for RecorderSink {
         self.write_u64(e.frame_start.ticks());
         self.write_u64(e.sample_time.ticks());
         self.write_option_u64(e.target_present.map(|t| t.ticks()));
+        self.write_presentation_timing(e.presentation_timing);
         self.write_u64(e.commit_deadline.ticks());
         self.write_u8(e.pipeline_depth);
         self.write_u64(e.safety_margin_ticks);
@@ -170,7 +170,7 @@ impl TraceSink for RecorderSink {
         self.write_u8(TAG_FRAME_SUMMARY);
         self.write_u64(s.frame_index);
         self.write_u32(s.output.0);
-        self.write_confidence(s.confidence);
+        self.write_presentation_timing(s.presentation_timing);
         self.write_u64(s.now.ticks());
         self.write_option_u64(s.target_present.map(|t| t.ticks()));
         self.write_u64(s.sample_time.ticks());
@@ -304,11 +304,11 @@ impl DecodeIter<'_> {
         })
     }
 
-    fn read_confidence(&mut self) -> Option<TimingConfidence> {
+    fn read_presentation_timing(&mut self) -> Option<PresentationTiming> {
         Some(match self.read_u8()? {
-            0 => TimingConfidence::Predictive,
-            1 => TimingConfidence::Estimated,
-            _ => TimingConfidence::PacingOnly,
+            0 => PresentationTiming::Predictive,
+            1 => PresentationTiming::Estimated,
+            _ => PresentationTiming::PacingOnly,
         })
     }
 
@@ -328,7 +328,6 @@ impl DecodeIter<'_> {
             now: HostTime(self.read_u64()?),
             predicted_present: self.read_option_u64()?.map(HostTime),
             refresh_interval: self.read_option_u64()?,
-            confidence: self.read_confidence()?,
         }))
     }
 
@@ -341,6 +340,7 @@ impl DecodeIter<'_> {
             frame_start: HostTime(self.read_u64()?),
             sample_time: HostTime(self.read_u64()?),
             target_present: self.read_option_u64()?.map(HostTime),
+            presentation_timing: self.read_presentation_timing()?,
             commit_deadline: HostTime(self.read_u64()?),
             pipeline_depth: self.read_u8()?,
             safety_margin_ticks: self.read_u64()?,
@@ -384,7 +384,7 @@ impl DecodeIter<'_> {
         Some(RecordedEvent::FrameSummary(FrameSummary {
             frame_index: self.read_u64()?,
             output: OutputId(self.read_u32()?),
-            confidence: self.read_confidence()?,
+            presentation_timing: self.read_presentation_timing()?,
             now: HostTime(self.read_u64()?),
             target_present: self.read_option_u64()?.map(HostTime),
             sample_time: HostTime(self.read_u64()?),
@@ -446,7 +446,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(1_016_667)),
             refresh_interval: Some(16_666_667),
-            confidence: TimingConfidence::Predictive,
         }
     }
 
@@ -459,6 +458,7 @@ mod tests {
             frame_start: HostTime(1_013_500),
             sample_time: HostTime(1_016_667),
             target_present: Some(HostTime(1_016_667)),
+            presentation_timing: PresentationTiming::Predictive,
             commit_deadline: HostTime(1_014_000),
             pipeline_depth: 2,
             safety_margin_ticks: 500,
@@ -469,7 +469,7 @@ mod tests {
         FrameSummary {
             frame_index: 7,
             output: OutputId(1),
-            confidence: TimingConfidence::Predictive,
+            presentation_timing: PresentationTiming::Predictive,
             now: HostTime(1_000_000),
             target_present: Some(HostTime(1_016_667)),
             sample_time: HostTime(1_016_667),
@@ -498,7 +498,6 @@ mod tests {
                 assert_eq!(e.now, orig.now);
                 assert_eq!(e.predicted_present, orig.predicted_present);
                 assert_eq!(e.refresh_interval, orig.refresh_interval);
-                assert_eq!(e.confidence, orig.confidence);
             }
             other => panic!("expected FrameTick, got {other:?}"),
         }
@@ -518,6 +517,7 @@ mod tests {
                 assert_eq!(e.demand, orig.demand);
                 assert_eq!(e.frame_interval, orig.frame_interval);
                 assert_eq!(e.frame_start, orig.frame_start);
+                assert_eq!(e.presentation_timing, orig.presentation_timing);
                 assert_eq!(e.pipeline_depth, orig.pipeline_depth);
                 assert_eq!(e.safety_margin_ticks, orig.safety_margin_ticks);
             }
@@ -623,6 +623,7 @@ mod tests {
                 assert_eq!(s.render_ticks, orig.render_ticks);
                 assert_eq!(s.submit_ticks, orig.submit_ticks);
                 assert_eq!(s.missed_deadline, orig.missed_deadline);
+                assert_eq!(s.presentation_timing, orig.presentation_timing);
                 assert_eq!(s.pipeline_depth, orig.pipeline_depth);
             }
             other => panic!("expected FrameSummary, got {other:?}"),

@@ -6,7 +6,7 @@
 use crate::output_registry::OutputRegistry;
 use crate::queue::BoundedQueue;
 use crate::time::{Clock, now_for_clock};
-use frameclock::{FrameTick, HostTime, OutputId, TimingConfidence};
+use frameclock::{FrameTick, HostTime, OutputId};
 
 /// Internal bounded queue for frame ticks.
 ///
@@ -89,9 +89,9 @@ impl TickerState {
 
     /// Records that a `wl_callback.done` event has arrived.
     ///
-    /// If a callback is in flight, builds a [`FrameTick`] with `PacingOnly`
-    /// confidence, enqueues it, increments the tick index, and clears the
-    /// in-flight flag. If no callback is in flight, debug-asserts and returns.
+    /// If a callback is in flight, builds a pacing-only [`FrameTick`], enqueues
+    /// it, increments the tick index, and clears the in-flight flag. If no
+    /// callback is in flight, debug-asserts and returns.
     pub(crate) fn on_callback_done(&mut self, clock: Clock, output_registry: &OutputRegistry) {
         debug_assert!(
             self.callback_in_flight,
@@ -109,7 +109,6 @@ impl TickerState {
             now,
             predicted_present: None,
             refresh_interval: None,
-            confidence: TimingConfidence::PacingOnly,
             frame_index: self.tick_index,
             output,
             prev_actual_present,
@@ -151,9 +150,9 @@ mod tests {
     use super::{TickQueue, TickerState, select_tick_output};
     use crate::output_registry::OutputRegistry;
     use crate::time::Clock;
+    use frameclock::FrameTick;
     use frameclock::HostTime;
     use frameclock::OutputId;
-    use frameclock::{FrameTick, TimingConfidence};
     use wayland_client::protocol::wl_output;
     use wayland_client::{Connection, Proxy};
 
@@ -162,7 +161,6 @@ mod tests {
             now: HostTime(frame_index),
             predicted_present: None,
             refresh_interval: None,
-            confidence: TimingConfidence::PacingOnly,
             frame_index,
             output: OutputId(0),
             prev_actual_present: None,
@@ -241,7 +239,6 @@ mod tests {
         assert!(tick.now.ticks() > 0);
         assert_eq!(tick.predicted_present, None);
         assert_eq!(tick.refresh_interval, None);
-        assert_eq!(tick.confidence, TimingConfidence::PacingOnly);
         assert_eq!(tick.frame_index, 0);
         assert_eq!(tick.output, OutputId(0));
         assert_eq!(tick.prev_actual_present, None);

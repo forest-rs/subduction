@@ -34,7 +34,7 @@ pub(crate) fn now() -> HostTime {
 /// Converts `CFTimeInterval` (seconds since boot) to Mach absolute ticks.
 #[cfg_attr(
     not(feature = "ca-display-link"),
-    expect(dead_code, reason = "used only by ca_display_link module")
+    allow(dead_code, reason = "used only by ca_display_link module")
 )]
 ///
 /// `CACurrentMediaTime()` and `CADisplayLink` timestamps are `CFTimeInterval`

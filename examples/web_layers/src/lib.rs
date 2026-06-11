@@ -45,7 +45,7 @@ use web_sys::{
 };
 
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, OutputId, PresentFeedback,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PresentFeedback,
     Scheduler, SchedulerConfig,
 };
 use kurbo::Size;
@@ -599,12 +599,12 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
 
     let safety = Duration(s.scheduler.safety_margin_ticks());
     let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let plan = s.scheduler.plan(FrameRequest::new(
+    let opportunity = FrameOpportunity::new(
         tick,
         hints,
-        FrameDemand::ANIMATION,
         DisplayTiming::from_tick(&tick, Duration(16_667)),
-    ));
+    );
+    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
 
     // Elapsed seconds for animation.
     let elapsed_us = plan.sample_time.ticks().saturating_sub(s.start_us);

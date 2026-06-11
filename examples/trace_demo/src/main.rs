@@ -13,7 +13,7 @@ use std::io::BufWriter;
 
 use frameclock::diagnostics::{FramePlanEvent, FrameTickEvent, PresentFeedbackEvent, SubmitEvent};
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, HostTime, OutputId,
     PresentFeedback, PresentHints, Scheduler, SchedulerConfig, Timebase,
 };
 use subduction_core::trace::{
@@ -77,12 +77,12 @@ fn main() {
             plan_start,
         );
 
-        let plan = scheduler.plan(FrameRequest::new(
+        let opportunity = FrameOpportunity::new(
             tick,
             hints,
-            FrameDemand::ANIMATION,
             DisplayTiming::from_tick(&tick, Duration(refresh_interval)),
-        ));
+        );
+        let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
         let plan_end = HostTime(now_ticks + 100_000);
 
         let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());

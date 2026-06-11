@@ -16,7 +16,7 @@
 use std::cell::UnsafeCell;
 
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameRequest, HostTime, PendingFeedback, Scheduler,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, HostTime, PendingFeedback, Scheduler,
     SchedulerConfig,
 };
 use subduction_backend_windows::{
@@ -296,12 +296,12 @@ fn on_tick() {
     });
 
     let hints = compute_hints(&tick, SAFETY_MARGIN_NS);
-    let plan = s.scheduler.plan(FrameRequest::new(
+    let opportunity = FrameOpportunity::new(
         tick,
         hints,
-        FrameDemand::ANIMATION,
         DisplayTiming::from_tick(&tick, Duration(16_666_667)),
-    ));
+    );
+    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
 
     let plan_end = backend::now();
     s.recorder.on_phase_end(&PhaseEndEvent {

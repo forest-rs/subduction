@@ -66,7 +66,7 @@ The root module re-exports the frame-planning vocabulary used by both retained
 - `FrameDriver`, `FrameOpportunity`, `ActiveFrame`, and `FrameSubmission`
 - `FrameDemand` and `FrameDemandClass`
 - `Scheduler`, `SchedulerConfig`, `SchedulerState`, and `DegradationPolicy`
-- `FrameTick`, `FrameRequest`, `FramePlan`, `PresentHints`,
+- `FrameTick`, `FrameOpportunity`, `FramePlan`, `PresentHints`,
   `PresentationTiming`, `PresentFeedback`, `PendingFeedback`, and
   `DisplayTiming`
 - `HostTime`, `Duration`, `Timebase`, and `OutputId`
@@ -163,8 +163,8 @@ The split also tightens names around timing semantics:
 - `FramePlan::present_time` is now `FramePlan::target_present`.
 - `FramePlan::frame_start` is now the scheduler-selected time to wake or start
   app-side frame work before `FramePlan::commit_deadline`.
-- `Scheduler::plan` now takes a `FrameRequest` so demand and display timing are
-  explicit policy inputs.
+- `Scheduler::plan` now takes a `FrameOpportunity` plus `FrameDemand` so
+  display timing facts and demand remain explicit policy inputs.
 - `FrameDemand::dominant_class` and `FrameDemand::preempts` expose the demand
   ordering used by the scheduler.
 - `FrameDriver` owns pending demand and queued frame-start plans for hosts that

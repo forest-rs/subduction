@@ -13,8 +13,8 @@ use frameclock::diagnostics::{
     PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, FrameTimingSummary, HostTime,
-    OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, FrameTimingSummary,
+    HostTime, OutputId, PresentFeedback, PresentHints, Scheduler, SchedulerConfig,
 };
 
 const FRAME_COUNT: u64 = 90;
@@ -100,12 +100,12 @@ fn main() {
                     .unwrap_or(tick.now),
             );
 
-            let plan = scheduler.plan(FrameRequest::new(
+            let opportunity = FrameOpportunity::new(
                 tick,
                 hints,
-                FrameDemand::ANIMATION,
                 DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
-            ));
+            );
+            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
             let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());
             summary.record_frame_plan(&plan_event);
             diagnostics.frame_plan(&plan_event);

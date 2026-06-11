@@ -8,7 +8,7 @@
 //! - [`PresentationTiming`] — whether presentation timestamps are available
 //! - [`DisplayTiming`] — fixed/variable display timing constraints
 //! - [`FrameTick`] — a frame opportunity delivered by the backend
-//! - [`FrameRequest`] — one scheduler planning request
+//! - [`FrameOpportunity`] — tick, presentation hints, and display timing
 //! - [`FramePlan`] — what the engine uses to evaluate the scene for a frame
 //! - [`PresentHints`] — submission constraints from the backend
 //! - [`PresentFeedback`] — post-submit observations fed back to the scheduler
@@ -21,11 +21,11 @@
 //!    `CADisplayLink`, `requestAnimationFrame`).
 //! 2. The backend computes [`PresentHints`] from the tick and platform
 //!    knowledge (deadlines, desired present time).
-//! 3. The host combines those facts with [`FrameDemand`] and [`DisplayTiming`]
-//!    into a [`FrameRequest`].
+//! 3. The host combines those facts with [`DisplayTiming`] into a
+//!    [`FrameOpportunity`].
 //! 4. [`Scheduler::plan()`](crate::scheduler::Scheduler::plan) consumes the
-//!    request to produce a [`FramePlan`] with a frame start time, sampling time,
-//!    target presentation time, and commit deadline.
+//!    opportunity plus [`FrameDemand`] to produce a [`FramePlan`] with a frame
+//!    start time, sampling time, target presentation time, and commit deadline.
 //! 5. The application schedules frame work at
 //!    [`frame_start`](FramePlan::frame_start), uses the plan's
 //!    [`sample_time`](FramePlan::sample_time) to evaluate animation/simulation
@@ -248,47 +248,78 @@ pub struct FrameTick {
     pub prev_actual_present: Option<HostTime>,
 }
 
-/// A single scheduler planning request.
+/// A platform frame opportunity for scheduler and retained driver APIs.
+///
+/// Hosts construct this from the current display/frame callback. It packages
+/// the platform tick, backend submission constraints, and output timing model
+/// that the scheduler needs to plan a frame.
+///
+/// `frame_index` lives on [`FrameTick`] and is owned by the host/backend. When
+/// using [`FrameDriver`](crate::FrameDriver), advance it after an
+/// [`ActiveFrame`](crate::ActiveFrame) is submitted or discarded. Do not
+/// advance it merely because a frame-start wake fired while an older planned
+/// frame was still queued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FrameRequest {
+pub struct FrameOpportunity {
     /// Platform frame opportunity.
     pub tick: FrameTick,
     /// Backend submission constraints for the opportunity.
     pub hints: PresentHints,
-    /// Why this frame is requested.
-    ///
-    /// Ordinary render loops should only create a request when this is not
-    /// [`FrameDemand::NONE`]. Empty demand means there is no app-visible frame
-    /// work to schedule.
-    pub demand: FrameDemand,
     /// Display timing constraints for the target output.
     pub display_timing: DisplayTiming,
 }
 
-impl FrameRequest {
-    /// Creates a scheduler request from frame timing facts and demand.
+impl FrameOpportunity {
+    /// Creates a frame opportunity from platform timing facts.
     #[inline]
     #[must_use]
-    pub const fn new(
-        tick: FrameTick,
-        hints: PresentHints,
-        demand: FrameDemand,
-        display_timing: DisplayTiming,
-    ) -> Self {
+    pub const fn new(tick: FrameTick, hints: PresentHints, display_timing: DisplayTiming) -> Self {
         Self {
             tick,
             hints,
-            demand,
             display_timing,
         }
+    }
+
+    /// Creates a pacing-only frame opportunity.
+    ///
+    /// Use this from hosts that have a monotonic clock and a nominal refresh
+    /// interval but no reliable predicted present timestamp. The returned
+    /// opportunity uses:
+    ///
+    /// - [`PresentationTiming::PacingOnly`],
+    /// - no predicted or desired present time,
+    /// - `latest_commit = now + refresh_interval`, saturating at `u64::MAX`,
+    /// - [`DisplayTiming::fixed`] with `refresh_interval`.
+    #[inline]
+    #[must_use]
+    pub fn pacing_only(
+        now: HostTime,
+        refresh_interval: Duration,
+        frame_index: u64,
+        output: OutputId,
+    ) -> Self {
+        let tick = FrameTick {
+            now,
+            predicted_present: None,
+            refresh_interval: Some(refresh_interval.ticks()),
+            frame_index,
+            output,
+            prev_actual_present: None,
+        };
+        let hints = PresentHints::pacing_only(
+            now.checked_add(refresh_interval)
+                .unwrap_or(HostTime(u64::MAX)),
+        );
+        Self::new(tick, hints, DisplayTiming::fixed(refresh_interval))
     }
 }
 
 /// The plan for evaluating a single frame.
 ///
 /// Produced by the [`Scheduler`](crate::scheduler::Scheduler) from a
-/// [`FrameRequest`]. All engine evaluation and content selection should be
-/// driven by the times in this plan.
+/// [`FrameOpportunity`] and [`FrameDemand`]. All engine evaluation and content
+/// selection should be driven by the times in this plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FramePlan {
     /// Demand that selected this frame.

@@ -110,14 +110,12 @@ pub mod timing;
 
 pub use demand::{FrameDemand, FrameDemandClass};
 pub use diagnostics::{FrameDropReason, FrameTimingBasis, FrameTimingSummary};
-pub use driver::{
-    ActiveFrame, FrameBeginResult, FrameDriver, FrameOpportunity, FrameSubmission, PlannedFrame,
-};
+pub use driver::{ActiveFrame, FrameBeginResult, FrameDriver, FrameSubmission, PlannedFrame};
 pub use output::OutputId;
 pub use scheduler::{DegradationPolicy, Scheduler, SchedulerConfig, SchedulerState};
 pub use time::{Duration, HostTime, Timebase};
 pub use timeline::{AffineClock, AffineClockUpdate};
 pub use timing::{
-    DisplayTiming, FramePlan, FrameRequest, FrameTick, PendingFeedback, PresentFeedback,
+    DisplayTiming, FrameOpportunity, FramePlan, FrameTick, PendingFeedback, PresentFeedback,
     PresentHints, PresentationTiming,
 };

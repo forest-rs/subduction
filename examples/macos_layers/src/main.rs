@@ -16,7 +16,7 @@
 use core::cell::RefCell;
 
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, OutputId, PendingFeedback,
+    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, PendingFeedback,
     Scheduler, SchedulerConfig,
 };
 use objc2::rc::Retained;
@@ -356,12 +356,12 @@ fn on_tick(tick: FrameTick) {
         // Compute hints and plan the frame.
         let safety = Duration(s.scheduler.safety_margin_ticks());
         let hints = compute_present_hints(&tick, safety);
-        let plan = s.scheduler.plan(FrameRequest::new(
+        let opportunity = FrameOpportunity::new(
             tick,
             hints,
-            FrameDemand::ANIMATION,
             DisplayTiming::from_tick(&tick, Duration(16_666_667)),
-        ));
+        );
+        let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
 
         let plan_end = DisplayLink::now();
         s.recorder.on_phase_end(&PhaseEndEvent {

@@ -13,82 +13,9 @@ use crate::diagnostics::{
     FrameDropEvent, FrameDropReason, FramePlanEvent, FrameTickEvent, FrameTimingSummary,
     FrameTimingSummaryBuilder, PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };
-use crate::output::OutputId;
 use crate::scheduler::{Scheduler, SchedulerConfig};
-use crate::time::{Duration, HostTime};
-use crate::timing::{
-    DisplayTiming, FramePlan, FrameRequest, FrameTick, PresentFeedback, PresentHints,
-};
-
-/// A platform frame opportunity for retained driver lifecycle APIs.
-///
-/// Hosts construct this from the current display/frame callback. `FrameDriver`
-/// combines it with pending demand to decide whether a frame should begin now
-/// or whether a planned frame should remain queued until its frame-start time.
-///
-/// `frame_index` is owned by the host/backend and should identify one planned
-/// content frame for one output. When using [`FrameDriver`], advance it after
-/// an [`ActiveFrame`] is submitted or discarded. Do not advance it merely
-/// because a frame-start wake fired while an older planned frame was still
-/// queued.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FrameOpportunity {
-    /// Platform frame opportunity.
-    pub tick: FrameTick,
-    /// Backend submission constraints for this opportunity.
-    pub hints: PresentHints,
-    /// Display timing constraints for the target output.
-    pub display_timing: DisplayTiming,
-}
-
-impl FrameOpportunity {
-    /// Creates a frame opportunity from platform timing facts.
-    #[inline]
-    #[must_use]
-    pub const fn new(tick: FrameTick, hints: PresentHints, display_timing: DisplayTiming) -> Self {
-        Self {
-            tick,
-            hints,
-            display_timing,
-        }
-    }
-
-    /// Creates a pacing-only frame opportunity.
-    ///
-    /// Use this from hosts that have a monotonic clock and a nominal refresh
-    /// interval but no reliable predicted present timestamp. The returned
-    /// opportunity uses:
-    ///
-    /// - [`PresentationTiming::PacingOnly`](crate::PresentationTiming::PacingOnly),
-    /// - no predicted or desired present time,
-    /// - `latest_commit = now + refresh_interval`, saturating at `u64::MAX`,
-    /// - [`DisplayTiming::fixed`] with `refresh_interval`.
-    ///
-    /// The host owns `frame_index`; with [`FrameDriver`], increment it after an
-    /// [`ActiveFrame`] is submitted or discarded.
-    #[inline]
-    #[must_use]
-    pub fn pacing_only(
-        now: HostTime,
-        refresh_interval: Duration,
-        frame_index: u64,
-        output: OutputId,
-    ) -> Self {
-        let tick = FrameTick {
-            now,
-            predicted_present: None,
-            refresh_interval: Some(refresh_interval.ticks()),
-            frame_index,
-            output,
-            prev_actual_present: None,
-        };
-        let hints = PresentHints::pacing_only(
-            now.checked_add(refresh_interval)
-                .unwrap_or(HostTime(u64::MAX)),
-        );
-        Self::new(tick, hints, DisplayTiming::fixed(refresh_interval))
-    }
-}
+use crate::time::HostTime;
+use crate::timing::{FrameOpportunity, FramePlan, FrameTick, PresentFeedback, PresentHints};
 
 /// A scheduler plan paired with the platform facts used to make it.
 ///
@@ -518,12 +445,7 @@ impl FrameDriver {
 
         let demand = self.pending_demand;
         self.pending_demand = FrameDemand::NONE;
-        let plan = self.scheduler.plan(FrameRequest::new(
-            tick,
-            opportunity.hints,
-            demand,
-            opportunity.display_timing,
-        ));
+        let plan = self.scheduler.plan(opportunity, demand);
         let frame = PlannedFrame::new(
             tick,
             plan,
@@ -564,7 +486,7 @@ mod tests {
     };
     use crate::output::OutputId;
     use crate::time::Duration;
-    use crate::timing::{PresentFeedback, PresentationTiming};
+    use crate::timing::{DisplayTiming, PresentFeedback, PresentationTiming};
 
     use super::*;
 

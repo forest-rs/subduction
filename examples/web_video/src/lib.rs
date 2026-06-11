@@ -31,8 +31,8 @@ use core::cell::RefCell;
 use core::f64::consts::TAU;
 
 use frameclock::{
-    AffineClock, DisplayTiming, Duration, FrameDemand, FrameRequest, FrameTick, HostTime, OutputId,
-    PresentFeedback, PresentationTiming, Scheduler, SchedulerConfig, Timebase,
+    AffineClock, DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, HostTime,
+    OutputId, PresentFeedback, PresentationTiming, Scheduler, SchedulerConfig, Timebase,
 };
 use subduction_backend_web::RafLoop;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
@@ -453,12 +453,12 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let build_start = subduction_backend_web::now();
     let safety = Duration(s.scheduler.safety_margin_ticks());
     let hints = subduction_backend_web::compute_present_hints(&tick, safety);
-    let plan = s.scheduler.plan(FrameRequest::new(
+    let opportunity = FrameOpportunity::new(
         tick,
         hints,
-        FrameDemand::ANIMATION,
         DisplayTiming::from_tick(&tick, Duration(16_667)),
-    ));
+    );
+    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
 
     let mut semantic_seconds = ticks_to_secs(
         s.timebase,

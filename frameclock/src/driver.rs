@@ -235,8 +235,14 @@ impl FrameSubmission {
 pub struct FrameSubmitResult {
     /// Complete timing summary, when feedback was resolved immediately.
     ///
-    /// This is `None` when [`FrameSubmission::deferred`] was used; in that case
-    /// the summary is returned later through [`FrameBegin::resolved_feedback`].
+    /// This is usually the summary for the frame just submitted. If a new
+    /// deferred submission supersedes an older deferred submission that never
+    /// received actual-present feedback, this is the older frame's summary
+    /// resolved with commit-only evidence.
+    ///
+    /// This is `None` when [`FrameSubmission::deferred`] was used and no older
+    /// deferred feedback was pending; in that case the summary is returned later
+    /// through [`FrameBegin::resolved_feedback`].
     pub summary: Option<FrameTimingSummary>,
     /// Whether the driver is waiting for a later actual-present timestamp for
     /// this submitted frame.
@@ -248,13 +254,6 @@ impl FrameSubmitResult {
         Self {
             summary: Some(summary),
             awaiting_actual_present: false,
-        }
-    }
-
-    const fn deferred() -> Self {
-        Self {
-            summary: None,
-            awaiting_actual_present: true,
         }
     }
 }
@@ -514,6 +513,12 @@ impl FrameDriver {
     /// with that tick's [`FrameTick::prev_actual_present`]. This keeps Apple-
     /// style previous-frame present feedback inside `frameclock` while keeping
     /// one public submit method.
+    ///
+    /// If an older deferred submission is still unresolved when a new deferred
+    /// frame is submitted, the older frame is resolved as commit-only feedback
+    /// and returned in [`FrameSubmitResult::summary`]. This avoids debug-only
+    /// assertions and release-mode feedback loss on platforms that occasionally
+    /// omit actual-present timestamps.
     #[must_use]
     pub fn submit_frame(
         &mut self,
@@ -522,13 +527,13 @@ impl FrameDriver {
     ) -> FrameSubmitResult {
         match submission.presentation {
             PresentationObservation::Deferred => {
-                debug_assert!(
-                    self.pending_feedback.is_none(),
-                    "deferred feedback should resolve before another deferred submission"
-                );
+                let summary = self.resolve_pending_feedback_as_unavailable();
                 self.pending_feedback =
                     Some(DeferredFrameFeedback::new(frame, submission.submitted_at));
-                FrameSubmitResult::deferred()
+                FrameSubmitResult {
+                    summary,
+                    awaiting_actual_present: true,
+                }
             }
             PresentationObservation::Unavailable | PresentationObservation::Actual(_) => {
                 let feedback = PresentFeedback::new(
@@ -551,12 +556,29 @@ impl FrameDriver {
         &mut self,
         actual_present: Option<HostTime>,
     ) -> Option<FrameTimingSummary> {
+        let actual_present = actual_present?;
         let pending = self.pending_feedback.take()?;
         let feedback = PresentFeedback::new(
             &pending.planned.plan,
             pending.build_start,
             pending.submitted_at,
-            actual_present,
+            Some(actual_present),
+        );
+        Some(self.finish_submitted_frame(
+            pending.planned,
+            pending.build_start,
+            pending.submitted_at,
+            &feedback,
+        ))
+    }
+
+    fn resolve_pending_feedback_as_unavailable(&mut self) -> Option<FrameTimingSummary> {
+        let pending = self.pending_feedback.take()?;
+        let feedback = PresentFeedback::new(
+            &pending.planned.plan,
+            pending.build_start,
+            pending.submitted_at,
+            None,
         );
         Some(self.finish_submitted_frame(
             pending.planned,
@@ -1165,6 +1187,108 @@ mod tests {
         assert_eq!(summary.actual_present, Some(HostTime(99)));
         assert_eq!(summary.missed_deadline, Some(false));
         assert!(driver.scheduler().safety_margin_ticks() > 0);
+    }
+
+    #[test]
+    fn deferred_submission_waits_until_actual_present_arrives() {
+        let mut driver = driver();
+        driver.request(FrameDemand::INPUT);
+        let FrameBeginResult::Ready(frame) = driver
+            .begin_frame(predictive_opportunity(10, 3, 100, 90))
+            .result
+        else {
+            panic!("input should start immediately");
+        };
+        let state_before_submit = driver.scheduler().state();
+
+        let submit = driver.submit_frame(frame, FrameSubmission::deferred(HostTime(20)));
+
+        assert_eq!(submit.summary, None);
+        assert!(submit.awaiting_actual_present);
+        assert_eq!(driver.scheduler().state(), state_before_submit);
+
+        let begin_without_present = driver.begin_frame(predictive_opportunity_with_prev_actual(
+            110, 4, 200, 190, None,
+        ));
+
+        assert_eq!(begin_without_present.resolved_feedback, None);
+        assert!(matches!(
+            begin_without_present.result,
+            FrameBeginResult::Idle
+        ));
+        assert_eq!(driver.scheduler().state(), state_before_submit);
+
+        let begin_with_present = driver.begin_frame(predictive_opportunity_with_prev_actual(
+            210,
+            5,
+            300,
+            290,
+            Some(HostTime(99)),
+        ));
+        let summary = begin_with_present
+            .resolved_feedback
+            .expect("deferred feedback should resolve once actual present arrives");
+
+        assert!(matches!(begin_with_present.result, FrameBeginResult::Idle));
+        assert_eq!(summary.timing_basis, FrameTimingBasis::ActualPresent);
+        assert_eq!(summary.actual_present, Some(HostTime(99)));
+        assert_eq!(summary.missed_deadline, Some(false));
+        assert!(driver.scheduler().safety_margin_ticks() > 0);
+    }
+
+    #[test]
+    fn second_deferred_submission_resolves_unresolved_prior_feedback_as_commit_only() {
+        let mut driver = driver();
+        driver.request(FrameDemand::INPUT);
+        let FrameBeginResult::Ready(first) = driver
+            .begin_frame(predictive_opportunity(10, 3, 100, 90))
+            .result
+        else {
+            panic!("input should start immediately");
+        };
+        let first_plan = first.plan();
+
+        let first_submit = driver.submit_frame(first, FrameSubmission::deferred(HostTime(20)));
+
+        assert_eq!(first_submit.summary, None);
+        assert!(first_submit.awaiting_actual_present);
+
+        driver.request(FrameDemand::INPUT);
+        let begin_second = driver.begin_frame(predictive_opportunity_with_prev_actual(
+            110, 4, 200, 190, None,
+        ));
+        assert_eq!(begin_second.resolved_feedback, None);
+        let FrameBeginResult::Ready(second) = begin_second.result else {
+            panic!("second input frame should start immediately");
+        };
+
+        let second_submit = driver.submit_frame(second, FrameSubmission::deferred(HostTime(120)));
+        let first_summary = second_submit
+            .summary
+            .expect("superseded deferred feedback should resolve as commit-only");
+
+        assert!(second_submit.awaiting_actual_present);
+        assert_eq!(first_summary.frame_index, first_plan.frame_index);
+        assert_eq!(first_summary.submitted_at, Some(HostTime(20)));
+        assert_eq!(first_summary.expected_present, Some(HostTime(100)));
+        assert_eq!(first_summary.actual_present, None);
+        assert_eq!(first_summary.missed_deadline, None);
+        assert_eq!(first_summary.pacing_overrun, Some(false));
+
+        let begin_with_present = driver.begin_frame(predictive_opportunity_with_prev_actual(
+            210,
+            5,
+            300,
+            290,
+            Some(HostTime(199)),
+        ));
+        let second_summary = begin_with_present
+            .resolved_feedback
+            .expect("new deferred feedback should remain pending");
+
+        assert_eq!(second_summary.submitted_at, Some(HostTime(120)));
+        assert_eq!(second_summary.actual_present, Some(HostTime(199)));
+        assert_eq!(second_summary.missed_deadline, Some(false));
     }
 
     #[test]

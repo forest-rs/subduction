@@ -1,14 +1,55 @@
 # macOS / `frameclock_apple` — work notes for the next agent
 
-Status as of `76f7bf4` (branch `claude/frameclock-crate-mj4gsh`, identical to `origin/main`).
+Originally written at `76f7bf4`. **Updated at `a631e02`** — most of P0/P1 has
+since landed. See the progress section directly below; the detailed items keep
+their original text with a `✅ DONE` / `🔶 PARTIAL` / `⬜ TODO` marker.
 
 These are notes for improving the macOS timing path. The retained adapter
 (`AppleFrameClock`), deferred actual-present feedback, and the ProMotion cadence
-writeback all landed recently and are individually reasonable, but they are
-**not wired together and not exercised by any example**, and there are real
-correctness gaps underneath them — especially on the `CVDisplayLink` path and
-around power/idle. Read this whole file before touching code; several items
-interact.
+writeback are now wired together and exercised by all three macOS examples. The
+remaining work is the power/idle story, the off-device writeback-loop test, and
+the CV cross-thread and docs items. Read this whole file before touching code;
+several items interact.
+
+## Progress (commits `9d9e554`, `c36b8e5`, `a631e02`)
+
+- ✅ **Examples ported.** `macos_wgpu`, `macos_layers`, and `macos_lotta_layers`
+  now drive `AppleFrameClock` (`begin_frame → match result → submit_frame_now`),
+  use `AppleFeedbackMode::DeferredActualPresent`, and apply the ProMotion
+  writeback via `clock.preferred_frame_rate_range(&frame)` →
+  `link.set_preferred_frame_rate_range`. The hand-rolled `PendingFeedback`/
+  `Scheduler` boilerplate is gone. (P0 headline)
+- ✅ **Deferred-feedback `None` guard** (P0-1 core): `resolve_deferred_feedback`
+  now returns early on `actual_present?`, so a tick without a present keeps the
+  slot pending; a superseding deferred submission resolves the old one as
+  commit-only `Unavailable`. Regression test added.
+- ✅ **Feedback capability model** (P0-1/P0-2): `AppleFeedbackMode::{DeferredActualPresent, CommitOnly}`,
+  CA defaults to deferred, CV to commit-only. `submit_frame_now` routes through it.
+- ✅ **Configurable commit lead** (P1-1): `set_commit_lead` / `use_default_commit_lead`,
+  default ≈ refresh/4 subtracted from predicted present, clamped.
+- ✅ **Writeback glue on the adapter** (P1-2): `AppleFrameClock::preferred_frame_rate_range(&ActiveFrame)`
+  removes the manual interval/timebase plumbing; examples consume it.
+- ✅ **Pause controls exist** (P0-3, capability half): `is_paused`/`set_paused`
+  on both CA and CV `DisplayLink`.
+
+### Still open / re-scoped
+- 🔶 **P0-3 demand-driven idle is still not demonstrated.** The controls exist,
+  but all three examples `request(FrameDemand::ANIMATION)` every tick and never
+  go idle, so nothing pauses the link to prove the power win. Either add an
+  idle/resume cycle to one example, or have `AppleFrameClock` expose a "should
+  the link be paused?" signal and wire it. This is the most valuable remaining item.
+- 🔶 **P0-2 CV actual-present**: resolved *safely* (CV is now honestly
+  `CommitOnly`) but CV is still not a predictive-feedback source. Fine unless the
+  human wants CV upgraded — see open questions.
+- ⬜ **P1-3 oscillation test**: no `frameclock_apple/tests/` exists yet. Still
+  worth a deterministic, off-device writeback-loop test (interval → preferred
+  rate → fed back as next `refresh_interval`, borderline build cost, assert no
+  2-cycle). This is the one correctness check that can run on CI.
+- ⬜ **P1-4** (CV cross-thread `tick.now` staleness), **P2-1** (mutually-exclusive
+  features fail silently), **P2-2** (silent late-callback degradation) — unaddressed.
+- ℹ️ Examples discard `FrameBegin::resolved_feedback`; the scheduler still
+  observes internally, but no resolved summary reaches the HUD/diagnostics.
+  Optional polish.
 
 Scope: `frameclock_apple/` and `examples/macos_layers`, `examples/macos_lotta_layers`,
 `examples/macos_wgpu`. Do **not** change the core `frameclock` crate's public

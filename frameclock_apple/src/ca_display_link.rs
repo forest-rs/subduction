@@ -8,14 +8,14 @@ use core::cell::Cell;
 use core::fmt;
 
 use frameclock::time::Timebase;
-use frameclock::{FrameTick, HostTime, OutputId};
+use frameclock::{DisplayTiming, Duration, FrameTick, HostTime, OutputId};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRunLoop};
-use objc2_quartz_core::CADisplayLink as CADisplayLinkRaw;
+use objc2_quartz_core::{CADisplayLink as CADisplayLinkRaw, CAFrameRateRange};
 
-use crate::mach_time;
+use crate::{PreferredFrameRateRange, mach_time, preferred_frame_rate_range};
 
 struct DisplayLinkTargetIvars {
     callback: Box<dyn Fn(FrameTick)>,
@@ -159,6 +159,35 @@ impl DisplayLink {
             self.raw
                 .removeFromRunLoop_forMode(&run_loop, NSDefaultRunLoopMode);
         }
+    }
+
+    /// Sets the Core Animation preferred frame-rate range.
+    ///
+    /// This is the native `ProMotion` writeback seam. Hosts typically compute the
+    /// range from a ready frame's selected interval with
+    /// [`preferred_frame_rate_range`](crate::preferred_frame_rate_range), apply
+    /// it to the display link, and then submit/render normally.
+    pub fn set_preferred_frame_rate_range(&self, range: PreferredFrameRateRange) {
+        self.raw.setPreferredFrameRateRange(CAFrameRateRange::new(
+            range.minimum,
+            range.maximum,
+            range.preferred,
+        ));
+    }
+
+    /// Computes and applies a preferred frame-rate range for `frame_interval`.
+    ///
+    /// Returns `None` when the interval cannot be represented as a finite
+    /// frames-per-second value.
+    pub fn set_preferred_frame_interval(
+        &self,
+        frame_interval: Duration,
+        display_timing: DisplayTiming,
+    ) -> Option<PreferredFrameRateRange> {
+        let range =
+            preferred_frame_rate_range(frame_interval, display_timing, mach_time::timebase())?;
+        self.set_preferred_frame_rate_range(range);
+        Some(range)
     }
 }
 

@@ -12,15 +12,15 @@
 
 use core::cell::RefCell;
 
-use frameclock::scheduler::Scheduler;
+use frameclock::scheduler::DegradationPolicy;
 use frameclock::time::Timebase;
-use frameclock::timing::PendingFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
+    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameTick, OutputId,
+    SchedulerConfig,
 };
 #[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
 use frameclock_apple::TickForwarder;
-use frameclock_apple::{DisplayLink, compute_present_hints};
+use frameclock_apple::{AppleFeedbackMode, AppleFrameClock, DisplayLink};
 use lotta_layers_common::LAYER_SIZE;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -36,16 +36,12 @@ use objc2_quartz_core::CALayer;
 use subduction_backend_apple::{LayerPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::output::Color;
-use subduction_core::trace::{
-    FramePlanEvent, FrameSummaryBuilder, FrameTickEvent, PhaseBeginEvent, PhaseEndEvent, PhaseKind,
-    PresentFeedbackEvent, SubmitEvent, TraceSink as _,
-};
-use subduction_debug::recorder::RecorderSink;
 
 const WINDOW_W: f64 = 1024.0;
 const WINDOW_H: f64 = 768.0;
 const NUM_GROUPS: usize = 10;
 const LAYERS_PER_GROUP: usize = 100;
+const FALLBACK_REFRESH_INTERVAL_NANOS: u64 = 16_666_667;
 
 define_class! {
     #[unsafe(super(NSObject))]
@@ -70,10 +66,6 @@ define_class! {
             true
         }
 
-        #[unsafe(method(applicationWillTerminate:))]
-        fn app_will_terminate(&self, _notification: &NSNotification) {
-            flush_trace();
-        }
     }
 }
 
@@ -149,7 +141,7 @@ fn layer_color(index: usize) -> [f64; 3] {
 struct AnimState {
     store: LayerStore,
     presenter: LayerPresenter,
-    scheduler: Scheduler,
+    frame_clock: AppleFrameClock,
     /// `group_ids[g]` is the `LayerId` for group `g`.
     group_ids: Vec<LayerId>,
     /// `child_ids[g * LAYERS_PER_GROUP + c]` is the `LayerId` for child `c`
@@ -157,8 +149,6 @@ struct AnimState {
     child_ids: Vec<LayerId>,
     start_ticks: u64,
     timebase: Timebase,
-    pending_feedback: Option<PendingFeedback>,
-    recorder: RecorderSink,
 }
 
 thread_local! {
@@ -242,19 +232,31 @@ fn setup_window(mtm: MainThreadMarker) {
     // --- Animation setup ---
     let timebase = DisplayLink::timebase();
     let start_ticks = DisplayLink::now().ticks();
-    let scheduler = Scheduler::new(SchedulerConfig::predictive());
+    let fallback_interval = Duration(timebase.nanos_to_ticks(FALLBACK_REFRESH_INTERVAL_NANOS));
+    let mut config = SchedulerConfig::predictive();
+    // This example uses the display-link callback itself as the frame-start
+    // wake, so keep pipeline depth fixed at 1. Hosts that mirror `WaitUntil`
+    // into their own timer queue can leave adaptive depth enabled.
+    config.min_depth = 1;
+    config.max_depth = 1;
+    config.initial_depth = 1;
+    config.degradation_policy = DegradationPolicy::Fixed;
+    config.minimum_frame_start_margin = fallback_interval;
+    let frame_clock = AppleFrameClock::new_with_feedback_mode(
+        config,
+        DisplayTiming::fixed(fallback_interval),
+        apple_feedback_mode(),
+    );
 
     ANIM_STATE.with(|cell| {
         *cell.borrow_mut() = Some(AnimState {
             store,
             presenter,
-            scheduler,
+            frame_clock,
             group_ids,
             child_ids,
             start_ticks,
             timebase,
-            pending_feedback: None,
-            recorder: RecorderSink::new(),
         });
     });
 
@@ -267,159 +269,78 @@ fn setup_window(mtm: MainThreadMarker) {
     });
 }
 
+fn apple_feedback_mode() -> AppleFeedbackMode {
+    #[cfg(feature = "ca-display-link")]
+    {
+        AppleFeedbackMode::DeferredActualPresent
+    }
+    #[cfg(not(feature = "ca-display-link"))]
+    {
+        AppleFeedbackMode::CommitOnly
+    }
+}
+
 fn on_tick(tick: FrameTick) {
     ANIM_STATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let Some(s) = borrow.as_mut() else { return };
 
-        let frame_index = tick.frame_index;
+        s.frame_clock.request(FrameDemand::ANIMATION);
+        let begin = s.frame_clock.begin_frame(tick);
 
-        // Resolve previous frame's feedback with actual_present from this tick.
-        if let Some(pending) = s.pending_feedback.take() {
-            let feedback = pending.resolve(tick.prev_actual_present);
-            s.scheduler.observe(&feedback);
-            s.recorder.on_present_feedback(&PresentFeedbackEvent {
-                frame_index: frame_index.saturating_sub(1),
-                actual_present: tick.prev_actual_present,
-                missed_deadline: feedback.missed_deadline,
-                pacing_overrun: feedback.pacing_overrun,
-            });
+        match begin.result {
+            FrameBeginResult::Ready(frame) => render_frame(s, frame),
+            FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => {}
+            FrameBeginResult::Expired(_) => {
+                s.frame_clock.request(FrameDemand::ANIMATION);
+            }
         }
-
-        // Record the tick event.
-        let tick_event = FrameTickEvent::from(&tick);
-        s.recorder.on_frame_tick(&tick_event);
-
-        // --- Plan phase ---
-        let plan_start = DisplayLink::now();
-        s.recorder.on_phase_begin(&PhaseBeginEvent {
-            frame_index,
-            phase: PhaseKind::Plan,
-            timestamp: plan_start,
-        });
-
-        let fallback_interval = Duration(16_666_667);
-        let hints = compute_present_hints(&tick, fallback_interval);
-        let opportunity = FrameOpportunity::new(
-            tick,
-            hints,
-            DisplayTiming::from_tick(&tick, fallback_interval),
-        );
-        let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
-
-        let plan_end = DisplayLink::now();
-        s.recorder.on_phase_end(&PhaseEndEvent {
-            frame_index,
-            phase: PhaseKind::Plan,
-            timestamp: plan_end,
-        });
-
-        let plan_event = FramePlanEvent::new(&plan, s.scheduler.safety_margin_ticks());
-        s.recorder.on_frame_plan(&plan_event);
-
-        let mut summary = FrameSummaryBuilder::new(&tick_event, &plan_event);
-        summary.phase_begin(PhaseKind::Plan, plan_start);
-        summary.phase_end(PhaseKind::Plan, plan_end);
-
-        let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
-        let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
-        let t = elapsed_nanos as f64 / 1_000_000_000.0;
-
-        // Animate.
-        lotta_layers_common::animate_groups(
-            &mut s.store,
-            &s.group_ids,
-            &s.child_ids,
-            NUM_GROUPS,
-            LAYERS_PER_GROUP,
-            WINDOW_W / 2.0,
-            WINDOW_H / 2.0,
-            t,
-        );
-
-        // --- Evaluate phase ---
-        let eval_start = DisplayLink::now();
-        summary.phase_begin(PhaseKind::Evaluate, eval_start);
-        s.recorder.on_phase_begin(&PhaseBeginEvent {
-            frame_index,
-            phase: PhaseKind::Evaluate,
-            timestamp: eval_start,
-        });
-        let changes = s.store.evaluate();
-        let eval_end = DisplayLink::now();
-        summary.phase_end(PhaseKind::Evaluate, eval_end);
-        s.recorder.on_phase_end(&PhaseEndEvent {
-            frame_index,
-            phase: PhaseKind::Evaluate,
-            timestamp: eval_end,
-        });
-
-        // --- Render (apply) phase ---
-        let render_start = DisplayLink::now();
-        summary.phase_begin(PhaseKind::Render, render_start);
-        s.recorder.on_phase_begin(&PhaseBeginEvent {
-            frame_index,
-            phase: PhaseKind::Render,
-            timestamp: render_start,
-        });
-        s.presenter.apply(&s.store, &changes);
-        let render_end = DisplayLink::now();
-        summary.phase_end(PhaseKind::Render, render_end);
-        s.recorder.on_phase_end(&PhaseEndEvent {
-            frame_index,
-            phase: PhaseKind::Render,
-            timestamp: render_end,
-        });
-
-        // --- Submit phase ---
-        let submit_start = DisplayLink::now();
-        s.recorder.on_phase_begin(&PhaseBeginEvent {
-            frame_index,
-            phase: PhaseKind::Submit,
-            timestamp: submit_start,
-        });
-        s.recorder.on_submit(&SubmitEvent {
-            frame_index,
-            submitted_at: submit_start,
-            expected_present: plan.target_present,
-        });
-        let submit_end = DisplayLink::now();
-        s.recorder.on_phase_end(&PhaseEndEvent {
-            frame_index,
-            phase: PhaseKind::Submit,
-            timestamp: submit_end,
-        });
-
-        summary.phase_begin(PhaseKind::Submit, submit_start);
-        summary.phase_end(PhaseKind::Submit, submit_end);
-        summary.set_missed_deadline(submit_end > plan.commit_deadline);
-        s.recorder.on_frame_summary(&summary.finish());
-
-        // Store pending feedback for resolution on next tick.
-        s.pending_feedback = Some(PendingFeedback::new(plan, plan_start, submit_start));
     });
 }
 
-fn flush_trace() {
-    ANIM_STATE.with(|cell| {
-        let borrow = cell.borrow();
-        let Some(s) = borrow.as_ref() else { return };
-        let bytes = s.recorder.as_bytes();
-        if bytes.is_empty() {
+fn render_frame(s: &mut AnimState, frame: ActiveFrame) {
+    let plan = frame.plan();
+    apply_preferred_frame_interval(s, &frame);
+
+    let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
+    let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
+    let t = elapsed_nanos as f64 / 1_000_000_000.0;
+
+    // Animate.
+    lotta_layers_common::animate_groups(
+        &mut s.store,
+        &s.group_ids,
+        &s.child_ids,
+        NUM_GROUPS,
+        LAYERS_PER_GROUP,
+        WINDOW_W / 2.0,
+        WINDOW_H / 2.0,
+        t,
+    );
+
+    let changes = s.store.evaluate();
+    s.presenter.apply(&s.store, &changes);
+    let _submit = s.frame_clock.submit_frame_now(frame);
+}
+
+fn apply_preferred_frame_interval(s: &AnimState, frame: &ActiveFrame) {
+    #[cfg(feature = "ca-display-link")]
+    {
+        let Some(range) = s.frame_clock.preferred_frame_rate_range(frame) else {
             return;
-        }
-        let path = "trace.json";
-        match std::fs::File::create(path) {
-            Ok(mut file) => {
-                if let Err(e) = subduction_debug::chrome::export(bytes, s.timebase, &mut file) {
-                    eprintln!("Failed to write {path}: {e}");
-                } else {
-                    eprintln!("Wrote {path} ({} bytes recorded)", bytes.len());
-                }
-            }
-            Err(e) => eprintln!("Failed to create {path}: {e}"),
-        }
-    });
+        };
+        KEEP_ALIVE.with(|cell| {
+            let borrow = cell.borrow();
+            let Some(link) = borrow.as_ref() else {
+                return;
+            };
+            link.set_preferred_frame_rate_range(range);
+        });
+    }
+    #[cfg(not(feature = "ca-display-link"))]
+    {
+        _ = (s, frame);
+    }
 }
 
 fn main() {

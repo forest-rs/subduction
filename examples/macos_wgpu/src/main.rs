@@ -15,13 +15,13 @@ use core::cell::RefCell;
 use core::ffi::c_void;
 
 use bytemuck::{Pod, Zeroable};
-use frameclock::scheduler::Scheduler;
+use frameclock::scheduler::DegradationPolicy;
 use frameclock::time::Timebase;
-use frameclock::timing::PendingFeedback;
 use frameclock::{
-    DisplayTiming, Duration, FrameDemand, FrameOpportunity, FrameTick, OutputId, SchedulerConfig,
+    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameTick, OutputId,
+    SchedulerConfig,
 };
-use frameclock_apple::{DisplayLink, compute_present_hints};
+use frameclock_apple::{AppleFeedbackMode, AppleFrameClock, DisplayLink};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -44,6 +44,7 @@ const NUM_LAYERS: usize = 5;
 const LAYER_SIZE: f64 = 200.0;
 /// Pixel size for GPU surfaces.
 const GPU_SIZE: u32 = 200;
+const FALLBACK_REFRESH_INTERVAL_NANOS: u64 = 16_666_667;
 
 /// Colors for the demo layers (RGBA, f64 for `CGColor`).
 const COLORS: [[f64; 4]; NUM_LAYERS] = [
@@ -366,11 +367,10 @@ impl AppDelegate {
 struct AnimState {
     store: LayerStore,
     presenter: LayerPresenter,
-    scheduler: Scheduler,
+    frame_clock: AppleFrameClock,
     sub_ids: Vec<LayerId>,
     start_ticks: u64,
     timebase: Timebase,
-    pending_feedback: Option<PendingFeedback>,
 
     // wgpu shared state
     device: wgpu::Device,
@@ -738,17 +738,30 @@ fn setup_window(mtm: MainThreadMarker) {
     // --- CADisplayLink-driven animation ---
     let timebase = DisplayLink::timebase();
     let start_ticks = DisplayLink::now().ticks();
-    let scheduler = Scheduler::new(SchedulerConfig::predictive());
+    let fallback_interval = Duration(timebase.nanos_to_ticks(FALLBACK_REFRESH_INTERVAL_NANOS));
+    let mut config = SchedulerConfig::predictive();
+    // This example uses the display-link callback itself as the frame-start
+    // wake, so keep pipeline depth fixed at 1. Hosts that mirror `WaitUntil`
+    // into their own timer queue can leave adaptive depth enabled.
+    config.min_depth = 1;
+    config.max_depth = 1;
+    config.initial_depth = 1;
+    config.degradation_policy = DegradationPolicy::Fixed;
+    config.minimum_frame_start_margin = fallback_interval;
+    let frame_clock = AppleFrameClock::new_with_feedback_mode(
+        config,
+        DisplayTiming::fixed(fallback_interval),
+        AppleFeedbackMode::DeferredActualPresent,
+    );
 
     ANIM_STATE.with(|cell| {
         *cell.borrow_mut() = Some(AnimState {
             store,
             presenter,
-            scheduler,
+            frame_clock,
             sub_ids,
             start_ticks,
             timebase,
-            pending_feedback: None,
             device,
             queue,
             gpu_layers,
@@ -768,99 +781,107 @@ fn on_tick(tick: FrameTick) {
         let mut borrow = cell.borrow_mut();
         let Some(s) = borrow.as_mut() else { return };
 
-        // Resolve previous frame's feedback with actual_present from this tick.
-        if let Some(pending) = s.pending_feedback.take() {
-            let feedback = pending.resolve(tick.prev_actual_present);
-            s.scheduler.observe(&feedback);
-        }
-
-        let build_start = DisplayLink::now();
-
-        // Compute hints and plan the frame.
-        let fallback_interval = Duration(16_666_667);
-        let hints = compute_present_hints(&tick, fallback_interval);
-        let opportunity = FrameOpportunity::new(
-            tick,
-            hints,
-            DisplayTiming::from_tick(&tick, fallback_interval),
-        );
-        let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
-
-        // Convert sample_time to elapsed seconds for the animation.
-        let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
-        let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
-        let t = elapsed_nanos as f64 / 1_000_000_000.0;
-
-        // Animate transforms and opacities in the layer store.
-        animate_transforms(&mut s.store, &s.sub_ids, t);
-
-        // Evaluate dirty state and apply to the CALayer tree.
-        let changes = s.store.evaluate();
-        s.presenter.apply(&s.store, &changes);
-
-        // --- Render wgpu content into GPU layers ---
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Shader uniform intentionally narrows wall-clock seconds from f64 to f32"
-        )]
-        let time_f32 = t as f32;
-
-        for gpu in &s.gpu_layers {
-            // Upload time uniform.
-            s.queue
-                .write_buffer(&gpu.time_buffer, 0, bytemuck::bytes_of(&time_f32));
-
-            let frame = match gpu.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                wgpu::CurrentSurfaceTexture::Timeout
-                | wgpu::CurrentSurfaceTexture::Occluded
-                | wgpu::CurrentSurfaceTexture::Outdated => continue,
-                other @ (wgpu::CurrentSurfaceTexture::Lost
-                | wgpu::CurrentSurfaceTexture::Validation) => {
-                    eprintln!("failed to acquire GPU frame: {other:?}");
-                    continue;
-                }
-            };
-            let view = frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-
-            let mut encoder = s
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("gpu layer encoder"),
-                });
-
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("gpu layer pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&gpu.pipeline);
-                pass.set_bind_group(0, &gpu.bind_group, &[]);
-                pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
-                pass.draw(0..gpu.vertex_count, 0..1);
+        s.frame_clock.request(FrameDemand::ANIMATION);
+        match s.frame_clock.begin_frame(tick).result {
+            FrameBeginResult::Ready(frame) => render_frame(s, frame),
+            FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => {}
+            FrameBeginResult::Expired(_) => {
+                s.frame_clock.request(FrameDemand::ANIMATION);
             }
+        }
+    });
+}
 
-            s.queue.submit(Some(encoder.finish()));
-            frame.present();
+fn render_frame(s: &mut AnimState, frame: ActiveFrame) {
+    let plan = frame.plan();
+    apply_preferred_frame_interval(s, &frame);
+
+    // Convert sample_time to elapsed seconds for the animation.
+    let elapsed_ticks = plan.sample_time.ticks().saturating_sub(s.start_ticks);
+    let elapsed_nanos = s.timebase.ticks_to_nanos(elapsed_ticks);
+    let t = elapsed_nanos as f64 / 1_000_000_000.0;
+
+    // Animate transforms and opacities in the layer store.
+    animate_transforms(&mut s.store, &s.sub_ids, t);
+
+    // Evaluate dirty state and apply to the CALayer tree.
+    let changes = s.store.evaluate();
+    s.presenter.apply(&s.store, &changes);
+
+    // --- Render wgpu content into GPU layers ---
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Shader uniform intentionally narrows wall-clock seconds from f64 to f32"
+    )]
+    let time_f32 = t as f32;
+
+    for gpu in &s.gpu_layers {
+        // Upload time uniform.
+        s.queue
+            .write_buffer(&gpu.time_buffer, 0, bytemuck::bytes_of(&time_f32));
+
+        let frame = match gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Outdated => continue,
+            other @ (wgpu::CurrentSurfaceTexture::Lost
+            | wgpu::CurrentSurfaceTexture::Validation) => {
+                eprintln!("failed to acquire GPU frame: {other:?}");
+                continue;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = s
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu layer encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu layer pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&gpu.pipeline);
+            pass.set_bind_group(0, &gpu.bind_group, &[]);
+            pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
+            pass.draw(0..gpu.vertex_count, 0..1);
         }
 
-        // Store pending feedback for resolution on next tick.
-        s.pending_feedback = Some(PendingFeedback::new(plan, build_start, DisplayLink::now()));
+        s.queue.submit(Some(encoder.finish()));
+        frame.present();
+    }
+
+    let _submit = s.frame_clock.submit_frame_now(frame);
+}
+
+fn apply_preferred_frame_interval(s: &AnimState, frame: &ActiveFrame) {
+    let Some(range) = s.frame_clock.preferred_frame_rate_range(frame) else {
+        return;
+    };
+    KEEP_ALIVE.with(|cell| {
+        let borrow = cell.borrow();
+        let Some(link) = borrow.as_ref() else {
+            return;
+        };
+        link.set_preferred_frame_rate_range(range);
     });
 }
 

@@ -872,7 +872,6 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "subduction_backend_apple",
  "subduction_core",
- "subduction_debug",
 ]
 
 [[package]]
@@ -890,7 +889,6 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "subduction_backend_apple",
  "subduction_core",
- "subduction_debug",
 ]
 
 [[package]]

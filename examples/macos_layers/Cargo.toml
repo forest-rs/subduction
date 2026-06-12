@@ -19,11 +19,10 @@ workspace = true
 [dependencies]
 frameclock = { workspace = true }
 frameclock_apple = { workspace = true, default-features = false }
-subduction_core = { workspace = true, features = ["trace"] }
+subduction_core = { workspace = true }
 subduction_backend_apple = { path = "../../subduction_backend_apple", default-features = false, features = [
   "appkit",
 ] }
-subduction_debug = { path = "../../subduction_debug" }
 kurbo = { workspace = true }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [

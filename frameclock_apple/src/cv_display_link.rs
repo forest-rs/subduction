@@ -148,6 +148,41 @@ impl DisplayLink {
         }
         Ok(())
     }
+
+    /// Returns whether the display link is currently paused.
+    ///
+    /// `CVDisplayLink` exposes running/stopped state rather than a separate
+    /// paused bit, so paused means "not running".
+    #[must_use]
+    #[expect(
+        deprecated,
+        reason = "CVDisplayLink API is deprecated by Apple but still functional"
+    )]
+    pub fn is_paused(&self) -> bool {
+        !self.raw.is_running()
+    }
+
+    /// Pauses or resumes the display link.
+    ///
+    /// `CVDisplayLink` has no native pause bit, so this maps to stop/start and
+    /// is idempotent with respect to the current running state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DisplayLinkError`] if Core Video reports an error while starting
+    /// or stopping the link.
+    #[expect(
+        deprecated,
+        reason = "CVDisplayLink API is deprecated by Apple but still functional"
+    )]
+    pub fn set_paused(&self, paused: bool) -> Result<(), DisplayLinkError> {
+        let running = self.raw.is_running();
+        match (paused, running) {
+            (true, true) => self.stop(),
+            (false, false) => self.start(),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Drop for DisplayLink {

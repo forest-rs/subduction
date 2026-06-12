@@ -161,6 +161,20 @@ impl DisplayLink {
         }
     }
 
+    /// Returns whether the display link is currently paused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.raw.isPaused()
+    }
+
+    /// Pauses or resumes the display link without removing it from the run loop.
+    ///
+    /// Hosts can pause when no frame demand is pending and resume when input,
+    /// animation, or other visible work arrives.
+    pub fn set_paused(&self, paused: bool) {
+        self.raw.setPaused(paused);
+    }
+
     /// Sets the Core Animation preferred frame-rate range.
     ///
     /// This is the native `ProMotion` writeback seam. Hosts typically compute the

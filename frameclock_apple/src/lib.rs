@@ -47,7 +47,7 @@ use frameclock::time::Timebase;
 use frameclock::{
     ActiveFrame, DisplayTiming, Duration, FrameBegin, FrameDemand, FrameDriver, FrameOpportunity,
     FrameSubmission, FrameSubmitResult, FrameTick, FrameTimingSummary, HostTime, PresentHints,
-    SchedulerConfig,
+    PresentationObservation, SchedulerConfig,
 };
 
 /// Returns the current host time using Mach absolute time.
@@ -62,6 +62,43 @@ pub fn timebase() -> Timebase {
     mach_time::timebase()
 }
 
+/// Returns the default commit lead for a refresh interval.
+///
+/// Apple display-link predictions describe a presentation slot, not a promise
+/// that app work can be committed at the last possible tick. Use a small
+/// platform-side lead so `PresentHints::latest_commit` remains a commit
+/// boundary, while `frameclock` still owns learned app build margins.
+#[must_use]
+pub const fn default_commit_lead(refresh_interval: Duration) -> Duration {
+    refresh_interval.div_u64(4)
+}
+
+fn refresh_interval_for_tick(tick: &FrameTick, fallback_refresh_interval: Duration) -> Duration {
+    tick.refresh_interval
+        .filter(|ticks| *ticks > 0)
+        .map(Duration)
+        .unwrap_or(fallback_refresh_interval)
+}
+
+fn commit_boundary(target: HostTime, lead: Duration, floor: HostTime) -> HostTime {
+    target.checked_sub(lead).unwrap_or(floor).max(floor)
+}
+
+/// Computes [`PresentHints`] from an Apple display-link tick using the default
+/// commit lead.
+///
+/// Use [`present_hints_with_commit_lead`] when a host has a platform-specific
+/// commit lead estimate.
+#[must_use]
+pub fn present_hints(tick: &FrameTick, fallback_refresh_interval: Duration) -> PresentHints {
+    let refresh_interval = refresh_interval_for_tick(tick, fallback_refresh_interval);
+    present_hints_with_commit_lead(
+        tick,
+        fallback_refresh_interval,
+        default_commit_lead(refresh_interval),
+    )
+}
+
 /// Computes [`PresentHints`] from an Apple display-link tick.
 ///
 /// Fresh `CADisplayLink.targetTimestamp` / `CVDisplayLink` output times are
@@ -70,24 +107,27 @@ pub fn timebase() -> Timebase {
 /// boundary. The scheduler applies its own learned build margin later when it
 /// turns these platform facts into a [`frameclock::timing::FramePlan`].
 #[must_use]
-pub fn present_hints(tick: &FrameTick, fallback_refresh_interval: Duration) -> PresentHints {
+pub fn present_hints_with_commit_lead(
+    tick: &FrameTick,
+    fallback_refresh_interval: Duration,
+    commit_lead: Duration,
+) -> PresentHints {
+    let refresh_interval = refresh_interval_for_tick(tick, fallback_refresh_interval);
     if let Some(predicted_present) = tick
         .predicted_present
         .filter(|predicted_present| *predicted_present >= tick.now)
     {
-        return PresentHints::predictive(predicted_present, predicted_present);
+        return PresentHints::predictive(
+            predicted_present,
+            commit_boundary(predicted_present, commit_lead, tick.now),
+        );
     }
 
-    let refresh_interval = tick
-        .refresh_interval
-        .filter(|ticks| *ticks > 0)
-        .map(Duration)
-        .unwrap_or(fallback_refresh_interval);
-    PresentHints::pacing_only(
-        tick.now
-            .checked_add(refresh_interval)
-            .unwrap_or(HostTime(u64::MAX)),
-    )
+    let pacing_target = tick
+        .now
+        .checked_add(refresh_interval)
+        .unwrap_or(HostTime(u64::MAX));
+    PresentHints::pacing_only(commit_boundary(pacing_target, commit_lead, tick.now))
 }
 
 /// Compatibility helper matching existing backend naming.
@@ -174,6 +214,33 @@ fn fps_for_interval(interval: Duration, timebase: Timebase) -> Option<f32> {
     Some(fps as f32)
 }
 
+/// What presentation feedback an Apple display-link integration can provide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AppleFeedbackMode {
+    /// Actual-present feedback arrives on a later display-link tick.
+    ///
+    /// This is the normal `CADisplayLink` path: the next callback's timestamp is
+    /// used to resolve the previous submitted frame.
+    DeferredActualPresent,
+    /// The display-link path does not provide actual-present feedback.
+    ///
+    /// Submitted frames complete immediately using commit timing as weaker
+    /// pacing evidence.
+    CommitOnly,
+}
+
+impl AppleFeedbackMode {
+    fn submission(self, submitted_at: HostTime) -> FrameSubmission {
+        match self {
+            Self::DeferredActualPresent => FrameSubmission::deferred(submitted_at),
+            Self::CommitOnly => FrameSubmission {
+                submitted_at,
+                presentation: PresentationObservation::Unavailable,
+            },
+        }
+    }
+}
+
 /// Retained Apple frame lifecycle adapter.
 ///
 /// `AppleFrameClock` owns a [`FrameDriver`] and turns display-link
@@ -184,25 +251,69 @@ fn fps_for_interval(interval: Duration, timebase: Timebase) -> Option<f32> {
 pub struct AppleFrameClock {
     driver: FrameDriver,
     display_timing: DisplayTiming,
+    commit_lead: Option<Duration>,
+    feedback_mode: AppleFeedbackMode,
 }
 
 impl AppleFrameClock {
     /// Creates an Apple frame clock using `config` and target-output timing.
+    ///
+    /// The clock starts in [`AppleFeedbackMode::CommitOnly`] because this
+    /// constructor does not know which display-link source will feed it. Use
+    /// [`Self::new_with_feedback_mode`] or [`Self::set_feedback_mode`] when the
+    /// tick source can report deferred actual-present feedback.
     ///
     /// Update [`Self::display_timing`] with [`Self::set_display_timing`] when
     /// a window or layer moves to another display or the platform reports a
     /// changed display mode.
     #[must_use]
     pub fn new(config: SchedulerConfig, display_timing: DisplayTiming) -> Self {
-        Self::from_driver(FrameDriver::new(config), display_timing)
+        Self::new_with_feedback_mode(config, display_timing, AppleFeedbackMode::CommitOnly)
+    }
+
+    /// Creates an Apple frame clock with an explicit feedback mode.
+    ///
+    /// Use [`AppleFeedbackMode::DeferredActualPresent`] for tick sources such as
+    /// `CADisplayLink` that report the previous frame's actual-present time on
+    /// the next callback. Use [`AppleFeedbackMode::CommitOnly`] for tick sources
+    /// such as this crate's `CVDisplayLink` wrapper that do not report
+    /// actual-present timestamps.
+    #[must_use]
+    pub fn new_with_feedback_mode(
+        config: SchedulerConfig,
+        display_timing: DisplayTiming,
+        feedback_mode: AppleFeedbackMode,
+    ) -> Self {
+        Self::from_driver_with_feedback_mode(
+            FrameDriver::new(config),
+            display_timing,
+            feedback_mode,
+        )
     }
 
     /// Creates an Apple frame clock around an existing [`FrameDriver`].
+    ///
+    /// This uses [`AppleFeedbackMode::CommitOnly`]. Use
+    /// [`Self::from_driver_with_feedback_mode`] when the tick source can report
+    /// deferred actual-present feedback.
     #[must_use]
     pub const fn from_driver(driver: FrameDriver, display_timing: DisplayTiming) -> Self {
+        Self::from_driver_with_feedback_mode(driver, display_timing, AppleFeedbackMode::CommitOnly)
+    }
+
+    /// Creates an Apple frame clock around an existing [`FrameDriver`] with an
+    /// explicit feedback mode.
+    #[must_use]
+    pub const fn from_driver_with_feedback_mode(
+        driver: FrameDriver,
+        display_timing: DisplayTiming,
+        feedback_mode: AppleFeedbackMode,
+    ) -> Self {
         Self {
             driver,
             display_timing,
+            commit_lead: None,
+            feedback_mode,
         }
     }
 
@@ -221,6 +332,41 @@ impl AppleFrameClock {
     /// Updates the current target-output display timing.
     pub fn set_display_timing(&mut self, display_timing: DisplayTiming) {
         self.display_timing = display_timing;
+    }
+
+    /// Returns the configured commit lead, if one was explicitly set.
+    ///
+    /// `None` means the adapter uses [`default_commit_lead`] for the tick's
+    /// current refresh interval.
+    #[must_use]
+    pub const fn configured_commit_lead(&self) -> Option<Duration> {
+        self.commit_lead
+    }
+
+    /// Sets a fixed platform commit lead for future opportunities.
+    ///
+    /// The lead is subtracted from predictive target-present times before
+    /// producing [`PresentHints::latest_commit`](frameclock::PresentHints::latest_commit).
+    /// Scheduler build margins are applied separately by `frameclock`.
+    pub fn set_commit_lead(&mut self, commit_lead: Duration) {
+        self.commit_lead = Some(commit_lead);
+    }
+
+    /// Restores the default commit lead derived from each tick's refresh
+    /// interval.
+    pub fn use_default_commit_lead(&mut self) {
+        self.commit_lead = None;
+    }
+
+    /// Returns the current presentation feedback mode.
+    #[must_use]
+    pub const fn feedback_mode(&self) -> AppleFeedbackMode {
+        self.feedback_mode
+    }
+
+    /// Sets how [`Self::submit_frame_now`] reports presentation feedback.
+    pub fn set_feedback_mode(&mut self, feedback_mode: AppleFeedbackMode) {
+        self.feedback_mode = feedback_mode;
     }
 
     /// Adds host frame demand.
@@ -243,9 +389,13 @@ impl AppleFrameClock {
     /// Builds the frame opportunity that this adapter will pass to the driver.
     #[must_use]
     pub fn opportunity(&self, tick: FrameTick) -> FrameOpportunity {
+        let refresh_interval = refresh_interval_for_tick(&tick, self.display_timing.min_interval());
+        let commit_lead = self
+            .commit_lead
+            .unwrap_or_else(|| default_commit_lead(refresh_interval));
         FrameOpportunity::new(
             tick,
-            present_hints(&tick, self.display_timing.min_interval()),
+            present_hints_with_commit_lead(&tick, self.display_timing.min_interval(), commit_lead),
             display_timing(&tick, self.display_timing),
         )
     }
@@ -269,12 +419,29 @@ impl AppleFrameClock {
 
     /// Reports a submitted frame at the current Mach host time.
     ///
-    /// This uses [`FrameSubmission::deferred`] because Apple display-link ticks
-    /// normally report actual presentation for the previous frame on the next
-    /// callback.
+    /// The submission uses [`Self::feedback_mode`]. `CADisplayLink` defaults to
+    /// deferred actual-present feedback; `CVDisplayLink` defaults to commit-only
+    /// feedback because this adapter does not synthesize actual-present
+    /// timestamps for CV ticks.
     #[must_use]
     pub fn submit_frame_now(&mut self, frame: ActiveFrame) -> FrameSubmitResult {
-        self.submit_frame(frame, FrameSubmission::deferred(now()))
+        self.submit_frame(frame, self.feedback_mode.submission(now()))
+    }
+
+    /// Computes the Core Animation preferred frame-rate range for a ready frame.
+    ///
+    /// Hosts using `CADisplayLink` can apply the returned value to
+    /// [`DisplayLink::set_preferred_frame_rate_range`] before or after rendering.
+    #[must_use]
+    pub fn preferred_frame_rate_range(
+        &self,
+        frame: &ActiveFrame,
+    ) -> Option<PreferredFrameRateRange> {
+        preferred_frame_rate_range(
+            frame.plan().frame_interval,
+            display_timing(&frame.tick(), self.display_timing),
+            timebase(),
+        )
     }
 
     /// Drops a ready frame without feeding scheduler feedback.
@@ -303,11 +470,24 @@ mod tests {
 
     #[test]
     fn present_hints_with_prediction() {
-        let hints = present_hints(&tick(Some(HostTime(2_000_000))), Duration(16_666_667));
+        let hints = present_hints(&tick(Some(HostTime(20_000_000))), Duration(16_666_667));
 
         assert_eq!(hints.presentation_timing(), PresentationTiming::Predictive);
-        assert_eq!(hints.desired_present(), Some(HostTime(2_000_000)));
-        assert_eq!(hints.latest_commit(), HostTime(2_000_000));
+        assert_eq!(hints.desired_present(), Some(HostTime(20_000_000)));
+        assert_eq!(hints.latest_commit(), HostTime(15_833_334));
+    }
+
+    #[test]
+    fn present_hints_with_prediction_respects_explicit_commit_lead() {
+        let hints = present_hints_with_commit_lead(
+            &tick(Some(HostTime(20_000_000))),
+            Duration(16_666_667),
+            Duration(2_000_000),
+        );
+
+        assert_eq!(hints.presentation_timing(), PresentationTiming::Predictive);
+        assert_eq!(hints.desired_present(), Some(HostTime(20_000_000)));
+        assert_eq!(hints.latest_commit(), HostTime(18_000_000));
     }
 
     #[test]
@@ -316,7 +496,7 @@ mod tests {
 
         assert_eq!(hints.presentation_timing(), PresentationTiming::PacingOnly);
         assert_eq!(hints.desired_present(), None);
-        assert_eq!(hints.latest_commit(), HostTime(17_666_667));
+        assert_eq!(hints.latest_commit(), HostTime(13_500_001));
     }
 
     #[test]
@@ -333,7 +513,47 @@ mod tests {
 
         assert_eq!(hints.presentation_timing(), PresentationTiming::PacingOnly);
         assert_eq!(hints.desired_present(), None);
-        assert_eq!(hints.latest_commit(), HostTime(18_666_667));
+        assert_eq!(hints.latest_commit(), HostTime(14_500_001));
+    }
+
+    #[test]
+    fn apple_frame_clock_defaults_to_commit_only_feedback() {
+        let clock = AppleFrameClock::new(
+            SchedulerConfig::predictive(),
+            DisplayTiming::fixed(Duration(16_666_667)),
+        );
+
+        assert_eq!(clock.feedback_mode(), AppleFeedbackMode::CommitOnly);
+    }
+
+    #[test]
+    fn apple_frame_clock_can_be_constructed_with_deferred_feedback() {
+        let clock = AppleFrameClock::new_with_feedback_mode(
+            SchedulerConfig::predictive(),
+            DisplayTiming::fixed(Duration(16_666_667)),
+            AppleFeedbackMode::DeferredActualPresent,
+        );
+
+        assert_eq!(
+            clock.feedback_mode(),
+            AppleFeedbackMode::DeferredActualPresent
+        );
+    }
+
+    #[test]
+    fn apple_feedback_mode_selects_submission_observation() {
+        assert_eq!(
+            AppleFeedbackMode::DeferredActualPresent
+                .submission(HostTime(1))
+                .presentation,
+            PresentationObservation::Deferred
+        );
+        assert_eq!(
+            AppleFeedbackMode::CommitOnly
+                .submission(HostTime(1))
+                .presentation,
+            PresentationObservation::Unavailable
+        );
     }
 
     #[test]

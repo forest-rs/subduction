@@ -48,6 +48,7 @@ let mut clock = AppleFrameClock::new(
     SchedulerConfig::predictive(),
     DisplayTiming::fixed(Duration(16_666_667)),
 );
+clock.set_feedback_mode(frameclock_apple::AppleFeedbackMode::DeferredActualPresent);
 let output = OutputId(0);
 let mtm = MainThreadMarker::new().unwrap();
 
@@ -92,11 +93,14 @@ The root module exposes the Apple integration surface:
 
 - `DisplayLink` for the enabled Apple display-link implementation.
 - `AppleFrameClock` for retained `FrameDriver` integration.
+- `AppleFeedbackMode` for choosing whether submitted frames wait for deferred
+  actual-present feedback or resolve immediately with commit-only evidence.
 - `now` and `timebase` for Mach host-time conversion.
 - `present_hints`, `compute_present_hints`, and `display_timing` for hosts that
   need lower-level timing facts.
-- `preferred_frame_rate_range` and `PreferredFrameRateRange` for translating a
-  selected frame interval into a Core Animation-style ProMotion cadence request.
+- `preferred_frame_rate_range`, `AppleFrameClock::preferred_frame_rate_range`,
+  and `PreferredFrameRateRange` for translating a selected frame interval into a
+  Core Animation-style ProMotion cadence request.
 - `TickForwarder`, `TickSender`, and `DisplayLinkError` when the
   `cv-display-link` feature is enabled without `ca-display-link`.
 
@@ -116,16 +120,24 @@ tracing, or external diagnostics.
 output host time as `predicted_present`.
 
 `AppleFrameClock` computes predictive `PresentHints` from the display-link
-prediction when it is fresh. If a display-link callback arrives after its
+prediction when it is fresh. The adapter subtracts a small platform commit lead
+from the predicted present time to form `latest_commit`; by default this is one
+quarter of the tick's refresh interval, and hosts can override it with
+`AppleFrameClock::set_commit_lead`. If a display-link callback arrives after its
 predicted present time, the stale prediction is ignored and the frame is planned
 with pacing-only hints from the callback time. Scheduler safety margin remains
 inside `frameclock` planning; it is not baked into Apple platform hints.
 
-`CADisplayLink.timestamp` reports the previous callback's actual display time.
-`AppleFrameClock::submit_frame_now` therefore records a deferred submission;
-the next `begin_frame` returns the completed `FrameTimingSummary` in
-`FrameBegin::resolved_feedback` when the tick carries `prev_actual_present`.
-Hosts with immediate or unavailable feedback can still call
+`AppleFrameClock::new` uses commit-only feedback because the clock itself does
+not know which display-link source will feed it. `CADisplayLink.timestamp`
+reports the previous callback's actual display time, so hosts using
+`CADisplayLink` should select `AppleFeedbackMode::DeferredActualPresent` with
+`AppleFrameClock::new_with_feedback_mode` or
+`AppleFrameClock::set_feedback_mode`. The next `begin_frame` returns the
+completed `FrameTimingSummary` in `FrameBegin::resolved_feedback` when the tick
+carries `prev_actual_present`. The `cv-display-link` path should normally keep
+`AppleFeedbackMode::CommitOnly` because this adapter does not synthesize
+actual-present timestamps from `CVDisplayLink` ticks. Hosts can also call
 `AppleFrameClock::submit_frame` with an explicit `FrameSubmission`.
 
 Display timing belongs to the output that produced the tick. Hosts should

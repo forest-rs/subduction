@@ -63,10 +63,18 @@ pub const fn timebase() -> Timebase {
 ///
 /// Browsers do not expose a portable predicted present time or commit deadline
 /// through `requestAnimationFrame`, so `desired_present` is `None` and
-/// `latest_commit` is the tick's `now`.
+/// `latest_commit` is one refresh interval after the tick's `now`.
 #[must_use]
-pub const fn present_hints(tick: &FrameTick) -> PresentHints {
-    PresentHints::pacing_only(tick.now)
+pub fn present_hints(tick: &FrameTick, fallback_refresh_interval: Duration) -> PresentHints {
+    let refresh_interval = match tick.refresh_interval {
+        Some(ticks) => Duration(ticks),
+        None => fallback_refresh_interval,
+    };
+    PresentHints::pacing_only(
+        tick.now
+            .checked_add(refresh_interval)
+            .unwrap_or(HostTime(u64::MAX)),
+    )
 }
 
 /// Compatibility helper matching other backend hint functions.
@@ -74,8 +82,8 @@ pub const fn present_hints(tick: &FrameTick) -> PresentHints {
 /// Prefer [`WebFrameClock`] for retained host integration. The safety margin is
 /// intentionally unused because RAF exposes no commit deadline.
 #[must_use]
-pub const fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> PresentHints {
-    present_hints(tick)
+pub fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> PresentHints {
+    present_hints(tick, DEFAULT_REFRESH_INTERVAL)
 }
 
 /// Returns display timing for a browser RAF tick.
@@ -150,7 +158,7 @@ impl WebFrameClock {
     pub fn opportunity(&self, tick: FrameTick) -> FrameOpportunity {
         FrameOpportunity::new(
             tick,
-            present_hints(&tick),
+            present_hints(&tick, self.fallback_refresh_interval),
             display_timing(&tick, self.fallback_refresh_interval),
         )
     }
@@ -211,10 +219,13 @@ mod tests {
     #[test]
     fn present_hints_are_pacing_only() {
         let tick = test_tick();
-        let hints = present_hints(&tick);
+        let hints = present_hints(&tick, DEFAULT_REFRESH_INTERVAL);
 
         assert_eq!(hints.desired_present(), None);
-        assert_eq!(hints.latest_commit(), HostTime(16_000));
+        assert_eq!(
+            hints.latest_commit(),
+            HostTime(16_000 + DEFAULT_REFRESH_INTERVAL.ticks())
+        );
     }
 
     #[test]
@@ -224,7 +235,10 @@ mod tests {
         let opportunity = clock.opportunity(tick);
 
         assert_eq!(opportunity.tick, tick);
-        assert_eq!(opportunity.hints, present_hints(&tick));
+        assert_eq!(
+            opportunity.hints,
+            present_hints(&tick, DEFAULT_REFRESH_INTERVAL)
+        );
         assert_eq!(
             opportunity.display_timing,
             DisplayTiming::fixed(DEFAULT_REFRESH_INTERVAL)
@@ -239,7 +253,7 @@ mod tests {
         config.minimum_frame_start_margin = Duration::ZERO;
         let mut clock = WebFrameClock::new(config, DEFAULT_REFRESH_INTERVAL);
 
-        clock.request(FrameDemand::ANIMATION);
+        clock.request(FrameDemand::INPUT);
 
         assert!(matches!(
             clock.begin_frame(tick),

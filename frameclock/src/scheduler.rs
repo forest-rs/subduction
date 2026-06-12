@@ -226,12 +226,13 @@ fn f64_ticks_to_u64(ticks: f64) -> u64 {
 /// # Pipeline depth
 ///
 /// Pipeline depth controls how many selected frame intervals ahead the
-/// scheduler plans non-input work, bounded by [`SchedulerConfig::min_depth`]
-/// and [`SchedulerConfig::max_depth`]. A depth of 1 means no extra whole-frame
-/// lookahead (lowest latency, highest risk of missing deadlines). A depth of 3
-/// means animation/background/continuous-input plans target two selected
-/// intervals beyond the next eligible present slot. One-shot input remains
-/// latency-first and is not shifted by pipeline depth.
+/// scheduler plans smooth background work, bounded by
+/// [`SchedulerConfig::min_depth`] and [`SchedulerConfig::max_depth`]. A depth
+/// of 1 means no extra whole-frame lookahead (lowest latency, highest risk of
+/// missing deadlines). A depth of 3 means animation/background plans target
+/// two selected intervals beyond the next eligible present slot. One-shot
+/// input and continuous input remain latency-first and are not shifted by
+/// pipeline depth.
 ///
 /// # Adaptive behavior
 ///
@@ -363,7 +364,10 @@ impl Scheduler {
     }
 
     fn depth_lookahead_delta(&self, demand: FrameDemand, frame_interval: Duration) -> Duration {
-        if demand.dominant_class() == FrameDemandClass::Input {
+        if matches!(
+            demand.dominant_class(),
+            FrameDemandClass::Input | FrameDemandClass::ContinuousInput
+        ) {
             return Duration::ZERO;
         }
 
@@ -955,6 +959,25 @@ mod tests {
         assert_eq!(plan.sample_time, HostTime(2_000));
         assert_eq!(plan.commit_deadline, HostTime(1_800));
         assert_eq!(plan.frame_start, HostTime(1_000));
+    }
+
+    #[test]
+    fn pipeline_depth_does_not_shift_continuous_input() {
+        let mut config = SchedulerConfig::predictive();
+        config.initial_depth = 3;
+        config.minimum_frame_start_margin = Duration(250);
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(
+            make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 1_800),
+            FrameDemand::CONTINUOUS_INPUT,
+        );
+
+        assert_eq!(plan.pipeline_depth, 3);
+        assert_eq!(plan.target_present, Some(HostTime(2_000)));
+        assert_eq!(plan.sample_time, HostTime(2_000));
+        assert_eq!(plan.commit_deadline, HostTime(1_800));
+        assert_eq!(plan.frame_start, HostTime(1_550));
     }
 
     #[test]

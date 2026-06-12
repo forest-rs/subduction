@@ -226,7 +226,7 @@ fn main() {
 
             let submitted_at = subduction_backend_wayland::now();
             let feedback =
-                PresentFeedback::new(&hints, build_start, submitted_at, tick.prev_actual_present);
+                PresentFeedback::new(&plan, build_start, submitted_at, tick.prev_actual_present);
             scheduler.observe(&feedback);
         }
     }

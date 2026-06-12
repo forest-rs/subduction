@@ -860,11 +860,7 @@ fn on_tick(tick: FrameTick) {
         }
 
         // Store pending feedback for resolution on next tick.
-        s.pending_feedback = Some(PendingFeedback {
-            hints,
-            build_start,
-            submitted_at: DisplayLink::now(),
-        });
+        s.pending_feedback = Some(PendingFeedback::new(plan, build_start, DisplayLink::now()));
     });
 }
 

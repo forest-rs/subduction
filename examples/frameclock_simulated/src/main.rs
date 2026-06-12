@@ -119,7 +119,7 @@ fn main() {
                 Duration(850_000)
             };
             let submitted_at = build_start + build_cost;
-            let feedback = PresentFeedback::new(&hints, build_start, submitted_at, None);
+            let feedback = PresentFeedback::new(&plan, build_start, submitted_at, None);
 
             let submit_event = SubmitEvent {
                 frame_index,

@@ -381,7 +381,7 @@ fn on_tick() {
     s.recorder.on_submit(&SubmitEvent {
         frame_index,
         submitted_at: submit_start,
-        expected_present: hints.desired_present(),
+        expected_present: plan.target_present,
     });
     let submit_end = backend::now();
     s.recorder.on_phase_end(&PhaseEndEvent {
@@ -397,11 +397,7 @@ fn on_tick() {
 
     // Store pending feedback for next tick.
     s.prev_present_time = s.presenter.last_present_time().ok();
-    s.pending_feedback = Some(PendingFeedback {
-        hints,
-        build_start: plan_start,
-        submitted_at: submit_start,
-    });
+    s.pending_feedback = Some(PendingFeedback::new(plan, plan_start, submit_start));
 }
 
 fn flush_trace() {

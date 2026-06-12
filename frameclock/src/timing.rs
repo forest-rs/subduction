@@ -471,15 +471,32 @@ impl PresentHints {
     pub const fn pacing_only(latest_commit: HostTime) -> Self {
         Self::new(PresentationTiming::PacingOnly, None, latest_commit)
     }
+
+    /// Creates feedback hints normalized to an executed [`FramePlan`].
+    ///
+    /// Use this after scheduling has produced a plan. The scheduler may shift
+    /// target-present and commit timing for cadence throttling or pipeline
+    /// depth, so feedback should be judged against the plan the host actually
+    /// executed rather than the platform hints that entered planning.
+    #[inline]
+    #[must_use]
+    pub const fn for_plan(plan: &FramePlan) -> Self {
+        Self::new(
+            plan.presentation_timing,
+            plan.target_present,
+            plan.commit_deadline,
+        )
+    }
 }
 
 /// Timing feedback passed to [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
 ///
 /// Low-level scheduler integrations construct this with [`PresentFeedback::new`]
-/// after submitting a frame, or by resolving a [`PendingFeedback`]. Retained
-/// [`FrameDriver`](crate::FrameDriver) hosts usually do not construct it
-/// directly; [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame)
-/// derives it from [`FrameSubmission`](crate::FrameSubmission).
+/// and the executed [`FramePlan`] after submitting a frame, or by resolving a
+/// [`PendingFeedback`]. Retained [`FrameDriver`](crate::FrameDriver) hosts
+/// usually do not construct it directly;
+/// [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame) derives it
+/// from [`FrameSubmission`](crate::FrameSubmission).
 ///
 /// This type intentionally separates two different claims:
 ///
@@ -517,7 +534,31 @@ impl PresentFeedback {
     /// Constructs feedback to pass to [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
     ///
     /// This derives both the strict deadline signal and the weaker pacing
-    /// signal.
+    /// signal from the plan the host actually executed. Use this after calling
+    /// [`Scheduler::plan`](crate::scheduler::Scheduler::plan); the scheduler
+    /// may have shifted target-present and commit timing from the original
+    /// platform hints.
+    #[must_use]
+    pub fn new(
+        plan: &FramePlan,
+        build_start: HostTime,
+        submitted_at: HostTime,
+        actual_present: Option<HostTime>,
+    ) -> Self {
+        Self::from_hints(
+            &PresentHints::for_plan(plan),
+            build_start,
+            submitted_at,
+            actual_present,
+        )
+    }
+
+    /// Constructs feedback from already-normalized presentation hints.
+    ///
+    /// Most integrations should prefer [`Self::new`] with the executed
+    /// [`FramePlan`]. Use this only when the caller has intentionally built
+    /// hints that already describe the exact target-present and commit timing
+    /// the frame used.
     ///
     /// `missed_deadline` should only answer "the frame was late" when the
     /// backend has enough information to support that claim.
@@ -536,7 +577,7 @@ impl PresentFeedback {
     /// [`PresentFeedback::pacing_overrun`] is populated from commit timing as
     /// the weaker pacing signal.
     #[must_use]
-    pub fn new(
+    pub fn from_hints(
         hints: &PresentHints,
         build_start: HostTime,
         submitted_at: HostTime,
@@ -586,7 +627,7 @@ impl PresentFeedback {
 ///
 /// ```text
 /// // Frame N: submit, then store pending.
-/// let pending = PendingFeedback { hints, build_start, submitted_at };
+/// let pending = PendingFeedback::new(plan, build_start, submitted_at);
 ///
 /// // Frame N+1: resolve with actual_present from the new tick.
 /// let feedback = pending.resolve(tick.prev_actual_present);
@@ -594,8 +635,8 @@ impl PresentFeedback {
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub struct PendingFeedback {
-    /// The [`PresentHints`] that were active when the frame was planned.
-    pub hints: PresentHints,
+    /// The [`FramePlan`] that was submitted.
+    pub plan: FramePlan,
     /// Host time when frame building began.
     pub build_start: HostTime,
     /// Host time when the frame was submitted/committed.
@@ -603,6 +644,17 @@ pub struct PendingFeedback {
 }
 
 impl PendingFeedback {
+    /// Creates pending feedback for a submitted [`FramePlan`].
+    #[inline]
+    #[must_use]
+    pub const fn new(plan: FramePlan, build_start: HostTime, submitted_at: HostTime) -> Self {
+        Self {
+            plan,
+            build_start,
+            submitted_at,
+        }
+    }
+
     /// Resolves this pending value into feedback for `Scheduler::observe`.
     ///
     /// Pass the actual present time reported by the next platform tick when it
@@ -610,7 +662,7 @@ impl PendingFeedback {
     #[must_use]
     pub fn resolve(self, actual_present: Option<HostTime>) -> PresentFeedback {
         PresentFeedback::new(
-            &self.hints,
+            &self.plan,
             self.build_start,
             self.submitted_at,
             actual_present,
@@ -621,6 +673,21 @@ impl PendingFeedback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_with_hints(hints: PresentHints) -> FramePlan {
+        FramePlan {
+            demand: FrameDemand::ANIMATION,
+            frame_interval: Duration(1_000_000),
+            frame_start: HostTime(0),
+            sample_time: hints.desired_present().unwrap_or(hints.latest_commit()),
+            target_present: hints.desired_present(),
+            presentation_timing: hints.presentation_timing(),
+            commit_deadline: hints.latest_commit(),
+            pipeline_depth: 1,
+            output: OutputId(0),
+            frame_index: 0,
+        }
+    }
 
     fn tick_with_timing(
         now: u64,
@@ -680,7 +747,7 @@ mod tests {
     #[test]
     fn new_with_actual_present_compares_to_expected() {
         let hints = PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000));
-        let fb = PresentFeedback::new(
+        let fb = PresentFeedback::from_hints(
             &hints,
             HostTime(1_700_000),
             HostTime(1_750_000),
@@ -692,7 +759,7 @@ mod tests {
         assert_eq!(fb.pacing_overrun, None);
 
         // On time.
-        let fb = PresentFeedback::new(
+        let fb = PresentFeedback::from_hints(
             &hints,
             HostTime(1_700_000),
             HostTime(1_750_000),
@@ -707,12 +774,14 @@ mod tests {
         let hints = PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000));
         // submitted_at > latest_commit is weak pacing evidence until the
         // backend reports actual present.
-        let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
+        let fb =
+            PresentFeedback::from_hints(&hints, HostTime(1_700_000), HostTime(1_900_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.pacing_overrun, Some(true));
 
         // submitted_at <= latest_commit is still not presentation truth.
-        let fb = PresentFeedback::new(&hints, HostTime(1_700_000), HostTime(1_750_000), None);
+        let fb =
+            PresentFeedback::from_hints(&hints, HostTime(1_700_000), HostTime(1_750_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.pacing_overrun, Some(false));
     }
@@ -720,7 +789,7 @@ mod tests {
     #[test]
     fn new_without_desired_present_is_unknown() {
         let hints = PresentHints::pacing_only(HostTime(1_000_000));
-        let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(1_100_000), None);
+        let fb = PresentFeedback::from_hints(&hints, HostTime(900_000), HostTime(1_100_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.expected_present, None);
         assert_eq!(fb.pacing_overrun, Some(true));
@@ -729,7 +798,7 @@ mod tests {
     #[test]
     fn new_with_actual_present_but_no_expected_present_is_unknown() {
         let hints = PresentHints::pacing_only(HostTime(1_000_000));
-        let fb = PresentFeedback::new(
+        let fb = PresentFeedback::from_hints(
             &hints,
             HostTime(900_000),
             HostTime(1_100_000),
@@ -742,11 +811,11 @@ mod tests {
 
     #[test]
     fn pending_feedback_resolve_with_actual_present() {
-        let pending = PendingFeedback {
-            hints: PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000)),
-            build_start: HostTime(1_700_000),
-            submitted_at: HostTime(1_750_000),
-        };
+        let plan = plan_with_hints(PresentHints::predictive(
+            HostTime(2_000_000),
+            HostTime(1_800_000),
+        ));
+        let pending = PendingFeedback::new(plan, HostTime(1_700_000), HostTime(1_750_000));
 
         // Actual present arrived late → missed.
         let fb = pending.resolve(Some(HostTime(2_100_000)));
@@ -763,11 +832,11 @@ mod tests {
 
     #[test]
     fn pending_feedback_resolve_without_actual_present() {
-        let pending = PendingFeedback {
-            hints: PresentHints::predictive(HostTime(2_000_000), HostTime(1_800_000)),
-            build_start: HostTime(1_700_000),
-            submitted_at: HostTime(1_750_000),
-        };
+        let plan = plan_with_hints(PresentHints::predictive(
+            HostTime(2_000_000),
+            HostTime(1_800_000),
+        ));
+        let pending = PendingFeedback::new(plan, HostTime(1_700_000), HostTime(1_750_000));
 
         // No actual present → commit timing is pacing evidence, not deadline truth.
         let fb = pending.resolve(None);
@@ -778,11 +847,8 @@ mod tests {
 
     #[test]
     fn pending_feedback_without_expected_present_stays_unknown() {
-        let pending = PendingFeedback {
-            hints: PresentHints::pacing_only(HostTime(1_800_000)),
-            build_start: HostTime(1_700_000),
-            submitted_at: HostTime(1_950_000),
-        };
+        let plan = plan_with_hints(PresentHints::pacing_only(HostTime(1_800_000)));
+        let pending = PendingFeedback::new(plan, HostTime(1_700_000), HostTime(1_950_000));
 
         let fb = pending.resolve(None);
         assert_eq!(fb.missed_deadline, None);
@@ -793,7 +859,7 @@ mod tests {
     #[test]
     fn pacing_only_on_time_submission_reports_no_overrun() {
         let hints = PresentHints::pacing_only(HostTime(1_000_000));
-        let fb = PresentFeedback::new(&hints, HostTime(900_000), HostTime(950_000), None);
+        let fb = PresentFeedback::from_hints(&hints, HostTime(900_000), HostTime(950_000), None);
         assert_eq!(fb.missed_deadline, None);
         assert_eq!(fb.pacing_overrun, Some(false));
     }

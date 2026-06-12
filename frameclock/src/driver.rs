@@ -382,7 +382,7 @@ impl FrameDriver {
         submission: FrameSubmission,
     ) -> FrameTimingSummary {
         let feedback = PresentFeedback::new(
-            &frame.hints(),
+            &frame.plan(),
             frame.build_start(),
             submission.submitted_at,
             submission.actual_present,
@@ -816,7 +816,7 @@ mod tests {
             actual_present: None,
         };
         let expected_feedback = PresentFeedback::new(
-            &frame.hints(),
+            &frame.plan(),
             frame.build_start(),
             submission.submitted_at,
             submission.actual_present,
@@ -928,6 +928,41 @@ mod tests {
         assert_eq!(summary.expected_present, Some(HostTime(100)));
         assert_eq!(summary.actual_present, Some(HostTime(101)));
         assert_eq!(summary.missed_deadline, Some(true));
+        assert_eq!(summary.pacing_overrun, None);
+    }
+
+    #[test]
+    fn submit_frame_judges_feedback_against_shifted_plan() {
+        let mut config = SchedulerConfig::predictive();
+        config.initial_depth = 2;
+        config.minimum_frame_start_margin = Duration::ZERO;
+        let mut driver = FrameDriver::new(config);
+
+        driver.request(FrameDemand::ANIMATION);
+        assert!(matches!(
+            driver.begin_frame(predictive_opportunity(0, 4, 100, 90)),
+            FrameBeginResult::WaitUntil(HostTime(190))
+        ));
+
+        let FrameBeginResult::Ready(frame) =
+            driver.begin_frame(predictive_opportunity(190, 4, 290, 280))
+        else {
+            panic!("shifted frame should be ready at its planned start");
+        };
+        let plan = frame.plan();
+        assert_eq!(plan.target_present, Some(HostTime(200)));
+        assert_eq!(plan.commit_deadline, HostTime(190));
+
+        let summary = driver.submit_frame(
+            frame,
+            FrameSubmission {
+                submitted_at: HostTime(190),
+                actual_present: Some(HostTime(200)),
+            },
+        );
+
+        assert_eq!(summary.expected_present, Some(HostTime(200)));
+        assert_eq!(summary.missed_deadline, Some(false));
         assert_eq!(summary.pacing_overrun, None);
     }
 

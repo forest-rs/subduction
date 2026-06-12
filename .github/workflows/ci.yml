@@ -14,6 +14,7 @@ env:
   RUST_MIN_VER_PKGS: >-
     -p frameclock
     -p frameclock_apple
+    -p frameclock_wayland
     -p frameclock_web
     -p subduction_backend_android
     -p subduction_backend_apple
@@ -28,6 +29,7 @@ env:
   RUST_STD_ONLY_PKGS: >-
     --exclude frameclock_apple
     --exclude frameclock_simulated
+    --exclude frameclock_wayland
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
@@ -56,6 +58,7 @@ env:
   RUST_NO_WASIP1_PKGS: >-
     --exclude frameclock_web
     --exclude frameclock_apple
+    --exclude frameclock_wayland
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
@@ -79,6 +82,7 @@ env:
   # List of packages that don't support wasm32.
   RUST_NO_WASM_PKGS: >-
     --exclude frameclock_apple
+    --exclude frameclock_wayland
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
@@ -106,6 +110,7 @@ env:
     --exclude windows_lotta_layers
   # Packages excluded on non-Linux runners (Linux-only).
   RUST_LINUX_EXCLUDE_PKGS: >-
+    --exclude frameclock_wayland
     --exclude subduction_backend_wayland
     --exclude wayland_example_common
     --exclude wayland_layers

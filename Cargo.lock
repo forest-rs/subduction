@@ -475,6 +475,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "frameclock_wayland"
+version = "0.0.1"
+dependencies = [
+ "frameclock",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "frameclock_web"
 version = "0.0.1"
 dependencies = [

@@ -355,12 +355,12 @@ fn on_tick(tick: FrameTick) {
         });
 
         // Compute hints and plan the frame.
-        let safety = Duration(s.scheduler.safety_margin_ticks());
-        let hints = compute_present_hints(&tick, safety);
+        let fallback_interval = Duration(16_666_667);
+        let hints = compute_present_hints(&tick, fallback_interval);
         let opportunity = FrameOpportunity::new(
             tick,
             hints,
-            DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+            DisplayTiming::from_tick(&tick, fallback_interval),
         );
         let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
 

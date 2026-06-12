@@ -223,7 +223,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let mut s = state.borrow_mut();
 
     s.frame_clock.request(FrameDemand::ANIMATION);
-    let frame = match s.frame_clock.begin_frame(tick) {
+    let frame = match s.frame_clock.begin_frame(tick).result {
         FrameBeginResult::Ready(frame) => frame,
         FrameBeginResult::Expired(summary) => {
             if !summary.demand.is_empty() {
@@ -275,5 +275,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let submitted_at = frameclock_web::now();
     let _ = s
         .frame_clock
-        .submit_frame(frame, FrameSubmission::new(submitted_at, None));
+        .submit_frame(frame, FrameSubmission::new(submitted_at, None))
+        .summary
+        .expect("RAF submission should resolve immediately");
 }

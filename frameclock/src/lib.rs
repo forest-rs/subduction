@@ -44,7 +44,7 @@
 //! ```text
 //! platform tick -> FrameOpportunity
 //!               -> FrameDriver::begin_frame()
-//!               -> FrameBeginResult::Ready(ActiveFrame)
+//!               -> FrameBegin { result: FrameBeginResult::Ready(ActiveFrame), ... }
 //!               -> build frame
 //!               -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
 //!               -> FrameTimingSummary
@@ -72,17 +72,23 @@
 //!     OutputId(0),
 //! );
 //!
-//! match driver.begin_frame(opportunity) {
+//! let begin = driver.begin_frame(opportunity);
+//! if let Some(summary) = begin.resolved_feedback {
+//!     // A previous deferred submission resolved on this tick.
+//!     _ = summary;
+//! }
+//!
+//! match begin.result {
 //!     FrameBeginResult::Ready(frame) => {
 //!         let sample_time = frame.sample_time();
 //!         // Prepare app/model/render state for `sample_time`, submit renderer work,
 //!         // then report submission facts back to frameclock. If the frame cannot
 //!         // be submitted, call `discard_frame` instead.
-//!         let summary = driver.submit_frame(
+//!         let submit = driver.submit_frame(
 //!             frame,
 //!             FrameSubmission::new(HostTime(2_000_000), None),
 //!         );
-//!         _ = summary;
+//!         _ = submit.summary;
 //!     }
 //!     FrameBeginResult::WaitUntil(frame_start) => {
 //!         // Mirror `frame_start` into the host timer queue and wait.
@@ -131,7 +137,10 @@ pub mod timing;
 
 pub use demand::FrameDemand;
 pub use diagnostics::FrameTimingSummary;
-pub use driver::{ActiveFrame, FrameBeginResult, FrameDriver, FrameSubmission};
+pub use driver::{
+    ActiveFrame, FrameBegin, FrameBeginResult, FrameDriver, FrameSubmission, FrameSubmitResult,
+    PresentationObservation,
+};
 pub use output::OutputId;
 pub use scheduler::SchedulerConfig;
 pub use time::{Duration, HostTime};

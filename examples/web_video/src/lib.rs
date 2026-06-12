@@ -454,7 +454,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     s.prev_tick_us = Some(tick.now.ticks());
 
     s.frame_clock.request(FrameDemand::ANIMATION);
-    let frame = match s.frame_clock.begin_frame(tick) {
+    let frame = match s.frame_clock.begin_frame(tick).result {
         FrameBeginResult::Ready(frame) => frame,
         FrameBeginResult::Expired(summary) => {
             if !summary.demand.is_empty() {
@@ -637,7 +637,9 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let submitted_at = frameclock_web::now();
     let summary = s
         .frame_clock
-        .submit_frame(frame, FrameSubmission::new(submitted_at, None));
+        .submit_frame(frame, FrameSubmission::new(submitted_at, None))
+        .summary
+        .expect("RAF submission should resolve immediately");
 
     let build_ms = submitted_at.ticks().saturating_sub(build_start.ticks()) as f64 / 1000.0;
     let frame_budget_ms = frame_dur * 1000.0;

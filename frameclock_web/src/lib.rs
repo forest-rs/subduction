@@ -21,8 +21,8 @@ pub use raf::RafLoop;
 
 use frameclock::time::Timebase;
 use frameclock::{
-    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameDriver,
-    FrameOpportunity, FrameSubmission, FrameTick, FrameTimingSummary, HostTime, PresentHints,
+    ActiveFrame, DisplayTiming, Duration, FrameBegin, FrameDemand, FrameDriver, FrameOpportunity,
+    FrameSubmission, FrameSubmitResult, FrameTick, FrameTimingSummary, HostTime, PresentHints,
     SchedulerConfig,
 };
 
@@ -165,7 +165,7 @@ impl WebFrameClock {
 
     /// Begins frame work from a RAF tick.
     #[must_use]
-    pub fn begin_frame(&mut self, tick: FrameTick) -> FrameBeginResult {
+    pub fn begin_frame(&mut self, tick: FrameTick) -> FrameBegin {
         let opportunity = self.opportunity(tick);
         self.driver.begin_frame(opportunity)
     }
@@ -176,13 +176,13 @@ impl WebFrameClock {
         &mut self,
         frame: ActiveFrame,
         submission: FrameSubmission,
-    ) -> FrameTimingSummary {
+    ) -> FrameSubmitResult {
         self.driver.submit_frame(frame, submission)
     }
 
     /// Reports a submitted frame at the current browser host time.
     #[must_use]
-    pub fn submit_frame_now(&mut self, frame: ActiveFrame) -> FrameTimingSummary {
+    pub fn submit_frame_now(&mut self, frame: ActiveFrame) -> FrameSubmitResult {
         self.submit_frame(frame, FrameSubmission::new(now(), None))
     }
 
@@ -196,7 +196,7 @@ impl WebFrameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frameclock::OutputId;
+    use frameclock::{FrameBeginResult, OutputId};
 
     fn test_tick() -> FrameTick {
         FrameTick {
@@ -256,7 +256,7 @@ mod tests {
         clock.request(FrameDemand::INPUT);
 
         assert!(matches!(
-            clock.begin_frame(tick),
+            clock.begin_frame(tick).result,
             FrameBeginResult::Ready(_)
         ));
     }

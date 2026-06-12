@@ -19,7 +19,7 @@ application state, renderer submission, or browser event routing.
 ```text
 requestAnimationFrame -> FrameTick
                       -> WebFrameClock::begin_frame()
-                      -> FrameBeginResult::Ready(ActiveFrame)
+                      -> FrameBegin { result: FrameBeginResult::Ready(ActiveFrame), ... }
                       -> host render
                       -> WebFrameClock::submit_frame() or WebFrameClock::discard_frame()
                       -> FrameTimingSummary
@@ -55,13 +55,14 @@ let raf = RafLoop::new(
     move |tick| {
         clock.request(FrameDemand::ANIMATION);
 
-        match clock.begin_frame(tick) {
+        let begin = clock.begin_frame(tick);
+        match begin.result {
             FrameBeginResult::Ready(frame) => {
                 let sample_time = frame.sample_time();
                 // Prepare and submit browser rendering work for sample_time.
-                let summary =
+                let submit =
                     clock.submit_frame(frame, FrameSubmission::new(frameclock_web::now(), None));
-                _ = (sample_time, summary);
+                _ = (sample_time, submit.summary);
             }
             FrameBeginResult::WaitUntil(frame_start) => {
                 // Mirror frame_start into the host's timer/redraw machinery.
@@ -106,10 +107,10 @@ same per-output monotonic ownership rule: the frame index identifies a
 delivered browser frame opportunity for one output or surface.
 
 Because RAF is pacing-only, `PresentHints::desired_present` is `None` and
-`PresentHints::latest_commit` is the RAF tick time. Hosts that can get richer
-browser timing from media APIs, such as video frame callbacks, should build
-their own `FrameOpportunity` or use a future media-specific adapter instead of
-forcing that data through plain RAF.
+`PresentHints::latest_commit` is one fallback refresh interval after the RAF
+tick time. Hosts that can get richer browser timing from media APIs, such as
+video frame callbacks, should build their own `FrameOpportunity` or use a
+future media-specific adapter instead of forcing that data through plain RAF.
 
 ## Feature Flags
 

@@ -165,7 +165,7 @@ impl WindowState {
             self.surface_clock.frame_index,
             self.surface_clock.output,
         );
-        self.surface_clock.driver.begin_frame(opportunity)
+        self.surface_clock.driver.begin_frame(opportunity).result
     }
 
     fn redraw(&mut self, started_at: Instant, event_loop: &ActiveEventLoop) {
@@ -223,7 +223,12 @@ impl WindowState {
 
         // Submitting through the driver feeds scheduler feedback internally and
         // returns the frameclock-owned timing summary a devtools view would use.
-        let summary = self.surface_clock.driver.submit_frame(frame, submission);
+        let summary = self
+            .surface_clock
+            .driver
+            .submit_frame(frame, submission)
+            .summary
+            .expect("pacing-only submission should resolve immediately");
 
         if self.surface_clock.frame_index.is_multiple_of(60) {
             self.window.set_title(&format!(
@@ -324,10 +329,7 @@ impl SyntheticRenderer {
         let budget = plan.commit_deadline.saturating_duration_since(now);
         let build_cost = Duration(SYNTHETIC_BUILD_COST.ticks().min(budget.ticks()));
 
-        FrameSubmission {
-            submitted_at: now + build_cost,
-            actual_present: None,
-        }
+        FrameSubmission::new(now + build_cost, None)
     }
 }
 

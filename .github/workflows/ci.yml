@@ -15,6 +15,7 @@ env:
     -p frameclock
     -p frameclock_apple
     -p frameclock_web
+    -p mediaclock
     -p subduction_backend_android
     -p subduction_backend_apple
     -p subduction_backend_wayland

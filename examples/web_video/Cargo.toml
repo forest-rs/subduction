@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 frameclock = { workspace = true }
 frameclock_web = { workspace = true }
+mediaclock = { workspace = true }
 subduction_core = { workspace = true }
 subduction_backend_web = { path = "../../subduction_backend_web" }
 subduction_sync_harness = { workspace = true }

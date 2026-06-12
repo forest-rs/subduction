@@ -91,9 +91,13 @@ Specialized APIs live under their modules:
 - `frameclock::timing` for presentation feedback, pending feedback, frame
   plans, and lower-level timing details.
 - `frameclock::time` for `Timebase` and clock conversion.
-- `frameclock::timeline` for `AffineClock`.
 - `frameclock::driver` and `frameclock::demand` for lower-level lifecycle and
   demand policy types.
+
+Media timeline mapping for video PTS or audio-master clocks lives in the
+`mediaclock` crate. A media host usually asks `frameclock` for a frame's sample
+or target-present host time, then asks `mediaclock` which media time should be
+visible then.
 
 ```rust,ignore
 use frameclock::{

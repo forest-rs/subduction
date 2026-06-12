@@ -31,9 +31,7 @@
 //!   [`FrameTimingSummaryBuilder`](diagnostics::FrameTimingSummaryBuilder) for
 //!   telemetry adapters and tests.
 //! - [`time`] exposes [`Timebase`](time::Timebase) for backend clock
-//!   conversion.
-//! - [`timeline`] exposes [`AffineClock`](timeline::AffineClock) for host-time
-//!   to external-timeline mapping.
+//!   conversion. Media timeline mapping lives in the `mediaclock` crate.
 //! - [`timing`] and [`driver`] expose lower-level lifecycle and presentation
 //!   feedback types such as [`PresentFeedback`](timing::PresentFeedback),
 //!   [`PendingFeedback`](timing::PendingFeedback), and
@@ -132,7 +130,6 @@ pub mod driver;
 pub mod output;
 pub mod scheduler;
 pub mod time;
-pub mod timeline;
 pub mod timing;
 
 pub use demand::FrameDemand;

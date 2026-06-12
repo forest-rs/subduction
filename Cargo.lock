@@ -911,6 +911,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mediaclock"
+version = "0.0.1"
+dependencies = [
+ "frameclock",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2369,6 +2376,7 @@ version = "0.0.1"
 dependencies = [
  "frameclock",
  "frameclock_web",
+ "mediaclock",
  "subduction_backend_web",
  "subduction_core",
  "subduction_sync_harness",

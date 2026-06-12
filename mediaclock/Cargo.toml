@@ -1,0 +1,21 @@
+[package]
+name = "mediaclock"
+description = "Media timeline clocks and synchronization helpers"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["media", "sync", "timing", "clock", "no_std"]
+categories = ["multimedia", "no-std"]
+
+[features]
+default = []
+std = []
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true }

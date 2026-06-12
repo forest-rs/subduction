@@ -9,8 +9,9 @@
 //! cache-friendly traversal.
 //!
 //! Display-frame timing and scheduling live in the [`frameclock`] crate. This
-//! crate keeps compatibility re-exports for `clock`, `scheduler`, `time`, and
-//! `timing` while local callers migrate to direct `frameclock` imports.
+//! crate keeps compatibility re-exports for `scheduler`, `time`, and `timing`
+//! while local callers migrate to direct `frameclock` imports. Media timeline
+//! clocks live in the `mediaclock` crate.
 //!
 //! # Architecture
 //!
@@ -51,8 +52,6 @@
 //! **[`backend`]** — The [`Presenter`](backend::Presenter) trait that
 //! platform backends implement to apply frame changes to native trees.
 //!
-//! **[`clock`]** — Compatibility re-export of `frameclock::timeline`.
-//!
 //! **[`transform`]** — 3D affine transform type for layer positioning.
 //!
 //! **[`output`]** — Layer-root presentation policy such as the backdrop style,
@@ -82,11 +81,6 @@ pub mod layer;
 pub mod output;
 pub mod trace;
 pub mod transform;
-
-/// Compatibility re-export for timeline helpers.
-pub mod clock {
-    pub use frameclock::timeline::*;
-}
 
 /// Compatibility re-export for frame scheduling.
 pub mod scheduler {

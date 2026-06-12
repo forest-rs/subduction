@@ -31,13 +31,13 @@ use core::cell::RefCell;
 use core::f64::consts::TAU;
 
 use frameclock::time::Timebase;
-use frameclock::timeline::AffineClock;
 use frameclock::timing::PresentationTiming;
 use frameclock::{
     Duration, FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, HostTime, OutputId,
     SchedulerConfig,
 };
 use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
+use mediaclock::MediaTimeline;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::transform::Transform3d;
@@ -86,7 +86,7 @@ struct VideoState {
     frame_clock: WebFrameClock,
     timebase: Timebase,
     app_start: HostTime,
-    media_clock: AffineClock,
+    media_timeline: MediaTimeline,
     video: HtmlVideoElement,
     ui: VideoUi,
     sweep_id: LayerId,
@@ -107,10 +107,6 @@ struct VideoState {
 
 fn seconds_per_tick(timebase: Timebase) -> f64 {
     f64::from(timebase.numer) / f64::from(timebase.denom) / 1e9
-}
-
-fn reanchor_media_clock(clock: &mut AffineClock, host: HostTime, media: f64) {
-    clock.reanchor(host.ticks(), media);
 }
 
 /// Entry point for the web-video demo.
@@ -327,8 +323,13 @@ pub fn main() -> Result<(), JsValue> {
 
     let timebase = frameclock_web::timebase();
     let app_start = frameclock_web::now();
-    let mut media_clock = AffineClock::new(seconds_per_tick(timebase), 0.08, 0.08);
-    media_clock.update(app_start.ticks(), 0.0);
+    let mut media_timeline = MediaTimeline::with_smoothing(
+        seconds_per_tick(timebase),
+        0.08,
+        0.08,
+        MediaTimeline::DEFAULT_DISCONTINUITY_THRESHOLD,
+    );
+    media_timeline.observe(app_start, 0.0);
 
     let mut scheduler_cfg = SchedulerConfig::pacing_only();
     scheduler_cfg.nominal_latency = Duration::ZERO;
@@ -339,7 +340,7 @@ pub fn main() -> Result<(), JsValue> {
         frame_clock: WebFrameClock::new(scheduler_cfg, DEFAULT_REFRESH_INTERVAL),
         timebase,
         app_start,
-        media_clock,
+        media_timeline,
         video,
         ui: VideoUi {
             play_button,
@@ -391,11 +392,17 @@ fn bind_controls(state: &Rc<RefCell<VideoState>>) -> Result<(), JsValue> {
         ensure_audio_armed(&mut s);
 
         if s.video.paused() {
+            let host = frameclock_web::now();
+            let media = s.video.current_time();
+            s.media_timeline.set_paused(false, host, media);
             if let Some(audio) = s.audio.as_ref() {
                 let _ = audio.resume();
             }
             let _ = s.video.play();
         } else {
+            let host = frameclock_web::now();
+            let media = s.video.current_time();
+            s.media_timeline.set_paused(true, host, media);
             let _ = s.video.pause();
             if let Some(audio) = s.audio.as_ref() {
                 let _ = audio.suspend();
@@ -418,7 +425,7 @@ fn bind_controls(state: &Rc<RefCell<VideoState>>) -> Result<(), JsValue> {
             let next_time = dur * normalized;
             s.video.set_current_time(next_time);
             let host = frameclock_web::now();
-            reanchor_media_clock(&mut s.media_clock, host, next_time);
+            s.media_timeline.reanchor(host, next_time);
         }
     }) as Box<dyn FnMut(_)>);
     state
@@ -433,7 +440,7 @@ fn bind_controls(state: &Rc<RefCell<VideoState>>) -> Result<(), JsValue> {
         let mut s = ended_state.borrow_mut();
         s.video.set_current_time(0.0);
         let _ = s.video.play();
-        reanchor_media_clock(&mut s.media_clock, frameclock_web::now(), 0.0);
+        s.media_timeline.reanchor(frameclock_web::now(), 0.0);
     }) as Box<dyn FnMut(_)>);
     state
         .borrow()
@@ -509,14 +516,14 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let has_duration = duration.is_finite() && duration > 0.0;
 
     if s.video.paused() {
-        reanchor_media_clock(&mut s.media_clock, plan.sample_time, observed_media);
+        s.media_timeline
+            .set_paused(true, plan.sample_time, observed_media);
     } else {
-        s.media_clock
-            .update(plan.sample_time.ticks(), observed_media);
+        s.media_timeline.observe(plan.sample_time, observed_media);
     }
     let expected_media = s
-        .media_clock
-        .media_time_at(plan.sample_time.ticks())
+        .media_timeline
+        .media_time_at(plan.sample_time)
         .unwrap_or(observed_media);
 
     let emu_refresh_hz = if pathologies.vary_refresh {

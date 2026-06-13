@@ -3,9 +3,15 @@
 
 //! Frame demand and demand-ordering policy.
 //!
-//! This module owns the policy that ranks why a frame is requested. It
-//! explicitly does not own display timing, event-loop wakeups, timers, or
-//! renderer submission.
+//! This module owns the policy that ranks why a frame is requested. Demand is
+//! both scheduling input and the semantic cause carried into a [`FramePlan`].
+//! Apps can use that carried demand to choose workload quality for the selected
+//! frame.
+//!
+//! This module explicitly does not own display timing, event-loop wakeups,
+//! timers, renderer submission, or renderer quality policy.
+//!
+//! [`FramePlan`]: crate::timing::FramePlan
 
 use core::ops::{BitOr, BitOrAssign};
 
@@ -52,6 +58,14 @@ pub enum FrameDemandClass {
 /// latency-first, continuous input is latency-sensitive but allowed to choose a
 /// sustainable cadence, animation prefers even pacing, and background work can
 /// be deferred.
+///
+/// The same demand set is stored on the resulting [`FramePlan`]. Hosts should
+/// use that planned demand, not separate local priority tables, when deciding
+/// how much optional work to do for the frame being built. For example,
+/// `CONTINUOUS_INPUT` during resize might skip expensive background refinement,
+/// while `ANIMATION` can use the normal visual path.
+///
+/// [`FramePlan`]: crate::timing::FramePlan
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FrameDemand(u8);
 

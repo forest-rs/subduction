@@ -71,6 +71,35 @@ enum Wake {
     FrameStart(OutputId),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkMode {
+    LatencySensitive,
+    Normal,
+    Background,
+}
+
+impl WorkMode {
+    fn from_demand(demand: FrameDemand) -> Self {
+        if demand.contains(FrameDemand::INPUT) || demand.contains(FrameDemand::CONTINUOUS_INPUT) {
+            Self::LatencySensitive
+        } else if demand.contains(FrameDemand::BACKGROUND)
+            && !demand.contains(FrameDemand::ANIMATION)
+        {
+            Self::Background
+        } else {
+            Self::Normal
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::LatencySensitive => "interactive",
+            Self::Normal => "normal",
+            Self::Background => "background",
+        }
+    }
+}
+
 fn host_time(started_at: Instant) -> HostTime {
     let nanos = started_at.elapsed().as_nanos();
     #[expect(
@@ -212,14 +241,18 @@ impl WindowState {
 
         // Update application state and models here. Time-varying content samples
         // `plan.sample_time`, not wall-clock "now", so CPU work targets the
-        // frame that is expected to be displayed.
-        self.model.update_for_frame(plan.sample_time);
+        // frame that is expected to be displayed. `plan.demand` is the demand
+        // that selected this frame; the app can use it to choose workload
+        // quality. Resize/scroll frames might skip optional refinement, while
+        // animation frames can take the normal visual path.
+        let work_mode = WorkMode::from_demand(plan.demand);
+        self.model.update_for_frame(plan.sample_time, work_mode);
 
         // Render here. A real renderer would acquire the surface texture, encode
         // commands, and submit before `plan.commit_deadline`. If the backend
         // provides a real `plan.target_present`, presentation-aware renderers can
         // use it to pick content or configure platform-specific present timing.
-        let submission = self.renderer.render(&plan, now);
+        let submission = self.renderer.render(&plan, work_mode, now);
 
         // Submitting through the driver feeds scheduler feedback internally and
         // returns the frameclock-owned timing summary a devtools view would use.
@@ -232,13 +265,15 @@ impl WindowState {
 
         if self.surface_clock.frame_index.is_multiple_of(60) {
             self.window.set_title(&format!(
-                "Frameclock + winit: sample={}ms x={}",
+                "Frameclock + winit: mode={} sample={}ms x={}",
+                work_mode.label(),
                 plan.sample_time.ticks() / 1_000_000,
                 self.model.sampled_position,
             ));
             println!(
-                "frame={:04} start={} sample={} target={:?} deadline={} depth={} overrun={:?}",
+                "frame={:04} mode={} start={} sample={} target={:?} deadline={} depth={} overrun={:?}",
                 plan.frame_index,
+                work_mode.label(),
                 plan.frame_start.ticks(),
                 plan.sample_time.ticks(),
                 plan.target_present.map(HostTime::ticks),
@@ -312,22 +347,30 @@ impl DemoModel {
         }
     }
 
-    fn update_for_frame(&mut self, sample_time: HostTime) {
+    fn update_for_frame(&mut self, sample_time: HostTime, work_mode: WorkMode) {
         let millis = sample_time.ticks() / 1_000_000;
         let phase = millis % 2_000;
         self.sampled_position = if phase <= 1_000 { phase } else { 2_000 - phase };
+        if work_mode == WorkMode::LatencySensitive {
+            self.sampled_position = (self.sampled_position / 8) * 8;
+        }
         self.animation_active = sample_time < HostTime(DEMO_ANIMATION_DURATION.ticks());
     }
 }
 
 impl SyntheticRenderer {
-    fn render(&mut self, plan: &FramePlan, now: HostTime) -> FrameSubmission {
+    fn render(&mut self, plan: &FramePlan, work_mode: WorkMode, now: HostTime) -> FrameSubmission {
         // This example has no renderer, so it invents a short submit span.
         // The driver recorded frame build start when it returned ActiveFrame;
         // a real backend would provide the queue submit time and attach
         // platform present feedback when available.
         let budget = plan.commit_deadline.saturating_duration_since(now);
-        let build_cost = Duration(SYNTHETIC_BUILD_COST.ticks().min(budget.ticks()));
+        let requested_cost = match work_mode {
+            WorkMode::LatencySensitive => Duration(SYNTHETIC_BUILD_COST.ticks() / 2),
+            WorkMode::Normal => SYNTHETIC_BUILD_COST,
+            WorkMode::Background => Duration(SYNTHETIC_BUILD_COST.ticks().saturating_mul(2)),
+        };
+        let build_cost = Duration(requested_cost.ticks().min(budget.ticks()));
 
         FrameSubmission::new(now + build_cost, None)
     }

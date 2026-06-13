@@ -103,9 +103,15 @@
 //! }
 //! ```
 //!
-//! `FrameDemand` is host-owned pending work. Request `INPUT` for discrete user
-//! action, `CONTINUOUS_INPUT` while an interaction is active, `ANIMATION` while
-//! a visual timeline is running, and `BACKGROUND` for deferrable visual work.
+//! `FrameDemand` is host-owned pending work and the semantic cause carried into
+//! the resulting frame plan. Request `INPUT` for discrete user action,
+//! `CONTINUOUS_INPUT` while an interaction is active, `ANIMATION` while a visual
+//! timeline is running, and `BACKGROUND` for deferrable visual work. After
+//! [`FrameBeginResult::Ready`] returns, use `frame.plan().demand` to choose the
+//! workload for that frame: interactive frames can skip optional refinement,
+//! animation frames can use normal visual work, and background frames can batch
+//! or defer.
+//!
 //! `FrameDemandClass` is the derived ordering used by
 //! [`FrameDemand::dominant_class`] and [`FrameDemand::preempts`]; use it for
 //! diagnostics or adapter policy that needs to match frameclock's demand order.

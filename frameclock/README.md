@@ -34,6 +34,12 @@ deferrable visual work. With `FrameDriver`, call `request(demand)` when those
 causes arrive; with the low-level scheduler, pass the demand to
 `Scheduler::plan(opportunity, demand)`.
 
+Demand also remains attached to the selected `FramePlan`. Once
+`FrameBeginResult::Ready` returns, use `frame.plan().demand` to choose the app's
+workload for that frame: interactive frames can skip optional refinement,
+animation frames can use normal visual work, and background frames can batch or
+defer. The scheduler owns demand ordering; the app owns quality policy.
+
 Use `DisplayTiming` to describe the current target output's fixed or variable
 refresh constraints. It should come from the backend/platform facts for the
 same output or surface as the `FrameTick`; refresh it when a window moves

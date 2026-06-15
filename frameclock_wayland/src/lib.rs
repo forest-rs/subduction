@@ -30,8 +30,10 @@
 //! let mut ticker = TickerState::new();
 //! let clock = Clock::Monotonic;
 //!
-//! // When sending a wl_surface.frame request:
-//! ticker.mark_callback_requested();
+//! // Claim the single in-flight slot before sending a wl_surface.frame request:
+//! if ticker.mark_callback_requested() {
+//!     // send the wl_surface.frame request
+//! }
 //!
 //! // When the matching wl_callback.done event arrives:
 //! ticker.on_callback_done(clock, OutputId(0));

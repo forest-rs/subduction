@@ -148,13 +148,22 @@ impl TickerState {
         self.callback_in_flight
     }
 
-    /// Marks that a frame callback request has been sent.
-    pub fn mark_callback_requested(&mut self) {
-        debug_assert!(
-            !self.callback_in_flight,
-            "mark_callback_requested called while a callback is already in flight"
-        );
+    /// Claims the single in-flight callback slot before a `wl_surface.frame`
+    /// request is sent.
+    ///
+    /// Only one frame callback may be in flight at a time. Returns `true` when
+    /// the slot was newly claimed and the caller should send the
+    /// `wl_surface.frame` request. Returns `false` when a callback is already
+    /// in flight; in that case the ticker state is left unchanged and the
+    /// caller must not request another callback. The slot is released when the
+    /// matching [`on_callback_done`](Self::on_callback_done) runs.
+    #[must_use = "a false return means a callback is already in flight and no new frame request should be sent"]
+    pub fn mark_callback_requested(&mut self) -> bool {
+        if self.callback_in_flight {
+            return false;
+        }
         self.callback_in_flight = true;
+        true
     }
 
     /// Stores the most recent actual present time for propagation into the
@@ -228,7 +237,7 @@ mod tests {
     fn on_callback_done_enqueues_tick_with_correct_fields() {
         let mut ticker = TickerState::new();
 
-        ticker.mark_callback_requested();
+        assert!(ticker.mark_callback_requested());
         ticker.on_callback_done(Clock::Monotonic, OutputId(0));
 
         let tick = ticker.poll_tick().expect("should have a tick");
@@ -244,7 +253,7 @@ mod tests {
     fn on_callback_done_uses_caller_output() {
         let mut ticker = TickerState::new();
 
-        ticker.mark_callback_requested();
+        assert!(ticker.mark_callback_requested());
         ticker.on_callback_done(Clock::Monotonic, OutputId(3));
 
         let tick = ticker.poll_tick().expect("should have a tick");
@@ -262,7 +271,7 @@ mod tests {
         let mut ticker = TickerState::new();
 
         for expected in 0..5 {
-            ticker.mark_callback_requested();
+            assert!(ticker.mark_callback_requested());
             ticker.on_callback_done(Clock::Monotonic, OutputId(0));
             let tick = ticker.poll_tick().unwrap();
             assert_eq!(tick.frame_index, expected);
@@ -274,10 +283,28 @@ mod tests {
         let mut ticker = TickerState::new();
 
         assert!(!ticker.is_callback_in_flight());
-        ticker.mark_callback_requested();
+        assert!(ticker.mark_callback_requested());
         assert!(ticker.is_callback_in_flight());
         ticker.on_callback_done(Clock::Monotonic, OutputId(0));
         assert!(!ticker.is_callback_in_flight());
+    }
+
+    #[test]
+    fn mark_callback_requested_rejects_double_request() {
+        let mut ticker = TickerState::new();
+
+        // First request claims the in-flight slot.
+        assert!(ticker.mark_callback_requested());
+        assert!(ticker.is_callback_in_flight());
+
+        // A second request while one is in flight is rejected and leaves the
+        // state unchanged.
+        assert!(!ticker.mark_callback_requested());
+        assert!(ticker.is_callback_in_flight());
+
+        // After the callback completes, the slot can be claimed again.
+        ticker.on_callback_done(Clock::Monotonic, OutputId(0));
+        assert!(ticker.mark_callback_requested());
     }
 
     #[test]
@@ -285,7 +312,7 @@ mod tests {
         let mut ticker = TickerState::new();
 
         // First tick: no previous actual present.
-        ticker.mark_callback_requested();
+        assert!(ticker.mark_callback_requested());
         ticker.on_callback_done(Clock::Monotonic, OutputId(0));
         let tick0 = ticker.poll_tick().unwrap();
         assert_eq!(tick0.prev_actual_present, None);
@@ -294,7 +321,7 @@ mod tests {
         ticker.set_last_observed_actual_present(HostTime(42_000));
 
         // Second tick: should carry the observed time.
-        ticker.mark_callback_requested();
+        assert!(ticker.mark_callback_requested());
         ticker.on_callback_done(Clock::Monotonic, OutputId(0));
         let tick1 = ticker.poll_tick().unwrap();
         assert_eq!(tick1.prev_actual_present, Some(HostTime(42_000)));
@@ -318,7 +345,7 @@ mod tests {
         let mut ticker = TickerState::new();
 
         for _ in 0..9 {
-            ticker.mark_callback_requested();
+            assert!(ticker.mark_callback_requested());
             ticker.on_callback_done(Clock::Monotonic, OutputId(0));
         }
 

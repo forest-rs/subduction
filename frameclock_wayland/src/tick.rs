@@ -63,6 +63,24 @@ impl Default for TickQueue {
 /// `wl_surface.frame` request, [`on_callback_done`](Self::on_callback_done)
 /// when the matching `wl_callback.done` event arrives, and drain ticks with
 /// [`poll_tick`](Self::poll_tick).
+///
+/// # One stream per surface
+///
+/// A `TickerState` models a single paced surface/output stream. Create one
+/// instance per `wl_surface` you pace, drive it only with that surface's frame
+/// callbacks, and pass a stable [`OutputId`] for the stream to
+/// [`on_callback_done`](Self::on_callback_done).
+///
+/// The ticker keeps a single most-recent actual-present timestamp (see
+/// [`set_last_observed_actual_present`](Self::set_last_observed_actual_present))
+/// and stamps it onto the next tick's [`FrameTick::prev_actual_present`]. Feed
+/// it only presentation feedback for the same surface/output stream: mixing in
+/// feedback from an unrelated surface or output would attribute one surface's
+/// presentation to another. Hosts that multiplex several surfaces on one event
+/// queue should keep a `TickerState` per stream and correlate presentation
+/// feedback to the right stream themselves — for example by the
+/// [`SubmissionId`](crate::SubmissionId) carried on each
+/// [`PresentEvent`](crate::PresentEvent).
 #[derive(Debug)]
 pub struct TickerState {
     queue: TickQueue,
@@ -89,6 +107,10 @@ impl TickerState {
     /// `output` with the current time read from `clock`, enqueues it,
     /// increments the tick index, and clears the in-flight flag. If no
     /// callback is in flight, debug-asserts and returns.
+    ///
+    /// `output` should identify this stream's current target output and stay
+    /// stable for the stream's lifetime; refresh it only when the surface
+    /// actually moves between outputs.
     pub fn on_callback_done(&mut self, clock: Clock, output: OutputId) {
         debug_assert!(
             self.callback_in_flight,
@@ -137,6 +159,9 @@ impl TickerState {
 
     /// Stores the most recent actual present time for propagation into the
     /// next [`FrameTick::prev_actual_present`].
+    ///
+    /// Feed this only with presentation feedback for the same surface/output
+    /// stream this ticker paces (see the [type-level contract](Self#one-stream-per-surface)).
     pub fn set_last_observed_actual_present(&mut self, t: HostTime) {
         self.last_observed_actual_present = Some(t);
     }

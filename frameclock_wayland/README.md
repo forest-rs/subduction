@@ -29,7 +29,11 @@ wp_presentation.clock_id        -> Clock -> HostTime reads
 Use `TickerState` as the frame-callback bookkeeping for one surface: call
 `mark_callback_requested` when a `wl_surface.frame` request is sent, call
 `on_callback_done` when the matching `wl_callback.done` event arrives, and
-drain resulting ticks with `poll_tick`.
+drain resulting ticks with `poll_tick`. A `TickerState` models a single paced
+surface/output stream — create one per `wl_surface`, pass it a stable
+`OutputId`, and feed it only that surface's presentation feedback. Hosts that
+multiplex several surfaces on one queue should keep a `TickerState` per stream
+and correlate feedback to the right stream by `SubmissionId` themselves.
 
 Use `presentation_time_to_host_time` to convert
 `wp_presentation_feedback.presented` timestamps, store the most recent value

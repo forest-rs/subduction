@@ -3,7 +3,7 @@
 
 //! Commit wiring and presentation feedback tracking.
 
-use crate::presentation::SubmissionId;
+use frameclock_wayland::SubmissionId;
 use wayland_client::backend::WaylandError;
 
 /// Internal bookkeeping for the commit-sequencing path.

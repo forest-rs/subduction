@@ -160,7 +160,7 @@ fn main() {
     let (mut _bg_pool, mut _bg_buf) = attach_background(&state, &shm, &window.surface, &qh);
 
     // --- Animation state ---
-    let start_nanos = subduction_backend_wayland::now().ticks();
+    let start_nanos = frameclock_wayland::now().ticks();
     let mut scheduler = Scheduler::new(SchedulerConfig::pacing_only());
     let (mut win_w, mut win_h) = effective_size(&state);
 
@@ -191,7 +191,7 @@ fn main() {
         }
 
         while let Some(tick) = state.wayland.poll_tick() {
-            let build_start = subduction_backend_wayland::now();
+            let build_start = frameclock_wayland::now();
 
             let safety = Duration(scheduler.safety_margin_ticks());
             let hints = subduction_backend_wayland::compute_present_hints(&tick, safety);
@@ -224,7 +224,7 @@ fn main() {
                 .commit_frame(&qh, &connection)
                 .expect("commit_frame failed");
 
-            let submitted_at = subduction_backend_wayland::now();
+            let submitted_at = frameclock_wayland::now();
             let feedback =
                 PresentFeedback::new(&plan, build_start, submitted_at, tick.prev_actual_present);
             scheduler.observe(&feedback);

@@ -98,10 +98,6 @@ impl OutputRegistry {
 
     /// Returns the lowest [`OutputId`] currently tracked, or `None` if the
     /// registry is empty.
-    #[allow(
-        dead_code,
-        reason = "called by tick::select_tick_output in future dispatch path"
-    )]
     pub(crate) fn lowest_id(&self) -> Option<OutputId> {
         self.entries.iter().map(|e| e.id).min()
     }
@@ -132,9 +128,18 @@ impl std::fmt::Debug for OutputRegistry {
     }
 }
 
+/// Selects the output to associate with the next frame tick.
+///
+/// This is a seam for future output routing logic. Currently returns the
+/// lowest tracked output, falling back to `OutputId::default()` when the
+/// registry is empty.
+pub(crate) fn select_tick_output(registry: &OutputRegistry) -> OutputId {
+    registry.lowest_id().unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OutputRegistry;
+    use super::{OutputRegistry, select_tick_output};
     use frameclock::OutputId;
     use wayland_client::protocol::wl_output;
     use wayland_client::{Connection, Proxy};
@@ -241,6 +246,21 @@ mod tests {
     fn lowest_id_returns_none_for_empty() {
         let reg = OutputRegistry::new();
         assert_eq!(reg.lowest_id(), None);
+    }
+
+    #[test]
+    fn select_tick_output_returns_lowest() {
+        let mut reg = OutputRegistry::new();
+        reg.add(10, inert_output());
+        reg.add(11, inert_output());
+        reg.add(12, inert_output());
+        assert_eq!(select_tick_output(&reg), OutputId(0));
+    }
+
+    #[test]
+    fn select_tick_output_returns_default_when_empty() {
+        let reg = OutputRegistry::new();
+        assert_eq!(select_tick_output(&reg), OutputId::default());
     }
 
     #[test]

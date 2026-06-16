@@ -558,7 +558,7 @@ fn main() {
     queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&FULLSCREEN_QUAD));
 
     // Track the start time for animation.
-    let start_time = subduction_backend_wayland::now();
+    let start_time = frameclock_wayland::now();
 
     // Step 6: First-frame bootstrap — render one frame before entering the
     // tick-driven loop, so the surface is mapped and the first frame callback

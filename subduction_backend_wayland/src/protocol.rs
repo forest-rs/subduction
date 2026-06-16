@@ -20,8 +20,8 @@
 
 use crate::commit::FeedbackData;
 use crate::event_loop::WaylandState;
-use crate::presentation::{PresentEvent, presentation_time_to_host_time};
-use crate::time::clock_from_presentation_clk_id;
+use crate::output_registry::select_tick_output;
+use frameclock_wayland::{Clock, PresentEvent, presentation_time_to_host_time};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::{
     wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_subsurface, wl_surface,
@@ -249,7 +249,7 @@ where
     ) {
         let ws: &mut WaylandState = state.as_mut();
         if let wp_presentation::Event::ClockId { clk_id } = event {
-            if let Some(clock) = clock_from_presentation_clk_id(clk_id) {
+            if let Some(clock) = Clock::from_presentation_clock_id(clk_id) {
                 ws.clock = clock;
                 ws.capabilities.presentation_clock_domain_aligned = true;
             } else {
@@ -277,7 +277,8 @@ where
     ) {
         if let wl_callback::Event::Done { .. } = event {
             let ws: &mut WaylandState = state.as_mut();
-            ws.ticker.on_callback_done(ws.clock, &ws.output_registry);
+            ws.ticker
+                .on_callback_done(ws.clock, select_tick_output(&ws.output_registry));
         }
         // The callback_data field is a millisecond timestamp from an
         // unspecified epoch — not safely comparable to HostTime or

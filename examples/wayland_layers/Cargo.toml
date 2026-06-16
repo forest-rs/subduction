@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 frameclock = { workspace = true, features = ["std"] }
+frameclock_wayland = { workspace = true }
 subduction_core = { workspace = true }
 subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
 wayland_example_common = { path = "../wayland_example_common" }

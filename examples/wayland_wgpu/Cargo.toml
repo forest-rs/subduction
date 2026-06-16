@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+frameclock_wayland = { workspace = true }
 subduction_core = { workspace = true, features = ["std"] }
 subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
 wgpu = { workspace = true }

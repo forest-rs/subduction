@@ -218,14 +218,13 @@
 
 use crate::commit::{CommitFrameError, CommitState, FeedbackData};
 use crate::output_registry::OutputRegistry;
-use crate::presentation::{PendingFeedback, PresentEvent, PresentEventQueue, SubmissionId};
+use crate::presentation::PendingFeedback;
 use crate::protocol::{
     Capabilities, FrameCallbackData, LayerSubsurfaceData, LayerSurfaceData, OutputGlobalData,
     WaylandProtocol,
 };
-use crate::tick::TickerState;
-use crate::time::{Clock, now_for_clock};
 use frameclock::{FrameTick, HostTime};
+use frameclock_wayland::{Clock, PresentEvent, PresentEventQueue, SubmissionId, TickerState};
 use std::collections::HashMap;
 use wayland_client::protocol::{
     wl_callback, wl_compositor, wl_output, wl_registry, wl_subcompositor, wl_subsurface, wl_surface,
@@ -411,11 +410,10 @@ impl WaylandState {
         D: Dispatch<wl_callback::WlCallback, FrameCallbackData> + AsMut<Self> + 'static,
     {
         let surface = self.surface.as_ref().ok_or(RequestFrameError::NoSurface)?;
-        if self.ticker.is_callback_in_flight() {
+        if !self.ticker.mark_callback_requested() {
             return Err(RequestFrameError::AlreadyInFlight);
         }
         let _callback = surface.frame(qh, FrameCallbackData);
-        self.ticker.mark_callback_requested();
         Ok(())
     }
 
@@ -453,9 +451,8 @@ impl WaylandState {
         let presentation = self.presentation.clone();
 
         // 1. Request next frame callback (best-effort; skip if already in flight).
-        if !self.ticker.is_callback_in_flight() {
+        if self.ticker.mark_callback_requested() {
             let _cb = surface.frame(qh, FrameCallbackData);
-            self.ticker.mark_callback_requested();
         }
 
         // 2. Allocate submission ID.
@@ -488,7 +485,7 @@ impl WaylandState {
     #[allow(dead_code, reason = "called from future wl_callback dispatch handler")]
     #[must_use]
     pub(crate) fn now(&self) -> HostTime {
-        now_for_clock(self.clock)
+        self.clock.now()
     }
 }
 
@@ -758,6 +755,7 @@ impl WaylandState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output_registry::select_tick_output;
     use frameclock::OutputId;
     use wayland_client::Proxy;
     use wayland_client::backend::ObjectId;
@@ -788,7 +786,7 @@ mod tests {
         let (_eq, qh) = test_queue_handle();
         let mut state = WaylandState::new();
         state.set_surface(inert_surface()).unwrap();
-        state.ticker.mark_callback_requested();
+        assert!(state.ticker.mark_callback_requested());
         assert_eq!(
             state.request_frame(&qh),
             Err(RequestFrameError::AlreadyInFlight),
@@ -833,7 +831,9 @@ mod tests {
         let id0 = state.commit_frame(&qh, &conn).unwrap();
         // Clear in-flight so next commit_frame can request a new callback.
         let empty_reg = OutputRegistry::new();
-        state.ticker.on_callback_done(state.clock, &empty_reg);
+        state
+            .ticker
+            .on_callback_done(state.clock, select_tick_output(&empty_reg));
 
         let id1 = state.commit_frame(&qh, &conn).unwrap();
         assert!(id1 > id0);
@@ -1010,8 +1010,10 @@ mod tests {
         // The ticker should have the actual present time stored.
         // Verify by generating a tick and checking prev_actual_present.
         let reg = OutputRegistry::new();
-        state.ticker.mark_callback_requested();
-        state.ticker.on_callback_done(state.clock, &reg);
+        assert!(state.ticker.mark_callback_requested());
+        state
+            .ticker
+            .on_callback_done(state.clock, select_tick_output(&reg));
         let tick = state.ticker.poll_tick().unwrap();
         assert_eq!(tick.prev_actual_present, Some(HostTime(42_000)));
     }

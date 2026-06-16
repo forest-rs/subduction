@@ -10,6 +10,11 @@
 //! - Optional `wp_presentation` for actual present time feedback
 //! - `wl_surface` commit presenter
 //!
+//! Wayland frame timing lives in `frameclock_wayland`. Use that crate for the
+//! presentation clock (`Clock`), frame-callback tick state (`TickerState`), and
+//! presentation-feedback types (`PresentEvent`, `PresentEventQueue`,
+//! `SubmissionId`).
+//!
 //! # Integration modes
 //!
 //! The backend supports two queue-ownership models so it can fit into both
@@ -117,16 +122,16 @@
 //!
 //! ## Presentation feedback
 //!
-//! `commit_frame` returns a [`SubmissionId`] that identifies the commit.
-//! Feedback arrives as [`PresentEvent`]s correlated by `SubmissionId`:
+//! `commit_frame` returns a [`SubmissionId`](frameclock_wayland::SubmissionId) that identifies the commit.
+//! Feedback arrives as [`PresentEvent`](frameclock_wayland::PresentEvent)s correlated by `SubmissionId`:
 //!
 //! - **Simple path**: use
 //!   [`FrameTick::prev_actual_present`](frameclock::FrameTick::prev_actual_present)
 //!   which is populated automatically from the most recent feedback.
-//! - **Robust path**: drain [`PresentEvent`]s via
+//! - **Robust path**: drain [`PresentEvent`](frameclock_wayland::PresentEvent)s via
 //!   [`WaylandState::poll_present_event`] (or
 //!   [`OwnedQueueMode::poll_present_event`]) and correlate them by
-//!   [`SubmissionId`] to feed a timing scheduler's `observe()` method.
+//!   [`SubmissionId`](frameclock_wayland::SubmissionId) to feed a timing scheduler's `observe()` method.
 
 mod commit;
 mod event_loop;
@@ -135,9 +140,6 @@ mod output_registry;
 mod presentation;
 pub mod presenter;
 mod protocol;
-mod queue;
-mod tick;
-mod time;
 
 pub use commit::{CommitFrameError, FeedbackData};
 pub use event_loop::{
@@ -145,11 +147,9 @@ pub use event_loop::{
     WaylandState,
 };
 pub use hints::compute_present_hints;
-pub use presentation::{PresentEvent, PresentEventQueue, SubmissionId};
 pub use presenter::{PositionRounding, WaylandPresenter, WaylandPresenterConfig};
 pub use protocol::{
     Capabilities, FrameCallbackData, LayerSubsurfaceData, LayerSurfaceData, OutputGlobalData,
     WaylandProtocol,
 };
 pub use subduction_core::backend::Presenter;
-pub use time::{Clock, now, timebase};

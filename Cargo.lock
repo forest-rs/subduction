@@ -1842,7 +1842,7 @@ name = "subduction_backend_wayland"
 version = "0.0.1"
 dependencies = [
  "frameclock",
- "rustix 1.1.4",
+ "frameclock_wayland",
  "subduction_core",
  "wayland-client",
  "wayland-protocols",
@@ -2295,6 +2295,7 @@ name = "wayland_layers"
 version = "0.0.1"
 dependencies = [
  "frameclock",
+ "frameclock_wayland",
  "subduction_backend_wayland",
  "subduction_core",
  "wayland-client",
@@ -2306,6 +2307,7 @@ name = "wayland_lotta_layers"
 version = "0.0.1"
 dependencies = [
  "frameclock",
+ "frameclock_wayland",
  "lotta_layers_common",
  "subduction_backend_wayland",
  "subduction_core",
@@ -2318,6 +2320,7 @@ name = "wayland_wgpu"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "frameclock_wayland",
  "pollster",
  "subduction_backend_wayland",
  "subduction_core",

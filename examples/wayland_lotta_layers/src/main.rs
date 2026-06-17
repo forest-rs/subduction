@@ -19,7 +19,7 @@ use wayland_client::Connection;
 
 use frameclock::scheduler::Scheduler;
 use frameclock::timing::PresentFeedback;
-use frameclock::{DisplayTiming, Duration, FrameDemand, FrameOpportunity, SchedulerConfig};
+use frameclock::{Duration, FrameDemand, FrameOpportunity, SchedulerConfig};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::LayerStore;
 
@@ -161,7 +161,7 @@ fn main() {
 
     // --- Animation state ---
     let start_nanos = frameclock_wayland::now().ticks();
-    let mut scheduler = Scheduler::new(SchedulerConfig::pacing_only());
+    let mut scheduler = Scheduler::new(SchedulerConfig::estimated());
     let (mut win_w, mut win_h) = effective_size(&state);
 
     // Initial commit to map the xdg toplevel and request the first frame.
@@ -193,12 +193,11 @@ fn main() {
         while let Some(tick) = state.wayland.poll_tick() {
             let build_start = frameclock_wayland::now();
 
-            let safety = Duration(scheduler.safety_margin_ticks());
-            let hints = subduction_backend_wayland::compute_present_hints(&tick, safety);
+            let hints = frameclock_wayland::present_hints(&tick, Duration(16_666_667));
             let opportunity = FrameOpportunity::new(
                 tick,
                 hints,
-                DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+                frameclock_wayland::display_timing(&tick, Duration(16_666_667)),
             );
             let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
 

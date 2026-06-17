@@ -741,6 +741,9 @@ impl WaylandState {
             flags,
         });
         self.ticker.set_last_observed_actual_present(actual_present);
+        if let Some(interval) = refresh_interval {
+            self.ticker.set_last_observed_refresh_interval(interval);
+        }
         self.commit.decrement_pending();
     }
 

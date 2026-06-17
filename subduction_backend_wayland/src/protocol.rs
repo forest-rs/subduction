@@ -345,6 +345,9 @@ where
                     flags: raw_flags,
                 });
                 ws.ticker.set_last_observed_actual_present(actual_present);
+                if let Some(interval) = refresh_interval {
+                    ws.ticker.set_last_observed_refresh_interval(interval);
+                }
                 ws.commit.decrement_pending();
             }
             wp_presentation_feedback::Event::Discarded => {

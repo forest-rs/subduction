@@ -112,7 +112,7 @@
 //! 2. **Poll tick** — drain [`FrameTick`](frameclock::FrameTick)
 //!    values via [`poll_tick`](WaylandState::poll_tick).
 //! 3. **Compute present hints** — call
-//!    [`compute_present_hints`] with the tick.
+//!    [`present_hints`](frameclock_wayland::present_hints) with the tick.
 //! 4. **Plan** — decide what to render for this frame.
 //! 5. **Build / evaluate** — render the frame, attach the buffer, and
 //!    apply damage.
@@ -135,7 +135,6 @@
 
 mod commit;
 mod event_loop;
-mod hints;
 mod output_registry;
 mod presentation;
 pub mod presenter;
@@ -146,7 +145,6 @@ pub use event_loop::{
     CreatePresenterError, EmbeddedStateMode, OwnedQueueMode, RequestFrameError, SetSurfaceError,
     WaylandState,
 };
-pub use hints::compute_present_hints;
 pub use presenter::{PositionRounding, WaylandPresenter, WaylandPresenterConfig};
 pub use protocol::{
     Capabilities, FrameCallbackData, LayerSubsurfaceData, LayerSurfaceData, OutputGlobalData,

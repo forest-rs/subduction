@@ -71,9 +71,15 @@ impl Default for TickQueue {
 /// callbacks, and pass a stable [`OutputId`] for the stream to
 /// [`on_callback_done`](Self::on_callback_done).
 ///
-/// The ticker keeps a single most-recent actual-present timestamp (see
+/// The ticker keeps the most-recent actual-present timestamp (see
 /// [`set_last_observed_actual_present`](Self::set_last_observed_actual_present))
-/// and stamps it onto the next tick's [`FrameTick::prev_actual_present`]. Feed
+/// and the most-recent observed refresh interval (see
+/// [`set_last_observed_refresh_interval`](Self::set_last_observed_refresh_interval)).
+/// It stamps the actual-present time onto the next tick's
+/// [`FrameTick::prev_actual_present`], and when both facts are known it predicts
+/// the next vsync at or after the tick time and emits it as
+/// [`FrameTick::predicted_present`] alongside the [`FrameTick::refresh_interval`].
+/// Feed
 /// it only presentation feedback for the same surface/output stream: mixing in
 /// feedback from an unrelated surface or output would attribute one surface's
 /// presentation to another. Hosts that multiplex several surfaces on one event
@@ -87,6 +93,7 @@ pub struct TickerState {
     tick_index: u64,
     callback_in_flight: bool,
     last_observed_actual_present: Option<HostTime>,
+    last_observed_refresh_interval: Option<u64>,
 }
 
 impl TickerState {
@@ -98,15 +105,21 @@ impl TickerState {
             tick_index: 0,
             callback_in_flight: false,
             last_observed_actual_present: None,
+            last_observed_refresh_interval: None,
         }
     }
 
     /// Records that a `wl_callback.done` event has arrived.
     ///
-    /// If a callback is in flight, builds a pacing-only [`FrameTick`] for
-    /// `output` with the current time read from `clock`, enqueues it,
-    /// increments the tick index, and clears the in-flight flag. If no
-    /// callback is in flight, debug-asserts and returns.
+    /// If a callback is in flight, builds a [`FrameTick`] for `output` with the
+    /// current time read from `clock`, enqueues it, increments the tick index,
+    /// and clears the in-flight flag. If no callback is in flight, debug-asserts
+    /// and returns.
+    ///
+    /// When a previous actual-present time and refresh interval have been
+    /// observed, the tick carries a predicted next-vsync
+    /// [`FrameTick::predicted_present`] and [`FrameTick::refresh_interval`];
+    /// otherwise it is pacing-only.
     ///
     /// `output` should identify this stream's current target output and stay
     /// stable for the stream's lifetime; refresh it only when the surface
@@ -121,15 +134,17 @@ impl TickerState {
         }
 
         let now = clock.now();
-        let prev_actual_present = self.last_observed_actual_present;
+        let last_actual = self.last_observed_actual_present;
+        let refresh_interval = self.last_observed_refresh_interval;
+        let predicted_present = predict_next_present(last_actual, refresh_interval, now);
 
         let tick = FrameTick {
             now,
-            predicted_present: None,
-            refresh_interval: None,
+            predicted_present,
+            refresh_interval,
             frame_index: self.tick_index,
             output,
-            prev_actual_present,
+            prev_actual_present: last_actual,
         };
 
         self.queue.push(tick);
@@ -174,6 +189,34 @@ impl TickerState {
     pub fn set_last_observed_actual_present(&mut self, t: HostTime) {
         self.last_observed_actual_present = Some(t);
     }
+
+    /// Stores the most recent observed refresh interval (in host ticks) for
+    /// predicting the next [`FrameTick::predicted_present`].
+    ///
+    /// Feed this only with presentation feedback for the same surface/output
+    /// stream this ticker paces (see the [type-level contract](Self#one-stream-per-surface)).
+    pub fn set_last_observed_refresh_interval(&mut self, interval: u64) {
+        self.last_observed_refresh_interval = Some(interval);
+    }
+}
+
+/// Predicts the next vsync at or after `now` from the last observed present.
+///
+/// Returns `None` when no presentation feedback has been observed yet or the
+/// refresh interval is unknown, leaving the tick pacing-only. Otherwise it
+/// advances the last observed actual-present time by whole refresh intervals
+/// until it reaches `now`, landing on the compositor's vsync grid.
+fn predict_next_present(
+    last_actual: Option<HostTime>,
+    refresh_interval: Option<u64>,
+    now: HostTime,
+) -> Option<HostTime> {
+    let last = last_actual?;
+    let refresh = refresh_interval.filter(|interval| *interval > 0)?;
+    let elapsed = now.ticks().saturating_sub(last.ticks());
+    let intervals = elapsed.div_ceil(refresh);
+    let advance = intervals.checked_mul(refresh)?;
+    last.ticks().checked_add(advance).map(HostTime)
 }
 
 impl Default for TickerState {
@@ -184,7 +227,7 @@ impl Default for TickerState {
 
 #[cfg(test)]
 mod tests {
-    use super::{TickQueue, TickerState};
+    use super::{TickQueue, TickerState, predict_next_present};
     use crate::time::Clock;
     use frameclock::FrameTick;
     use frameclock::HostTime;
@@ -352,5 +395,62 @@ mod tests {
         // First available tick should be index 1 (index 0 was dropped).
         let tick = ticker.poll_tick().unwrap();
         assert_eq!(tick.frame_index, 1);
+    }
+
+    // --- Present prediction tests ---
+
+    #[test]
+    fn predict_next_present_rounds_up_to_next_vsync() {
+        // last + 4*refresh = 1640 is the first vsync at or after now = 1500.
+        let predicted = predict_next_present(Some(HostTime(1000)), Some(160), HostTime(1500));
+        assert_eq!(predicted, Some(HostTime(1640)));
+    }
+
+    #[test]
+    fn predict_next_present_on_exact_vsync_returns_now() {
+        // now = 1000 + 3*160 lands exactly on a vsync, so the prediction is now.
+        let predicted = predict_next_present(Some(HostTime(1000)), Some(160), HostTime(1480));
+        assert_eq!(predicted, Some(HostTime(1480)));
+    }
+
+    #[test]
+    fn predict_next_present_when_last_at_or_after_now_returns_last() {
+        let predicted = predict_next_present(Some(HostTime(2000)), Some(160), HostTime(1500));
+        assert_eq!(predicted, Some(HostTime(2000)));
+    }
+
+    #[test]
+    fn predict_next_present_without_actual_present_is_none() {
+        assert_eq!(predict_next_present(None, Some(160), HostTime(1500)), None);
+    }
+
+    #[test]
+    fn predict_next_present_without_refresh_is_none() {
+        assert_eq!(
+            predict_next_present(Some(HostTime(1000)), None, HostTime(1500)),
+            None
+        );
+        assert_eq!(
+            predict_next_present(Some(HostTime(1000)), Some(0), HostTime(1500)),
+            None
+        );
+    }
+
+    #[test]
+    fn on_callback_done_emits_predicted_present_from_feedback() {
+        let mut ticker = TickerState::new();
+        ticker.set_last_observed_actual_present(HostTime(1000));
+        ticker.set_last_observed_refresh_interval(16_666_667);
+
+        assert!(ticker.mark_callback_requested());
+        ticker.on_callback_done(Clock::Monotonic, OutputId(0));
+        let tick = ticker.poll_tick().expect("should have a tick");
+
+        assert_eq!(tick.refresh_interval, Some(16_666_667));
+        assert_eq!(tick.prev_actual_present, Some(HostTime(1000)));
+        let predicted = tick.predicted_present.expect("prediction available");
+        // The prediction is the first vsync at or after the tick time.
+        assert!(predicted >= tick.now);
+        assert!(predicted.ticks() - tick.now.ticks() < 16_666_667);
     }
 }

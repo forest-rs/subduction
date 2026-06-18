@@ -13,7 +13,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRunLoop};
-use objc2_quartz_core::{CADisplayLink as CADisplayLinkRaw, CAFrameRateRange};
+use objc2_quartz_core::{CACurrentMediaTime, CADisplayLink as CADisplayLinkRaw, CAFrameRateRange};
 
 use crate::{PreferredFrameRateRange, mach_time, preferred_frame_rate_range};
 
@@ -63,25 +63,26 @@ impl DisplayLinkTarget {
         let duration: f64 = unsafe { msg_send![sender, duration] };
         let timestamp: f64 = unsafe { msg_send![sender, timestamp] };
 
+        // These samples intentionally define one same-callback conversion pair
+        // from Core Animation media time into the Mach host-time domain.
         let now = mach_time::now();
-        let predicted_present = HostTime(mach_time::seconds_to_ticks(target_ts, ivars.timebase));
+        let ca_now = CACurrentMediaTime();
+        let predicted_present =
+            mach_time::media_time_to_host_time(target_ts, now, ca_now, ivars.timebase);
         let refresh_interval = mach_time::seconds_to_ticks(duration, ivars.timebase);
 
         let frame_index = ivars.frame_counter.get();
         ivars.frame_counter.set(frame_index + 1);
 
         let prev_actual_present = if frame_index > 0 {
-            Some(HostTime(mach_time::seconds_to_ticks(
-                timestamp,
-                ivars.timebase,
-            )))
+            mach_time::media_time_to_host_time(timestamp, now, ca_now, ivars.timebase)
         } else {
             None
         };
 
         let tick = FrameTick {
             now,
-            predicted_present: Some(predicted_present),
+            predicted_present,
             refresh_interval: Some(refresh_interval),
             frame_index,
             output: ivars.output,

@@ -1,7 +1,7 @@
-// Copyright 2026 the Subduction Authors
+// Copyright 2026 the Frameclock Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! QPC-based timing functions for subduction's [`HostTime`] / [`Timebase`].
+//! QPC-based timing functions for [`HostTime`] / [`Timebase`].
 
 use std::sync::OnceLock;
 
@@ -23,7 +23,7 @@ fn cached_frequency() -> i64 {
 /// Current monotonic time as a [`HostTime`] (raw QPC ticks).
 #[must_use]
 #[expect(clippy::cast_sign_loss, reason = "QPC values are always non-negative")]
-pub(crate) fn now() -> HostTime {
+pub fn now() -> HostTime {
     let mut count = 0_i64;
     unsafe { QueryPerformanceCounter(&mut count).unwrap() };
     HostTime(count as u64)
@@ -34,7 +34,7 @@ pub(crate) fn now() -> HostTime {
 /// `nanos = ticks * numer / denom`
 /// → `numer = 1_000_000_000`, `denom = QPC frequency`
 #[must_use]
-pub(crate) fn timebase() -> Timebase {
+pub fn timebase() -> Timebase {
     let freq = cached_frequency();
     debug_assert!(
         freq > 0 && freq <= i64::from(u32::MAX),
@@ -47,5 +47,24 @@ pub(crate) fn timebase() -> Timebase {
             reason = "QPC frequency fits in u32 on all known hardware (typically 10 MHz)"
         )]
         denom: freq as u32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{now, timebase};
+
+    #[test]
+    fn timebase_is_valid() {
+        let tb = timebase();
+        assert_eq!(tb.numer, 1_000_000_000);
+        assert!(tb.denom > 0, "QPC frequency must be positive");
+    }
+
+    #[test]
+    fn now_is_monotonic() {
+        let a = now();
+        let b = now();
+        assert!(b.ticks() >= a.ticks(), "QPC must be monotonic");
     }
 }

@@ -15,11 +15,11 @@ workspace = true
 
 [dependencies]
 frameclock = { workspace = true, features = ["std"] }
+frameclock_windows = { workspace = true }
 subduction_core = { workspace = true, features = ["std"] }
 kurbo = { workspace = true }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
-  "Win32_System_Performance",
   "Win32_System_Threading",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_DirectComposition",

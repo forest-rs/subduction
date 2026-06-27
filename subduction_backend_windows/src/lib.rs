@@ -11,6 +11,11 @@
 //! - [`TickSource`] / [`FrameEventTickSource`]: `VSync`-paced tick sources
 //! - [`now`] / [`timebase`]: QPC-based timing
 //!
+//! Windows clock reads and tick construction live in `frameclock_windows`.
+//! Use that crate directly for [`now`](frameclock_windows::now),
+//! [`timebase`](frameclock_windows::timebase), and
+//! [`make_tick`](frameclock_windows::make_tick).
+//!
 //! # Frame loop
 //!
 //! ```text
@@ -40,7 +45,6 @@ pub mod composition;
 pub mod presenter;
 pub mod surface;
 pub mod tick;
-mod timing;
 
 pub use composition::{AnimationProperty, CompositionManager, LayerId, PendingAnimation};
 pub use presenter::DCompPresenter;
@@ -55,7 +59,7 @@ use frameclock::{FrameTick, HostTime, PresentHints};
 /// Returns the current host time using QPC (`QueryPerformanceCounter`).
 #[must_use]
 pub fn now() -> HostTime {
-    timing::now()
+    frameclock_windows::now()
 }
 
 /// Returns the QPC [`Timebase`].
@@ -64,7 +68,7 @@ pub fn now() -> HostTime {
 /// `denom = QPC frequency`.
 #[must_use]
 pub fn timebase() -> Timebase {
-    timing::timebase()
+    frameclock_windows::timebase()
 }
 
 /// Computes [`PresentHints`] from a [`FrameTick`] and a safety margin (nanoseconds).

@@ -1,0 +1,18 @@
+[package]
+name = "frameclock_windows"
+description = "Windows timing adapters for frameclock"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["frame-pacing", "timing", "windows", "qpc"]
+categories = ["os::windows-apis", "rendering::engine"]
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true }
+windows = { version = "0.62", features = ["Win32_System_Performance"] }

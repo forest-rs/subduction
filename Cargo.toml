@@ -6,6 +6,7 @@ members = [
   "frameclock_web",
   "frameclock_apple",
   "frameclock_wayland",
+  "frameclock_windows",
   "subduction_backend_apple",
   "subduction_backend_web",
   "subduction_backend_wgpu",
@@ -69,6 +70,7 @@ frameclock = { version = "0.0.1", path = "frameclock" }
 mediaclock = { version = "0.0.1", path = "mediaclock" }
 frameclock_apple = { version = "0.0.1", path = "frameclock_apple", default-features = false }
 frameclock_wayland = { version = "0.0.1", path = "frameclock_wayland" }
+frameclock_windows = { version = "0.0.1", path = "frameclock_windows" }
 frameclock_web = { version = "0.0.1", path = "frameclock_web" }
 subduction_core = { path = "subduction_core" }
 subduction_sync_harness = { path = "subduction_sync_harness" }

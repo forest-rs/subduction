@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use frameclock::timing::PresentationTiming;
-use frameclock::{FrameTick, HostTime, OutputId, PresentHints};
+use frameclock::{FrameTick, HostTime, PresentHints};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;
@@ -183,43 +183,13 @@ pub fn make_tick(
     frame_index: u64,
     prev_present_time: Option<HostTime>,
 ) -> FrameTick {
-    let timebase = crate::timing::timebase();
-    let interval_ticks = if refresh_interval_ns > 0 {
-        refresh_interval_ns * u64::from(timebase.denom) / u64::from(timebase.numer)
-    } else {
-        0
-    };
-
-    let now = crate::timing::now();
-
-    let predicted_present = if interval_ticks > 0 {
-        if let Some(prev) = prev_present_time {
-            Some(HostTime(prev.ticks() + interval_ticks))
-        } else {
-            Some(HostTime(now.ticks() + interval_ticks))
-        }
-    } else {
-        None
-    };
-
-    FrameTick {
-        now,
-        predicted_present,
-        refresh_interval: if refresh_interval_ns > 0 {
-            Some(refresh_interval_ns)
-        } else {
-            None
-        },
-        frame_index,
-        output: OutputId(0),
-        prev_actual_present: prev_present_time,
-    }
+    frameclock_windows::make_tick(refresh_interval_ns, frame_index, prev_present_time)
 }
 
 /// Compute presentation hints from a tick and safety margin (nanoseconds).
 #[must_use]
 pub fn compute_hints(tick: &FrameTick, safety_margin_ns: u64) -> PresentHints {
-    let timebase = crate::timing::timebase();
+    let timebase = frameclock_windows::timebase();
     let margin_ticks = safety_margin_ns * u64::from(timebase.denom) / u64::from(timebase.numer);
 
     PresentHints::new(

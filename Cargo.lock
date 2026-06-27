@@ -491,6 +491,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "frameclock_windows"
+version = "0.0.1"
+dependencies = [
+ "frameclock",
+ "windows",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1874,6 +1882,7 @@ name = "subduction_backend_windows"
 version = "0.0.1"
 dependencies = [
  "frameclock",
+ "frameclock_windows",
  "kurbo",
  "subduction_core",
  "windows",

@@ -22,12 +22,12 @@ use crate::timing::{FrameDemand, FramePlan, FrameTick, PresentFeedback, Presenta
 
 /// Diagnostics event created from a [`FrameTick`] when a frame opportunity arrives.
 ///
-/// Platform adapters or [`FrameDriver`](crate::FrameDriver) create this with
-/// [`FrameTickEvent::from`] and pass it to a [`DiagnosticsSink`] or
+/// Platform adapters or [`FrameDriver`](crate::FrameDriver) create this with a
+/// lifecycle-owned frame index and pass it to a [`DiagnosticsSink`] or
 /// [`FrameTimingSummaryBuilder`].
 #[derive(Clone, Copy, Debug)]
 pub struct FrameTickEvent {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Target output for this tick.
     pub output: OutputId,
@@ -39,10 +39,18 @@ pub struct FrameTickEvent {
     pub refresh_interval: Option<u64>,
 }
 
-impl From<&FrameTick> for FrameTickEvent {
-    fn from(tick: &FrameTick) -> Self {
+impl FrameTickEvent {
+    /// Creates a diagnostics event from a frame index and platform tick facts.
+    ///
+    /// `frame_index` is the content-frame id carried by the matching
+    /// [`FramePlan`]. [`FrameDriver`](crate::FrameDriver) assigns this
+    /// internally for reported frames; low-level integrations that call
+    /// [`Scheduler::plan`](crate::scheduler::Scheduler::plan) directly should
+    /// pass the same index to both `Scheduler::plan` and this constructor.
+    #[must_use]
+    pub const fn new(frame_index: u64, tick: &FrameTick) -> Self {
         Self {
-            frame_index: tick.frame_index,
+            frame_index,
             output: tick.output,
             now: tick.now,
             predicted_present: tick.predicted_present,
@@ -59,7 +67,7 @@ impl From<&FrameTick> for FrameTickEvent {
 /// to create it manually for frame summaries.
 #[derive(Clone, Copy, Debug)]
 pub struct FramePlanEvent {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Target output for this plan.
     pub output: OutputId,
@@ -111,7 +119,7 @@ impl FramePlanEvent {
 /// from [`FrameSubmission`](crate::FrameSubmission).
 #[derive(Clone, Copy, Debug)]
 pub struct SubmitEvent {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Host time of submission.
     pub submitted_at: HostTime,
@@ -127,7 +135,7 @@ pub struct SubmitEvent {
 /// it internally during [`submit_frame`](crate::FrameDriver::submit_frame).
 #[derive(Clone, Copy, Debug)]
 pub struct PresentFeedbackEvent {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Actual presentation time, if reported by the platform.
     pub actual_present: Option<HostTime>,
@@ -174,7 +182,7 @@ pub enum FrameDropReason {
 /// [`Scheduler::observe`](crate::scheduler::Scheduler::observe).
 #[derive(Clone, Copy, Debug)]
 pub struct FrameDropEvent {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Target output for the dropped frame.
     pub output: OutputId,
@@ -229,7 +237,7 @@ pub enum FrameTimingBasis {
 /// renderer-owned concepts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameTimingSummary {
-    /// Monotonic frame counter.
+    /// Monotonic content-frame counter.
     pub frame_index: u64,
     /// Target output for this frame.
     pub output: OutputId,
@@ -361,14 +369,23 @@ impl FrameTimingSummaryBuilder {
 
     /// Produces a frame timing summary.
     ///
-    /// Returns `None` when the required tick and plan are missing or refer to
-    /// different frames. Optional submit and feedback events are included only
-    /// when their frame index matches the plan.
+    /// Returns `None` when the required tick and plan are missing. When both
+    /// are present but refer to different frames, debug builds assert and
+    /// release builds return `None`. Optional submit and feedback events are
+    /// included only when their frame index matches the plan.
     #[must_use]
     pub fn finish(self) -> Option<FrameTimingSummary> {
         let tick = self.tick?;
         let plan = self.plan?;
         if tick.frame_index != plan.frame_index || tick.output != plan.output {
+            debug_assert!(
+                tick.frame_index == plan.frame_index && tick.output == plan.output,
+                "frame timing summary requires matching tick and plan: tick frame_index={} output={:?}, plan frame_index={} output={:?}",
+                tick.frame_index,
+                tick.output,
+                plan.frame_index,
+                plan.output
+            );
             return None;
         }
 
@@ -634,14 +651,24 @@ mod tests {
         assert!(builder.finish().is_none());
     }
 
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "frame timing summary requires matching tick and plan")
+    )]
     #[test]
     fn timing_summary_rejects_mismatched_tick_and_plan() {
         let mut tick = sample_tick();
         tick.frame_index = 8;
 
-        let summary = FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &sample_plan()).finish();
+        #[cfg(debug_assertions)]
+        let _ = FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &sample_plan()).finish();
 
-        assert!(summary.is_none());
+        #[cfg(not(debug_assertions))]
+        {
+            let summary =
+                FrameTimingSummaryBuilder::from_tick_and_plan(&tick, &sample_plan()).finish();
+            assert!(summary.is_none());
+        }
     }
 
     #[test]

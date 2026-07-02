@@ -688,7 +688,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     let present_bucket = (phase_target * emu_refresh_hz).floor().max(0.0) as u64;
     let timecode_text = format!(
         "F {:06} | PT_BUCKET {:08} | beat {:05} | timing {}",
-        tick.frame_index, present_bucket, beat_idx, presentation_timing_label
+        plan.frame_index, present_bucket, beat_idx, presentation_timing_label
     );
     s.ui.timecode.set_text_content(Some(&timecode_text));
 

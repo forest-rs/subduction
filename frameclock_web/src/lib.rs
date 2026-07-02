@@ -107,7 +107,6 @@ mod tests {
             now: HostTime(16_000),
             predicted_present: None,
             refresh_interval: None,
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         }

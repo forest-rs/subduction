@@ -90,7 +90,6 @@ impl Default for TickQueue {
 #[derive(Debug)]
 pub struct TickerState {
     queue: TickQueue,
-    tick_index: u64,
     callback_in_flight: bool,
     last_observed_actual_present: Option<HostTime>,
     last_observed_refresh_interval: Option<u64>,
@@ -102,7 +101,6 @@ impl TickerState {
     pub fn new() -> Self {
         Self {
             queue: TickQueue::default(),
-            tick_index: 0,
             callback_in_flight: false,
             last_observed_actual_present: None,
             last_observed_refresh_interval: None,
@@ -112,9 +110,8 @@ impl TickerState {
     /// Records that a `wl_callback.done` event has arrived.
     ///
     /// If a callback is in flight, builds a [`FrameTick`] for `output` with the
-    /// current time read from `clock`, enqueues it, increments the tick index,
-    /// and clears the in-flight flag. If no callback is in flight, debug-asserts
-    /// and returns.
+    /// current time read from `clock`, enqueues it, and clears the in-flight
+    /// flag. If no callback is in flight, debug-asserts and returns.
     ///
     /// When a previous actual-present time and refresh interval have been
     /// observed, the tick carries a predicted next-vsync
@@ -142,13 +139,11 @@ impl TickerState {
             now,
             predicted_present,
             refresh_interval,
-            frame_index: self.tick_index,
             output,
             prev_actual_present: last_actual,
         };
 
         self.queue.push(tick);
-        self.tick_index += 1;
         self.callback_in_flight = false;
     }
 
@@ -233,12 +228,11 @@ mod tests {
     use frameclock::HostTime;
     use frameclock::OutputId;
 
-    fn test_tick(frame_index: u64) -> FrameTick {
+    fn test_tick(now: u64) -> FrameTick {
         FrameTick {
-            now: HostTime(frame_index),
+            now: HostTime(now),
             predicted_present: None,
             refresh_interval: None,
-            frame_index,
             output: OutputId(0),
             prev_actual_present: None,
         }
@@ -253,8 +247,8 @@ mod tests {
         queue.push(test_tick(2));
         queue.push(test_tick(3));
 
-        assert_eq!(queue.pop().map(|tick| tick.frame_index), Some(2));
-        assert_eq!(queue.pop().map(|tick| tick.frame_index), Some(3));
+        assert_eq!(queue.pop().map(|tick| tick.now), Some(HostTime(2)));
+        assert_eq!(queue.pop().map(|tick| tick.now), Some(HostTime(3)));
         assert_eq!(queue.pop(), None);
         assert_eq!(queue.dropped_count(), 1);
     }
@@ -287,7 +281,6 @@ mod tests {
         assert!(tick.now.ticks() > 0);
         assert_eq!(tick.predicted_present, None);
         assert_eq!(tick.refresh_interval, None);
-        assert_eq!(tick.frame_index, 0);
         assert_eq!(tick.output, OutputId(0));
         assert_eq!(tick.prev_actual_present, None);
     }
@@ -310,14 +303,20 @@ mod tests {
     }
 
     #[test]
-    fn tick_index_increments_monotonically() {
+    fn callback_done_emits_one_tick_per_request() {
         let mut ticker = TickerState::new();
+        let mut previous_now = None;
 
-        for expected in 0..5 {
+        for output in 0..5 {
             assert!(ticker.mark_callback_requested());
-            ticker.on_callback_done(Clock::Monotonic, OutputId(0));
+            ticker.on_callback_done(Clock::Monotonic, OutputId(output));
             let tick = ticker.poll_tick().unwrap();
-            assert_eq!(tick.frame_index, expected);
+            assert_eq!(tick.output, OutputId(output));
+            if let Some(previous_now) = previous_now {
+                assert!(tick.now >= previous_now);
+            }
+            previous_now = Some(tick.now);
+            assert_eq!(ticker.poll_tick(), None);
         }
     }
 
@@ -387,14 +386,17 @@ mod tests {
         // is dropped.
         let mut ticker = TickerState::new();
 
-        for _ in 0..9 {
+        for output in 0..9 {
             assert!(ticker.mark_callback_requested());
-            ticker.on_callback_done(Clock::Monotonic, OutputId(0));
+            ticker.on_callback_done(Clock::Monotonic, OutputId(output));
         }
 
-        // First available tick should be index 1 (index 0 was dropped).
-        let tick = ticker.poll_tick().unwrap();
-        assert_eq!(tick.frame_index, 1);
+        assert_eq!(ticker.queue.dropped_count(), 1);
+        for output in 1..9 {
+            let tick = ticker.poll_tick().expect("queued tick should remain");
+            assert_eq!(tick.output, OutputId(output));
+        }
+        assert_eq!(ticker.poll_tick(), None);
     }
 
     // --- Present prediction tests ---

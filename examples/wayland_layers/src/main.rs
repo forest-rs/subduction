@@ -29,6 +29,7 @@ const DEFAULT_W: u32 = 800;
 const DEFAULT_H: u32 = 600;
 const NUM_LAYERS: usize = 5;
 const LAYER_SIZE: u32 = 80;
+const UNOBSERVED_FRAME_INDEX: u64 = 0;
 
 /// ARGB colors for the five layers.
 const COLORS: [[u8; 4]; NUM_LAYERS] = [
@@ -164,7 +165,7 @@ fn main() {
             let build_start = frameclock_wayland::now();
 
             let opportunity = frameclock_wayland::frame_opportunity(tick, Duration(16_666_667));
-            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
+            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION, UNOBSERVED_FRAME_INDEX);
 
             let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;

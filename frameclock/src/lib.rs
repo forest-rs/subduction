@@ -66,7 +66,6 @@
 //! let opportunity = FrameOpportunity::pacing_only(
 //!     HostTime(1_000_000),
 //!     Duration(16_666_667),
-//!     1,
 //!     OutputId(0),
 //! );
 //!

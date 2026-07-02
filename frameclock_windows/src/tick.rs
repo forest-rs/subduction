@@ -7,11 +7,7 @@ use frameclock::{FrameTick, HostTime, OutputId};
 
 /// Build a [`FrameTick`] from QPC. Call inside a `VSync`-paced tick handler.
 #[must_use]
-pub fn make_tick(
-    refresh_interval_ns: u64,
-    frame_index: u64,
-    prev_present_time: Option<HostTime>,
-) -> FrameTick {
+pub fn make_tick(refresh_interval_ns: u64, prev_present_time: Option<HostTime>) -> FrameTick {
     let timebase = crate::time::timebase();
     let interval_ticks = if refresh_interval_ns > 0 {
         refresh_interval_ns * u64::from(timebase.denom) / u64::from(timebase.numer)
@@ -39,7 +35,6 @@ pub fn make_tick(
         } else {
             None
         },
-        frame_index,
         output: OutputId(0),
         prev_actual_present: prev_present_time,
     }
@@ -53,8 +48,7 @@ mod tests {
     #[test]
     fn make_tick_with_refresh_and_prev() {
         let prev = HostTime(1_000_000);
-        let tick = make_tick(16_666_667, 5, Some(prev));
-        assert_eq!(tick.frame_index, 5);
+        let tick = make_tick(16_666_667, Some(prev));
         assert_eq!(tick.prev_actual_present, Some(prev));
         assert!(tick.predicted_present.is_some());
         assert!(tick.refresh_interval.is_some());
@@ -62,7 +56,7 @@ mod tests {
 
     #[test]
     fn make_tick_zero_refresh() {
-        let tick = make_tick(0, 1, None);
+        let tick = make_tick(0, None);
         assert_eq!(tick.predicted_present, None);
         assert_eq!(tick.refresh_interval, None);
         assert_eq!(tick.prev_actual_present, None);
@@ -70,7 +64,7 @@ mod tests {
 
     #[test]
     fn make_tick_first_frame_predicts_from_now() {
-        let tick = make_tick(16_666_667, 0, None);
+        let tick = make_tick(16_666_667, None);
         // First frame with no prev: predicted_present = now + interval
         let predicted = tick.predicted_present.unwrap();
         assert!(predicted.ticks() > tick.now.ticks());

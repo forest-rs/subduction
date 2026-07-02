@@ -336,8 +336,11 @@ enum DriverBeginResult {
 ///    another redraw so weaker retained demand can be planned on a fresh turn.
 ///
 /// This keeps demand preemption, feedback observation, and summary construction
-/// inside `frameclock` while leaving timer queues, event-loop wake mechanics,
-/// renderer submission, and native surface lifecycle in the host.
+/// inside `frameclock`. The driver also owns `FramePlan::frame_index`, and it
+/// advances the counter only when a planned frame becomes ready or expires.
+/// Queued plans that are preempted or explicitly cleared do not consume an id.
+/// Timer queues, event-loop wake mechanics, renderer submission, and native
+/// surface lifecycle stay in the host.
 ///
 /// # Queued plans
 ///
@@ -358,6 +361,7 @@ pub struct FrameDriver {
     pending_demand: FrameDemand,
     pending_frame: Option<PlannedFrame>,
     pending_feedback: Option<DeferredFrameFeedback>,
+    next_frame_index: u64,
 }
 
 #[derive(Debug)]
@@ -392,6 +396,7 @@ impl FrameDriver {
             pending_demand: FrameDemand::NONE,
             pending_frame: None,
             pending_feedback: None,
+            next_frame_index: 0,
         }
     }
 
@@ -417,6 +422,9 @@ impl FrameDriver {
     }
 
     /// Returns the currently queued frame, if any.
+    ///
+    /// The queued plan carries the next candidate frame index. The driver
+    /// consumes that id only if the queued plan later becomes ready or expires.
     #[must_use]
     pub const fn pending_frame(&self) -> Option<PlannedFrame> {
         self.pending_frame
@@ -595,8 +603,8 @@ impl FrameDriver {
         submitted_at: HostTime,
         feedback: &PresentFeedback,
     ) -> FrameTimingSummary {
-        let tick_event = FrameTickEvent::from(&planned.tick);
         let plan = planned.plan;
+        let tick_event = FrameTickEvent::new(plan.frame_index, &planned.tick);
         let plan_event = FramePlanEvent::new(&plan, planned.safety_margin_ticks);
         let submit_event = SubmitEvent {
             frame_index: plan.frame_index,
@@ -647,8 +655,8 @@ impl FrameDriver {
         frame: ActiveFrame,
         reason: FrameDropReason,
     ) -> FrameTimingSummary {
-        let tick_event = FrameTickEvent::from(&frame.tick());
         let plan = frame.plan();
+        let tick_event = FrameTickEvent::new(plan.frame_index, &frame.tick());
         let plan_event = FramePlanEvent::new(&plan, frame.safety_margin_ticks());
         let drop_event = FrameDropEvent::new(&plan, reason);
         let state_event = SchedulerStateEvent {
@@ -677,6 +685,7 @@ impl FrameDriver {
             }
 
             self.pending_frame = None;
+            let frame = self.consume_frame_index(frame);
             if tick.now > frame.plan.commit_deadline {
                 return DriverBeginResult::Expired(frame);
             }
@@ -689,7 +698,9 @@ impl FrameDriver {
 
         let demand = self.pending_demand;
         self.pending_demand = FrameDemand::NONE;
-        let plan = self.scheduler.plan(opportunity, demand);
+        let plan = self
+            .scheduler
+            .plan(opportunity, demand, self.next_frame_index);
         let frame = PlannedFrame::new(
             tick,
             plan,
@@ -701,10 +712,18 @@ impl FrameDriver {
             self.pending_frame = Some(frame);
             DriverBeginResult::WaitUntil(frame_start)
         } else if tick.now > frame.plan.commit_deadline {
+            let frame = self.consume_frame_index(frame);
             DriverBeginResult::Expired(frame)
         } else {
+            let frame = self.consume_frame_index(frame);
             DriverBeginResult::Ready(frame)
         }
+    }
+
+    fn consume_frame_index(&mut self, mut frame: PlannedFrame) -> PlannedFrame {
+        frame.plan.frame_index = self.next_frame_index;
+        self.next_frame_index = self.next_frame_index.saturating_add(1);
+        frame
     }
 
     /// Drops the queued frame and returns whether one existed.
@@ -744,12 +763,11 @@ mod tests {
         FrameDriver::new(config)
     }
 
-    fn tick(now: u64, frame_index: u64) -> FrameTick {
+    fn tick(now: u64, _frame_index: u64) -> FrameTick {
         FrameTick {
             now: HostTime(now),
             predicted_present: None,
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            frame_index,
             output: OutputId(0),
             prev_actual_present: None,
         }
@@ -769,7 +787,7 @@ mod tests {
 
     fn predictive_opportunity(
         now: u64,
-        frame_index: u64,
+        _frame_index: u64,
         desired_present: u64,
         latest_commit: u64,
     ) -> FrameOpportunity {
@@ -777,7 +795,6 @@ mod tests {
             now: HostTime(now),
             predicted_present: Some(HostTime(desired_present)),
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            frame_index,
             output: OutputId(0),
             prev_actual_present: None,
         };
@@ -812,7 +829,7 @@ mod tests {
     #[test]
     fn pacing_only_opportunity_fills_common_host_defaults() {
         let opportunity =
-            FrameOpportunity::pacing_only(HostTime(12), REFRESH_INTERVAL, 42, OutputId(9));
+            FrameOpportunity::pacing_only(HostTime(12), REFRESH_INTERVAL, OutputId(9));
 
         assert_eq!(opportunity.tick.now, HostTime(12));
         assert_eq!(opportunity.tick.predicted_present, None);
@@ -820,7 +837,6 @@ mod tests {
             opportunity.tick.refresh_interval,
             Some(REFRESH_INTERVAL.ticks())
         );
-        assert_eq!(opportunity.tick.frame_index, 42);
         assert_eq!(opportunity.tick.output, OutputId(9));
         assert_eq!(
             opportunity.hints.presentation_timing(),
@@ -883,6 +899,20 @@ mod tests {
         assert_eq!(frame.tick().now, HostTime(0));
         assert_eq!(frame.build_start(), HostTime(90));
         assert_eq!(frame.plan().sample_time, HostTime(100));
+    }
+
+    #[test]
+    fn begin_frame_assigns_sequential_frame_indices() {
+        let mut driver = driver();
+        driver.request(FrameDemand::INPUT);
+
+        let first = ready_at(&mut driver, 10);
+        assert_eq!(first.plan().frame_index, 0);
+        let _ = driver.discard_frame(first);
+
+        driver.request(FrameDemand::INPUT);
+        let second = ready_at(&mut driver, 20);
+        assert_eq!(second.plan().frame_index, 1);
     }
 
     #[test]
@@ -949,6 +979,23 @@ mod tests {
     }
 
     #[test]
+    fn preempted_queued_plan_does_not_consume_frame_index() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
+
+        driver.request(FrameDemand::INPUT);
+
+        let frame = ready_at(&mut driver, 1);
+        assert_eq!(frame.plan().frame_index, 0);
+        assert!(frame.plan().demand.contains(FrameDemand::INPUT));
+        assert!(frame.plan().demand.contains(FrameDemand::ANIMATION));
+    }
+
+    #[test]
     fn weaker_demand_waits_behind_queued_plan() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
@@ -1007,6 +1054,23 @@ mod tests {
     }
 
     #[test]
+    fn cleared_queued_plan_does_not_consume_frame_index() {
+        let mut driver = driver();
+        driver.request(FrameDemand::ANIMATION);
+        assert!(matches!(
+            begin_at(&mut driver, 0),
+            FrameBeginResult::WaitUntil(HostTime(90))
+        ));
+
+        assert!(driver.clear_pending_frame());
+        driver.request(FrameDemand::INPUT);
+
+        let frame = ready_at(&mut driver, 10);
+        assert_eq!(frame.plan().frame_index, 0);
+        assert_eq!(frame.plan().demand, FrameDemand::INPUT);
+    }
+
+    #[test]
     fn weaker_retained_demand_survives_stronger_frame_submission() {
         let mut driver = driver();
         driver.request(FrameDemand::ANIMATION);
@@ -1040,8 +1104,8 @@ mod tests {
             submission.submitted_at,
             submission.actual_present(),
         );
-        let tick_event = FrameTickEvent::from(&frame.tick());
         let plan = frame.plan();
+        let tick_event = FrameTickEvent::new(plan.frame_index, &frame.tick());
         let plan_event = FramePlanEvent::new(&plan, frame.safety_margin_ticks());
         let submit_event = SubmitEvent {
             frame_index: plan.frame_index,

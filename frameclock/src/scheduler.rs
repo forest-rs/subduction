@@ -249,7 +249,7 @@ fn f64_ticks_to_u64(ticks: f64) -> u64 {
 /// # Usage
 ///
 /// ```rust,ignore
-/// let plan = scheduler.plan(opportunity, demand);
+/// let plan = scheduler.plan(opportunity, demand, frame_index);
 /// // ... build and submit frame ...
 /// scheduler.observe(&feedback);
 /// ```
@@ -288,14 +288,24 @@ impl Scheduler {
         }
     }
 
-    /// Produces a [`FramePlan`] from a frame opportunity and demand.
+    /// Produces a [`FramePlan`] from a frame opportunity, demand, and frame id.
     ///
     /// Hosts should usually call this only with non-empty [`FrameDemand`].
     /// `FrameDemand::NONE` is accepted for passive pacing diagnostics or
     /// backend bookkeeping, but it should not be treated as ordinary render
     /// demand.
+    ///
+    /// `frame_index` identifies the planned content frame for diagnostics and
+    /// summaries. [`FrameDriver`](crate::FrameDriver) owns this counter for
+    /// retained hosts; low-level scheduler integrations pass their own
+    /// lifecycle id here.
     #[must_use]
-    pub fn plan(&mut self, opportunity: FrameOpportunity, demand: FrameDemand) -> FramePlan {
+    pub fn plan(
+        &mut self,
+        opportunity: FrameOpportunity,
+        demand: FrameDemand,
+        frame_index: u64,
+    ) -> FramePlan {
         let tick = opportunity.tick;
         let hints = opportunity.hints;
         let source_interval = self.source_interval(opportunity);
@@ -348,7 +358,7 @@ impl Scheduler {
             commit_deadline,
             pipeline_depth: self.pipeline_depth,
             output: tick.output,
-            frame_index: tick.frame_index,
+            frame_index,
         }
     }
 
@@ -566,7 +576,6 @@ mod tests {
             now: HostTime(now),
             predicted_present: predicted.map(HostTime),
             refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         }
@@ -613,6 +622,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1000, Some(2000), 1800),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(plan.demand, FrameDemand::ANIMATION);
@@ -624,6 +634,20 @@ mod tests {
     }
 
     #[test]
+    fn plan_uses_explicit_frame_index() {
+        let config = SchedulerConfig::predictive();
+        let mut sched = Scheduler::new(config);
+
+        let plan = sched.plan(
+            make_opportunity(PresentationTiming::Predictive, 1000, Some(2000), 1800),
+            FrameDemand::ANIMATION,
+            42,
+        );
+
+        assert_eq!(plan.frame_index, 42);
+    }
+
+    #[test]
     fn pacing_only_plan_has_no_target_present() {
         let config = SchedulerConfig::pacing_only();
         let mut sched = Scheduler::new(config);
@@ -631,6 +655,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::PacingOnly, 1_000_000, None, 17_000_000),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(plan.target_present, None);
@@ -648,6 +673,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1000, Some(2000), 1800),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(plan.frame_start, HostTime(1550));
@@ -672,6 +698,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 2_000),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(sched.safety_margin_ticks(), 400);
@@ -707,6 +734,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_500, Some(2_000), 1_800),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(plan.frame_start, HostTime(1_500));
@@ -724,7 +752,7 @@ mod tests {
             display_timing: DisplayTiming::fixed(REFRESH_INTERVAL),
         };
 
-        let plan = sched.plan(opportunity, FrameDemand::ANIMATION);
+        let plan = sched.plan(opportunity, FrameDemand::ANIMATION, 0);
 
         assert_eq!(plan.target_present, None);
         assert_eq!(plan.sample_time, HostTime(2_000) + REFRESH_INTERVAL);
@@ -741,6 +769,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 1_800),
             FrameDemand::INPUT,
+            0,
         );
 
         assert_eq!(plan.demand, FrameDemand::INPUT);
@@ -772,6 +801,7 @@ mod tests {
                 16_666_667,
             ),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(plan.frame_interval, REFRESH_INTERVAL.saturating_mul(2));
@@ -805,6 +835,7 @@ mod tests {
                 50_000_000,
             ),
             FrameDemand::ANIMATION,
+            0,
         );
 
         assert_eq!(sched.safety_margin_ticks(), 40_000_000);
@@ -832,7 +863,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
             refresh_interval: Some(8_333_333),
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
@@ -846,7 +876,7 @@ mod tests {
             ),
         };
 
-        let plan = sched.plan(opportunity, FrameDemand::ANIMATION);
+        let plan = sched.plan(opportunity, FrameDemand::ANIMATION, 0);
 
         assert_eq!(plan.frame_interval, Duration(16_666_666));
         assert_eq!(plan.target_present, Some(HostTime(17_666_666)));
@@ -873,7 +903,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(9_333_333)),
             refresh_interval: Some(8_333_333),
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
@@ -887,7 +916,7 @@ mod tests {
             ),
         };
 
-        let plan = sched.plan(opportunity, FrameDemand::ANIMATION);
+        let plan = sched.plan(opportunity, FrameDemand::ANIMATION, 0);
 
         assert_eq!(plan.frame_interval, Duration(15_000_000));
         assert_eq!(plan.target_present, Some(HostTime(16_000_000)));
@@ -928,6 +957,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 1_800),
             FrameDemand::ANIMATION,
+            0,
         );
 
         let lookahead = REFRESH_INTERVAL.saturating_mul(2);
@@ -952,6 +982,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 1_800),
             FrameDemand::INPUT,
+            0,
         );
 
         assert_eq!(plan.pipeline_depth, 3);
@@ -971,6 +1002,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Predictive, 1_000, Some(2_000), 1_800),
             FrameDemand::CONTINUOUS_INPUT,
+            0,
         );
 
         assert_eq!(plan.pipeline_depth, 3);
@@ -1122,6 +1154,7 @@ mod tests {
         let plan = sched.plan(
             make_opportunity(PresentationTiming::Estimated, 1000, Some(2000), 1800),
             FrameDemand::ANIMATION,
+            0,
         );
 
         // Estimated behaves like Predictive for target selection; hosts choose

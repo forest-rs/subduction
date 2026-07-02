@@ -29,6 +29,7 @@ const DEFAULT_W: u32 = 1024;
 const DEFAULT_H: u32 = 768;
 const NUM_GROUPS: usize = 10;
 const LAYERS_PER_GROUP: usize = 10;
+const UNOBSERVED_FRAME_INDEX: u64 = 0;
 
 /// Returns an `[r, g, b]` triple in 0–255 for a given index using
 /// golden-angle hue spacing.
@@ -194,7 +195,7 @@ fn main() {
             let build_start = frameclock_wayland::now();
 
             let opportunity = frameclock_wayland::frame_opportunity(tick, Duration(16_666_667));
-            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
+            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION, UNOBSERVED_FRAME_INDEX);
 
             let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;

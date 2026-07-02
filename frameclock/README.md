@@ -32,7 +32,7 @@ Use `FrameDemand` as the host-owned reason a frame is needed. Request
 dragging, `ANIMATION` while a visual timeline is active, and `BACKGROUND` for
 deferrable visual work. With `FrameDriver`, call `request(demand)` when those
 causes arrive; with the low-level scheduler, pass the demand to
-`Scheduler::plan(opportunity, demand)`.
+`Scheduler::plan(opportunity, demand, frame_index)`.
 
 Demand also remains attached to the selected `FramePlan`. Once
 `FrameBeginResult::Ready` returns, use `frame.plan().demand` to choose the app's
@@ -66,10 +66,13 @@ redraw requests, renderer submission, and native presentation resources. Use
 `FrameDriver::next_frame_start` as one wake source to merge with app timers.
 After submitting or discarding an `ActiveFrame`, hosts should request another
 redraw when `FrameDriver::has_pending_demand()` is still true.
-`FrameTick::frame_index` is host-owned per output and identifies one planned
-content frame. Hosts using `FrameDriver` normally increment it after an
-`ActiveFrame` is submitted or discarded, not every time a frame-start wake
-fires while a plan is queued.
+
+`FrameDriver` also owns the retained content-frame counter. It advances that
+counter only when a planned frame becomes ready or expires, so queued plans
+that are preempted or cleared do not leave diagnostic gaps. The reported
+`FramePlan::frame_index` is used for submit/drop summaries. Low-level
+`Scheduler` integrations own their own content-frame id and pass it explicitly
+to `Scheduler::plan` and `FrameTickEvent::new`.
 
 The lower-level `Scheduler` remains available for custom integrations. Event
 structs and `FrameTimingSummaryBuilder` live under `frameclock::diagnostics`
@@ -117,7 +120,6 @@ driver.request(FrameDemand::ANIMATION);
 let opportunity = FrameOpportunity::pacing_only(
     HostTime(1_000_000),
     Duration(16_666_667),
-    1,
     OutputId(0),
 );
 
@@ -198,8 +200,9 @@ The split also tightens names around timing semantics:
 - `FramePlan::present_time` is now `FramePlan::target_present`.
 - `FramePlan::frame_start` is now the scheduler-selected time to wake or start
   app-side frame work before `FramePlan::commit_deadline`.
-- `Scheduler::plan` now takes a `FrameOpportunity` plus `FrameDemand` so
-  display timing facts and demand remain explicit policy inputs.
+- `Scheduler::plan` now takes a `FrameOpportunity`, `FrameDemand`, and explicit
+  frame index so display timing facts, demand, and lifecycle identity remain
+  explicit policy inputs.
 - `FrameDemand::dominant_class` and `FrameDemand::preempts` expose the demand
   ordering used by the scheduler.
 - `FrameDriver` owns pending demand and queued frame-start plans for hosts that

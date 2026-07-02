@@ -52,7 +52,6 @@ struct WindowState {
 
 struct SurfaceFrameClock {
     driver: FrameDriver,
-    frame_index: u64,
     output: OutputId,
 }
 
@@ -188,12 +187,8 @@ impl WindowState {
         // Plain winit does not expose a future present timestamp here, so this
         // example uses a pacing-only opportunity with a conservative "submit
         // by around the next refresh" boundary.
-        let opportunity = FrameOpportunity::pacing_only(
-            now,
-            REFRESH_INTERVAL,
-            self.surface_clock.frame_index,
-            self.surface_clock.output,
-        );
+        let opportunity =
+            FrameOpportunity::pacing_only(now, REFRESH_INTERVAL, self.surface_clock.output);
         self.surface_clock.driver.begin_frame(opportunity).result
     }
 
@@ -221,7 +216,6 @@ impl WindowState {
                 // content frame and ask for fresh demand if the work still
                 // matters.
                 let retry_demand = summary.demand;
-                self.surface_clock.frame_index += 1;
                 if !retry_demand.is_empty() {
                     self.request_frame(retry_demand);
                 } else if self.surface_clock.driver.has_pending_demand() {
@@ -263,7 +257,7 @@ impl WindowState {
             .summary
             .expect("pacing-only submission should resolve immediately");
 
-        if self.surface_clock.frame_index.is_multiple_of(60) {
+        if plan.frame_index.is_multiple_of(60) {
             self.window.set_title(&format!(
                 "Frameclock + winit: mode={} sample={}ms x={}",
                 work_mode.label(),
@@ -282,11 +276,6 @@ impl WindowState {
                 summary.pacing_overrun,
             );
         }
-
-        // `frame_index` is a per-output content-frame id. Advance it after the
-        // active frame is submitted, not for every frame-start wake that only
-        // releases a queued plan.
-        self.surface_clock.frame_index += 1;
 
         // If lower-priority demand was retained behind the queued frame we
         // just consumed, wake winit again so the driver can plan it on a fresh
@@ -333,7 +322,6 @@ impl SurfaceFrameClock {
             // policy can still raise depth if repeated overruns show that this is
             // too aggressive.
             driver: FrameDriver::new(config),
-            frame_index: 0,
             output,
         }
     }

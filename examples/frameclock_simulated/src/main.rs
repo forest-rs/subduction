@@ -87,11 +87,10 @@ fn main() {
                 now,
                 predicted_present: Some(predicted_present),
                 refresh_interval: Some(REFRESH_INTERVAL.ticks()),
-                frame_index,
                 output,
                 prev_actual_present: if frame_index > 0 { Some(now) } else { None },
             };
-            let tick_event = FrameTickEvent::from(&tick);
+            let tick_event = FrameTickEvent::new(frame_index, &tick);
             summary.record_frame_tick(&tick_event);
             diagnostics.frame_tick(&tick_event);
 
@@ -107,7 +106,7 @@ fn main() {
                 hints,
                 DisplayTiming::from_tick(&tick, REFRESH_INTERVAL),
             );
-            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
+            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION, frame_index);
             let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());
             summary.record_frame_plan(&plan_event);
             diagnostics.frame_plan(&plan_event);

@@ -6,7 +6,7 @@
 //! Creates a dark container with six animated elements (a WebGL canvas, a WebGPU
 //! canvas, and four colored divs) that orbit and pulse opacity, demonstrating the
 //! web backend's building blocks: [`RafLoop`] for timing, [`DomPresenter`] for
-//! presentation, and [`WebFrameClock`] for frame planning.
+//! presentation, and [`FrameDriver`] for frame planning.
 //!
 //! Build with: `wasm-pack build --target web examples/web_layers`
 //!
@@ -14,7 +14,7 @@
 //!
 //! [`RafLoop`]: frameclock_web::RafLoop
 //! [`DomPresenter`]: subduction_backend_web::DomPresenter
-//! [`WebFrameClock`]: frameclock_web::WebFrameClock
+//! [`FrameDriver`]: frameclock::FrameDriver
 
 // This crate only runs in the browser; suppress dead-code warnings when
 // cargo-checking on a native host target.
@@ -46,9 +46,10 @@ use web_sys::{
 
 use frameclock::time::Timebase;
 use frameclock::{
-    FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, OutputId, SchedulerConfig,
+    FrameBeginResult, FrameDemand, FrameDriver, FrameSubmission, FrameTick, OutputId,
+    SchedulerConfig,
 };
-use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop};
 use kurbo::Size;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
@@ -164,7 +165,7 @@ struct WgpuState {
 
 struct AnimState {
     store: LayerStore,
-    frame_clock: WebFrameClock,
+    frame_driver: FrameDriver,
     presenter: DomPresenter,
     /// Element sizes indexed by raw layer slot index.
     sizes: Vec<(f64, f64)>,
@@ -249,7 +250,7 @@ pub fn main() -> Result<(), JsValue> {
 
     let state = Rc::new(RefCell::new(AnimState {
         store,
-        frame_clock: WebFrameClock::new(SchedulerConfig::pacing_only(), DEFAULT_REFRESH_INTERVAL),
+        frame_driver: FrameDriver::new(SchedulerConfig::pacing_only()),
         presenter,
         layer_ids,
         sizes,
@@ -595,12 +596,13 @@ fn render_wgpu(gpu: &WgpuState, t: f32) {
 fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let mut s = state.borrow_mut();
 
-    s.frame_clock.request(FrameDemand::ANIMATION);
-    let frame = match s.frame_clock.begin_frame(tick).result {
+    s.frame_driver.request(FrameDemand::ANIMATION);
+    let opportunity = frameclock_web::frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
+    let frame = match s.frame_driver.begin_frame(opportunity).result {
         FrameBeginResult::Ready(frame) => frame,
         FrameBeginResult::Expired(summary) => {
             if !summary.demand.is_empty() {
-                s.frame_clock.request(summary.demand);
+                s.frame_driver.request(summary.demand);
             }
             return;
         }
@@ -637,7 +639,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
 
     let submitted_at = frameclock_web::now();
     let _ = s
-        .frame_clock
+        .frame_driver
         .submit_frame(frame, FrameSubmission::new(submitted_at, None))
         .summary
         .expect("RAF submission should resolve immediately");

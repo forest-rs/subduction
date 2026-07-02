@@ -15,8 +15,8 @@ feedback.
 The crate intentionally does not own `wl_surface` objects, event queues,
 buffers, registries, or protocol dispatch. Protocol I/O belongs to hosts and
 backend crates such as `subduction_backend_wayland`; this crate owns the
-timing bookkeeping those hosts feed and poll. Present-hint computation and a
-retained `FrameDriver` wrapper are left to future implementation here.
+timing bookkeeping those hosts feed and poll, plus the pure timing conversion
+from `FrameTick` to `FrameOpportunity`.
 
 ## Core Flow
 
@@ -57,6 +57,12 @@ arrives separately through `wp_presentation` feedback: the previous frame's
 actual present time is surfaced as `FrameTick::prev_actual_present`, and the
 full per-commit event stream is available as `PresentEvent` values for hosts
 that resolve feedback by `SubmissionId`.
+
+Use `frame_opportunity` to pair a tick with Wayland presentation hints and
+display timing before passing it to `FrameDriver` or `Scheduler`. Before
+presentation feedback establishes a cadence this produces pacing-only timing;
+after feedback supplies actual-present and refresh-interval facts through
+`TickerState`, the opportunity carries estimated target-present timing.
 
 When the compositor advertises `wp_presentation`, its `clock_id` event names
 the clock domain of all feedback timestamps. Hosts should switch their reads

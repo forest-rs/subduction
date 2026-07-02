@@ -72,7 +72,7 @@ pub use presentation::{
 pub use tick::TickerState;
 pub use time::{Clock, now, timebase};
 
-use frameclock::{DisplayTiming, Duration, FrameTick, HostTime, PresentHints};
+use frameclock::{DisplayTiming, Duration, FrameOpportunity, FrameTick, HostTime, PresentHints};
 
 /// Returns the default commit lead for a refresh interval.
 ///
@@ -154,10 +154,38 @@ pub fn display_timing(tick: &FrameTick, fallback_interval: Duration) -> DisplayT
     DisplayTiming::from_tick(tick, fallback_interval)
 }
 
+/// Builds a [`FrameOpportunity`] from a Wayland frame-callback tick.
+///
+/// This pairs Wayland's estimated/pacing presentation hints with display
+/// timing derived from the same tick, falling back to `fallback_interval` until
+/// presentation feedback has established a cadence.
+#[must_use]
+pub fn frame_opportunity(tick: FrameTick, fallback_interval: Duration) -> FrameOpportunity {
+    let refresh_interval = refresh_interval_for_tick(&tick, fallback_interval);
+    frame_opportunity_with_commit_lead(
+        tick,
+        fallback_interval,
+        default_commit_lead(refresh_interval),
+    )
+}
+
+/// Builds a [`FrameOpportunity`] with an explicit platform commit lead.
+#[must_use]
+pub fn frame_opportunity_with_commit_lead(
+    tick: FrameTick,
+    fallback_interval: Duration,
+    commit_lead: Duration,
+) -> FrameOpportunity {
+    let hints = present_hints_with_commit_lead(&tick, fallback_interval, commit_lead);
+    let display_timing = display_timing(&tick, fallback_interval);
+    FrameOpportunity::new(tick, hints, display_timing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        default_commit_lead, display_timing, present_hints, present_hints_with_commit_lead,
+        default_commit_lead, display_timing, frame_opportunity, present_hints,
+        present_hints_with_commit_lead,
     };
     use frameclock::OutputId;
     use frameclock::timing::PresentationTiming;
@@ -234,6 +262,26 @@ mod tests {
     fn display_timing_prefers_reported_refresh_interval() {
         assert_eq!(
             display_timing(&tick(Some(HostTime(2_000_000))), Duration(8_333_333)),
+            DisplayTiming::fixed(Duration(16_666_667))
+        );
+    }
+
+    #[test]
+    fn frame_opportunity_pairs_tick_hints_and_display_timing() {
+        let tick = tick(Some(HostTime(20_000_000)));
+        let opportunity = frame_opportunity(tick, Duration(8_333_333));
+
+        assert_eq!(opportunity.tick, tick);
+        assert_eq!(
+            opportunity.hints.presentation_timing(),
+            PresentationTiming::Estimated
+        );
+        assert_eq!(
+            opportunity.hints.desired_present(),
+            Some(HostTime(20_000_000))
+        );
+        assert_eq!(
+            opportunity.display_timing,
             DisplayTiming::fixed(Duration(16_666_667))
         );
     }

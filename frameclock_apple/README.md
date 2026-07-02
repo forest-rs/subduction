@@ -8,8 +8,8 @@
 
 `frameclock_apple` connects Apple display-link callbacks to `frameclock`. It
 converts `CADisplayLink` and `CVDisplayLink` timing into `FrameTick` values,
-exposes Mach absolute time as `HostTime`, computes predictive present hints,
-and offers `AppleFrameClock` as a retained wrapper around `FrameDriver`.
+exposes Mach absolute time as `HostTime`, computes predictive present hints, and
+builds `FrameOpportunity` values for hosts that own `FrameDriver`.
 
 The crate intentionally does not own `CALayer` trees, `CAMetalLayer`
 presentation, renderers, windows, app lifecycle, or event-loop policy.
@@ -18,10 +18,11 @@ presentation, renderers, windows, app lifecycle, or event-loop policy.
 
 ```text
 CADisplayLink / CVDisplayLink -> FrameTick
-                              -> AppleFrameClock::begin_frame()
+                              -> frameclock_apple::frame_opportunity()
+                              -> FrameDriver::begin_frame()
                               -> FrameBegin { result: FrameBeginResult::Ready(ActiveFrame), ... }
                               -> host render
-                              -> AppleFrameClock::submit_frame() or AppleFrameClock::discard_frame()
+                              -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
                               -> FrameTimingSummary
 ```
 
@@ -31,32 +32,32 @@ main-thread `CADisplayLink` wrapper. The `cv-display-link` feature exposes the
 legacy `CVDisplayLink` wrapper and forwarding types for sending ticks to a
 single-threaded host scheduler.
 
-Use `AppleFrameClock` when an application wants retained frame lifecycle state:
-pending demand, queued frame-start plans, stronger-demand preemption,
-submission summaries, and dropped-frame summaries. Hosts still decide when a
-frame is needed, what to render, when to acquire native presentation resources,
-and how to submit to Core Animation or Metal.
+Use `FrameDriver` when an application wants retained frame lifecycle state:
+pending demand, queued frame-start plans, stronger-demand preemption, submission
+summaries, and dropped-frame summaries. This crate supplies only Apple timing
+facts. Hosts still decide when a frame is needed, what to render, when to
+acquire native presentation resources, and how to submit to Core Animation or
+Metal.
 
 ```rust,ignore
 use frameclock::{
-    DisplayTiming, Duration, FrameBeginResult, FrameDemand, OutputId, SchedulerConfig,
+    DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameDriver,
+    OutputId, SchedulerConfig,
 };
-use frameclock_apple::{AppleFrameClock, DisplayLink};
+use frameclock_apple::DisplayLink;
 use objc2::MainThreadMarker;
 
-let mut clock = AppleFrameClock::new(
-    SchedulerConfig::predictive(),
-    DisplayTiming::fixed(Duration(16_666_667)),
-);
-clock.set_feedback_mode(frameclock_apple::AppleFeedbackMode::DeferredActualPresent);
+let mut driver = FrameDriver::new(SchedulerConfig::predictive());
+let display_timing = DisplayTiming::fixed(Duration(16_666_667));
 let output = OutputId(0);
 let mtm = MainThreadMarker::new().unwrap();
 
 let display_link = DisplayLink::new(
     move |tick| {
-        clock.request(FrameDemand::ANIMATION);
+        driver.request(FrameDemand::ANIMATION);
 
-        let begin = clock.begin_frame(tick);
+        let opportunity = frameclock_apple::frame_opportunity(tick, display_timing);
+        let begin = driver.begin_frame(opportunity);
         if let Some(summary) = begin.resolved_feedback {
             // Previous deferred submit resolved with this tick's actual-present fact.
             _ = summary;
@@ -66,7 +67,11 @@ let display_link = DisplayLink::new(
             FrameBeginResult::Ready(frame) => {
                 let sample_time = frame.sample_time();
                 // Prepare and submit Apple rendering work for sample_time.
-                let submit = clock.submit_frame_now(frame);
+                let submit = driver.submit_frame(
+                    frame,
+                    frameclock_apple::DEFAULT_FEEDBACK_MODE
+                        .submission(frameclock_apple::now()),
+                );
                 _ = (sample_time, submit.awaiting_actual_present);
             }
             FrameBeginResult::WaitUntil(frame_start) => {
@@ -92,14 +97,13 @@ display_link.start();
 The root module exposes the Apple integration surface:
 
 - `DisplayLink` for the enabled Apple display-link implementation.
-- `AppleFrameClock` for retained `FrameDriver` integration.
-- `AppleFeedbackMode` for choosing whether submitted frames wait for deferred
-  actual-present feedback or resolve immediately with commit-only evidence.
 - `now` and `timebase` for Mach host-time conversion.
-- `present_hints`, `compute_present_hints`, and `display_timing` for hosts that
-  need lower-level timing facts.
-- `preferred_frame_rate_range`, `AppleFrameClock::preferred_frame_rate_range`,
-  and `PreferredFrameRateRange` for translating a selected frame interval into a
+- `present_hints`, `display_timing`, and `frame_opportunity` for hosts that own
+  `FrameDriver` directly.
+- `AppleFeedbackMode` and `DEFAULT_FEEDBACK_MODE` for turning the enabled
+  display-link source's presentation-feedback facts into `FrameSubmission`.
+- `preferred_frame_rate_range`, `preferred_frame_rate_range_for_frame`, and
+  `PreferredFrameRateRange` for translating a selected frame interval into a
   Core Animation-style ProMotion cadence request.
 - `TickForwarder`, `TickSender`, and `DisplayLinkError` when the
   `cv-display-link` feature is enabled without `ca-display-link`.
@@ -119,32 +123,33 @@ tracing, or external diagnostics.
 `prev_actual_present` after the first tick. `CVDisplayLink` ticks carry the
 output host time as `predicted_present`.
 
-`AppleFrameClock` computes predictive `PresentHints` from the display-link
+`frame_opportunity` computes predictive `PresentHints` from the display-link
 prediction when it is fresh. The adapter subtracts a small platform commit lead
 from the predicted present time to form `latest_commit`; by default this is one
-quarter of the tick's refresh interval, and hosts can override it with
-`AppleFrameClock::set_commit_lead`. If a display-link callback arrives after its
-predicted present time, the stale prediction is ignored and the frame is planned
-with pacing-only hints from the callback time. Scheduler safety margin remains
-inside `frameclock` planning; it is not baked into Apple platform hints.
+quarter of the tick's refresh interval. Use
+`frame_opportunity_with_commit_lead` when the host has a better commit lead
+estimate. If a display-link callback arrives after its predicted present time,
+the stale prediction is ignored and the frame is planned with pacing-only hints
+from the callback time. Scheduler safety margin remains inside `frameclock`
+planning; it is not baked into Apple platform hints.
 
-`AppleFrameClock::new` uses commit-only feedback because the clock itself does
-not know which display-link source will feed it. `CADisplayLink.timestamp`
-reports the previous callback's actual display time, so hosts using
-`CADisplayLink` should select `AppleFeedbackMode::DeferredActualPresent` with
-`AppleFrameClock::new_with_feedback_mode` or
-`AppleFrameClock::set_feedback_mode`. The next `begin_frame` returns the
-completed `FrameTimingSummary` in `FrameBegin::resolved_feedback` when the tick
-carries `prev_actual_present`. The `cv-display-link` path should normally keep
-`AppleFeedbackMode::CommitOnly` because this adapter does not synthesize
-actual-present timestamps from `CVDisplayLink` ticks. Hosts can also call
-`AppleFrameClock::submit_frame` with an explicit `FrameSubmission`.
+Presentation feedback lifecycle is host-owned, while feedback capability comes
+from the selected Apple display-link source. Use
+`DEFAULT_FEEDBACK_MODE.submission(frameclock_apple::now())` when submitting a
+frame. With `CADisplayLink`, the submission waits for the next callback because
+`CADisplayLink.timestamp` reports the previous callback's actual display time;
+the next `FrameDriver::begin_frame` returns the completed
+`FrameTimingSummary` in `FrameBegin::resolved_feedback` when the tick carries
+`prev_actual_present`. With `CVDisplayLink`, the submission completes at commit
+time because this adapter does not synthesize actual-present timestamps from
+`CVDisplayLink` ticks.
 
 Display timing belongs to the output that produced the tick. Hosts should
 refresh output identity and target-output `DisplayTiming` when a window moves
 between displays or the platform reports a different display mode. For
 ProMotion/VRR displays, pass `DisplayTiming::variable` for the current output
-and use `preferred_frame_rate_range` or
+and use `preferred_frame_rate_range_for_frame`,
+`preferred_frame_rate_range`, or
 `DisplayLink::set_preferred_frame_interval` to translate a planned
 `FramePlan::frame_interval` into a Core Animation frame-rate range.
 

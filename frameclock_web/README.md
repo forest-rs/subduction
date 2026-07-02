@@ -8,8 +8,8 @@
 
 `frameclock_web` connects browser frame callbacks to `frameclock`. It converts
 `requestAnimationFrame` timestamps and `performance.now()` into `frameclock`
-host-time ticks, provides a `RafLoop` tick source, and offers `WebFrameClock`
-as a retained wrapper around `FrameDriver`.
+host-time ticks, provides a `RafLoop` tick source, and builds
+`FrameOpportunity` values for hosts that own `FrameDriver`.
 
 The crate intentionally does not own DOM presentation, WebGL, WebGPU,
 application state, renderer submission, or browser event routing.
@@ -18,10 +18,11 @@ application state, renderer submission, or browser event routing.
 
 ```text
 requestAnimationFrame -> FrameTick
-                      -> WebFrameClock::begin_frame()
+                      -> frameclock_web::frame_opportunity()
+                      -> FrameDriver::begin_frame()
                       -> FrameBegin { result: FrameBeginResult::Ready(ActiveFrame), ... }
                       -> host render
-                      -> WebFrameClock::submit_frame() or WebFrameClock::discard_frame()
+                      -> FrameDriver::submit_frame() or FrameDriver::discard_frame()
                       -> FrameTimingSummary
 ```
 
@@ -29,39 +30,41 @@ Use `RafLoop` when an application wants this crate to register and maintain a
 browser `requestAnimationFrame` loop. Each callback receives a `FrameTick` in
 browser host time.
 
-Use `WebFrameClock` when an application wants retained frame lifecycle state:
+Use `FrameDriver` when an application wants retained frame lifecycle state:
 pending demand, queued frame-start plans, stronger-demand preemption,
-submission summaries, and dropped-frame summaries. Hosts still decide when a
-frame is needed, what to render, and where the rendered output is submitted.
+submission summaries, and dropped-frame summaries. This crate supplies only
+browser timing facts. Hosts still decide when a frame is needed, what to render,
+and where the rendered output is submitted.
 
 Browser RAF does not expose a portable predicted present timestamp, commit
-deadline, or current display refresh interval. `WebFrameClock` therefore
-creates pacing-only `FrameOpportunity` values and uses a fallback refresh
-interval for display timing. The default fallback is `DEFAULT_REFRESH_INTERVAL`,
-a 60 Hz interval in microsecond ticks.
+deadline, or current display refresh interval. `frame_opportunity` creates
+pacing-only `FrameOpportunity` values and uses a fallback refresh interval for
+display timing. The default fallback is
+`DEFAULT_REFRESH_INTERVAL`, a 60 Hz interval in microsecond ticks.
 
 ```rust,ignore
 use frameclock::{
-    FrameBeginResult, FrameDemand, FrameSubmission, OutputId, SchedulerConfig,
+    FrameBeginResult, FrameDemand, FrameDriver, FrameSubmission, OutputId,
+    SchedulerConfig,
 };
-use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop};
 
-let mut clock = WebFrameClock::new(
-    SchedulerConfig::pacing_only(),
-    DEFAULT_REFRESH_INTERVAL,
-);
+let mut driver = FrameDriver::new(SchedulerConfig::pacing_only());
 
 let raf = RafLoop::new(
     move |tick| {
-        clock.request(FrameDemand::ANIMATION);
+        driver.request(FrameDemand::ANIMATION);
 
-        let begin = clock.begin_frame(tick);
+        let opportunity = frameclock_web::frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
+        let begin = driver.begin_frame(opportunity);
         match begin.result {
             FrameBeginResult::Ready(frame) => {
                 let sample_time = frame.sample_time();
                 // Prepare and submit browser rendering work for sample_time.
-                let submit =
-                    clock.submit_frame(frame, FrameSubmission::new(frameclock_web::now(), None));
+                let submit = driver.submit_frame(
+                    frame,
+                    FrameSubmission::new(frameclock_web::now(), None),
+                );
                 _ = (sample_time, submit.summary);
             }
             FrameBeginResult::WaitUntil(frame_start) => {
@@ -86,10 +89,9 @@ raf.start();
 The root module exposes the browser integration surface:
 
 - `RafLoop` for `requestAnimationFrame` callbacks.
-- `WebFrameClock` for retained `FrameDriver` integration.
 - `now` and `timebase` for browser host-time conversion.
-- `present_hints`, `compute_present_hints`, and `display_timing` for hosts that
-  need lower-level timing facts.
+- `present_hints`, `display_timing`, and `frame_opportunity` for hosts that own
+  `FrameDriver` directly.
 - `DEFAULT_REFRESH_INTERVAL` for conservative pacing fallback.
 
 `frameclock_web` keeps platform-specific browser code out of `frameclock`

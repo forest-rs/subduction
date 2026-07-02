@@ -5,8 +5,9 @@
 //!
 //! This crate owns browser-specific timing adaptation. It converts
 //! `requestAnimationFrame` callbacks into [`FrameTick`] values, exposes
-//! `performance.now()` as [`HostTime`], and provides [`WebFrameClock`] as a
-//! retained wrapper around [`FrameDriver`].
+//! `performance.now()` as [`HostTime`], and converts RAF ticks into
+//! [`FrameOpportunity`] values for callers that own a
+//! [`frameclock::FrameDriver`].
 //!
 //! It intentionally does not own DOM presentation, WebGL, WebGPU, application
 //! state, or renderer submission.
@@ -20,11 +21,7 @@ mod raf;
 pub use raf::RafLoop;
 
 use frameclock::time::Timebase;
-use frameclock::{
-    ActiveFrame, DisplayTiming, Duration, FrameBegin, FrameDemand, FrameDriver, FrameOpportunity,
-    FrameSubmission, FrameSubmitResult, FrameTick, FrameTimingSummary, HostTime, PresentHints,
-    SchedulerConfig,
-};
+use frameclock::{DisplayTiming, Duration, FrameOpportunity, FrameTick, HostTime, PresentHints};
 
 /// Browser host-time conversion: 1 tick = 1 microsecond = 1000 nanoseconds.
 pub const TIMEBASE: Timebase = Timebase::new(1000, 1);
@@ -77,15 +74,6 @@ pub fn present_hints(tick: &FrameTick, fallback_refresh_interval: Duration) -> P
     )
 }
 
-/// Compatibility helper matching other backend hint functions.
-///
-/// Prefer [`WebFrameClock`] for retained host integration. The safety margin is
-/// intentionally unused because RAF exposes no commit deadline.
-#[must_use]
-pub fn compute_present_hints(tick: &FrameTick, _safety_margin: Duration) -> PresentHints {
-    present_hints(tick, DEFAULT_REFRESH_INTERVAL)
-}
-
 /// Returns display timing for a browser RAF tick.
 ///
 /// If the tick carries a predicted present or refresh interval, this delegates
@@ -97,106 +85,22 @@ pub fn display_timing(tick: &FrameTick, fallback_interval: Duration) -> DisplayT
     DisplayTiming::from_tick(tick, fallback_interval)
 }
 
-/// Retained browser frame lifecycle adapter.
+/// Builds a [`FrameOpportunity`] from a browser RAF tick.
 ///
-/// `WebFrameClock` owns a [`FrameDriver`] and turns RAF [`FrameTick`] values
-/// into pacing-only [`FrameOpportunity`] values. Hosts still own redraw demand,
-/// application update, rendering, and surface/backend submission.
-#[derive(Debug)]
-pub struct WebFrameClock {
-    driver: FrameDriver,
-    fallback_refresh_interval: Duration,
-}
-
-impl WebFrameClock {
-    /// Creates a browser frame clock using `config` and a fallback interval.
-    #[must_use]
-    pub fn new(config: SchedulerConfig, fallback_refresh_interval: Duration) -> Self {
-        Self::from_driver(FrameDriver::new(config), fallback_refresh_interval)
-    }
-
-    /// Creates a browser frame clock around an existing [`FrameDriver`].
-    #[must_use]
-    pub const fn from_driver(driver: FrameDriver, fallback_refresh_interval: Duration) -> Self {
-        Self {
-            driver,
-            fallback_refresh_interval,
-        }
-    }
-
-    /// Returns the underlying frame driver.
-    #[must_use]
-    pub const fn driver(&self) -> &FrameDriver {
-        &self.driver
-    }
-
-    /// Returns the fallback refresh interval used for RAF ticks.
-    #[must_use]
-    pub const fn fallback_refresh_interval(&self) -> Duration {
-        self.fallback_refresh_interval
-    }
-
-    /// Adds host frame demand.
-    pub fn request(&mut self, demand: FrameDemand) {
-        self.driver.request(demand);
-    }
-
-    /// Returns whether demand is waiting for another planning turn.
-    #[must_use]
-    pub const fn has_pending_demand(&self) -> bool {
-        self.driver.has_pending_demand()
-    }
-
-    /// Returns the frame-start time for the queued plan, if any.
-    #[must_use]
-    pub const fn next_frame_start(&self) -> Option<HostTime> {
-        self.driver.next_frame_start()
-    }
-
-    /// Builds the frame opportunity that this adapter will pass to the driver.
-    #[must_use]
-    pub fn opportunity(&self, tick: FrameTick) -> FrameOpportunity {
-        FrameOpportunity::new(
-            tick,
-            present_hints(&tick, self.fallback_refresh_interval),
-            display_timing(&tick, self.fallback_refresh_interval),
-        )
-    }
-
-    /// Begins frame work from a RAF tick.
-    #[must_use]
-    pub fn begin_frame(&mut self, tick: FrameTick) -> FrameBegin {
-        let opportunity = self.opportunity(tick);
-        self.driver.begin_frame(opportunity)
-    }
-
-    /// Reports that a ready frame was submitted.
-    #[must_use]
-    pub fn submit_frame(
-        &mut self,
-        frame: ActiveFrame,
-        submission: FrameSubmission,
-    ) -> FrameSubmitResult {
-        self.driver.submit_frame(frame, submission)
-    }
-
-    /// Reports a submitted frame at the current browser host time.
-    #[must_use]
-    pub fn submit_frame_now(&mut self, frame: ActiveFrame) -> FrameSubmitResult {
-        self.submit_frame(frame, FrameSubmission::new(now(), None))
-    }
-
-    /// Drops a ready frame without feeding scheduler feedback.
-    #[must_use]
-    pub fn discard_frame(&mut self, frame: ActiveFrame) -> FrameTimingSummary {
-        self.driver.discard_frame(frame)
-    }
+/// Browser RAF exposes no portable predicted present time or commit deadline,
+/// so the opportunity is pacing-only and uses `fallback_interval` for both
+/// display timing and the commit boundary.
+#[must_use]
+pub fn frame_opportunity(tick: FrameTick, fallback_interval: Duration) -> FrameOpportunity {
+    let hints = present_hints(&tick, fallback_interval);
+    let display_timing = display_timing(&tick, fallback_interval);
+    FrameOpportunity::new(tick, hints, display_timing)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frameclock::{FrameBeginResult, OutputId};
+    use frameclock::{FrameBeginResult, FrameDemand, FrameDriver, OutputId, SchedulerConfig};
 
     fn test_tick() -> FrameTick {
         FrameTick {
@@ -231,8 +135,7 @@ mod tests {
     #[test]
     fn opportunity_uses_default_display_fallback() {
         let tick = test_tick();
-        let clock = WebFrameClock::new(SchedulerConfig::pacing_only(), DEFAULT_REFRESH_INTERVAL);
-        let opportunity = clock.opportunity(tick);
+        let opportunity = frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
 
         assert_eq!(opportunity.tick, tick);
         assert_eq!(
@@ -251,12 +154,13 @@ mod tests {
         let mut config = SchedulerConfig::pacing_only();
         config.initial_depth = 1;
         config.minimum_frame_start_margin = Duration::ZERO;
-        let mut clock = WebFrameClock::new(config, DEFAULT_REFRESH_INTERVAL);
+        let mut driver = FrameDriver::new(config);
 
-        clock.request(FrameDemand::INPUT);
+        driver.request(FrameDemand::INPUT);
+        let opportunity = frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
 
         assert!(matches!(
-            clock.begin_frame(tick).result,
+            driver.begin_frame(opportunity).result,
             FrameBeginResult::Ready(_)
         ));
     }

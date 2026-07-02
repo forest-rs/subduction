@@ -18,10 +18,10 @@ use bytemuck::{Pod, Zeroable};
 use frameclock::scheduler::DegradationPolicy;
 use frameclock::time::Timebase;
 use frameclock::{
-    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameTick, OutputId,
-    SchedulerConfig,
+    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameTick,
+    OutputId, SchedulerConfig,
 };
-use frameclock_apple::{AppleFeedbackMode, AppleFrameClock, DisplayLink};
+use frameclock_apple::DisplayLink;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -367,7 +367,8 @@ impl AppDelegate {
 struct AnimState {
     store: LayerStore,
     presenter: LayerPresenter,
-    frame_clock: AppleFrameClock,
+    frame_driver: FrameDriver,
+    display_timing: DisplayTiming,
     sub_ids: Vec<LayerId>,
     start_ticks: u64,
     timebase: Timebase,
@@ -748,17 +749,15 @@ fn setup_window(mtm: MainThreadMarker) {
     config.initial_depth = 1;
     config.degradation_policy = DegradationPolicy::Fixed;
     config.minimum_frame_start_margin = fallback_interval;
-    let frame_clock = AppleFrameClock::new_with_feedback_mode(
-        config,
-        DisplayTiming::fixed(fallback_interval),
-        AppleFeedbackMode::DeferredActualPresent,
-    );
+    let frame_driver = FrameDriver::new(config);
+    let display_timing = DisplayTiming::fixed(fallback_interval);
 
     ANIM_STATE.with(|cell| {
         *cell.borrow_mut() = Some(AnimState {
             store,
             presenter,
-            frame_clock,
+            frame_driver,
+            display_timing,
             sub_ids,
             start_ticks,
             timebase,
@@ -781,12 +780,13 @@ fn on_tick(tick: FrameTick) {
         let mut borrow = cell.borrow_mut();
         let Some(s) = borrow.as_mut() else { return };
 
-        s.frame_clock.request(FrameDemand::ANIMATION);
-        match s.frame_clock.begin_frame(tick).result {
+        s.frame_driver.request(FrameDemand::ANIMATION);
+        let opportunity = frameclock_apple::frame_opportunity(tick, s.display_timing);
+        match s.frame_driver.begin_frame(opportunity).result {
             FrameBeginResult::Ready(frame) => render_frame(s, frame),
             FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => {}
             FrameBeginResult::Expired(_) => {
-                s.frame_clock.request(FrameDemand::ANIMATION);
+                s.frame_driver.request(FrameDemand::ANIMATION);
             }
         }
     });
@@ -869,11 +869,16 @@ fn render_frame(s: &mut AnimState, frame: ActiveFrame) {
         frame.present();
     }
 
-    let _submit = s.frame_clock.submit_frame_now(frame);
+    let _submit = s.frame_driver.submit_frame(
+        frame,
+        frameclock_apple::DEFAULT_FEEDBACK_MODE.submission(frameclock_apple::now()),
+    );
 }
 
 fn apply_preferred_frame_interval(s: &AnimState, frame: &ActiveFrame) {
-    let Some(range) = s.frame_clock.preferred_frame_rate_range(frame) else {
+    let Some(range) =
+        frameclock_apple::preferred_frame_rate_range_for_frame(frame, s.display_timing)
+    else {
         return;
     };
     KEEP_ALIVE.with(|cell| {

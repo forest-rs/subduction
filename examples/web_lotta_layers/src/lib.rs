@@ -33,9 +33,10 @@ use web_sys::{Document, HtmlElement};
 
 use frameclock::time::Timebase;
 use frameclock::{
-    FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, OutputId, SchedulerConfig,
+    FrameBeginResult, FrameDemand, FrameDriver, FrameSubmission, FrameTick, OutputId,
+    SchedulerConfig,
 };
-use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop};
 use subduction_backend_web::DomPresenter;
 use subduction_backend_web::LayerRoot;
 use subduction_backend_web::Presenter as _;
@@ -71,7 +72,7 @@ fn layer_color_css(index: usize) -> String {
 
 struct AnimState {
     store: LayerStore,
-    frame_clock: WebFrameClock,
+    frame_driver: FrameDriver,
     presenter: DomPresenter,
     num_groups: usize,
     layers_per_group: usize,
@@ -148,7 +149,7 @@ pub fn main() -> Result<(), JsValue> {
 
     let state = Rc::new(RefCell::new(AnimState {
         store,
-        frame_clock: WebFrameClock::new(SchedulerConfig::pacing_only(), DEFAULT_REFRESH_INTERVAL),
+        frame_driver: FrameDriver::new(SchedulerConfig::pacing_only()),
         presenter,
         num_groups,
         layers_per_group,
@@ -222,12 +223,13 @@ fn create_fps_overlay(doc: &Document) -> Result<HtmlElement, JsValue> {
 fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
     let mut s = state.borrow_mut();
 
-    s.frame_clock.request(FrameDemand::ANIMATION);
-    let frame = match s.frame_clock.begin_frame(tick).result {
+    s.frame_driver.request(FrameDemand::ANIMATION);
+    let opportunity = frameclock_web::frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
+    let frame = match s.frame_driver.begin_frame(opportunity).result {
         FrameBeginResult::Ready(frame) => frame,
         FrameBeginResult::Expired(summary) => {
             if !summary.demand.is_empty() {
-                s.frame_clock.request(summary.demand);
+                s.frame_driver.request(summary.demand);
             }
             return;
         }
@@ -274,7 +276,7 @@ fn on_tick(state: &Rc<RefCell<AnimState>>, tick: FrameTick) {
 
     let submitted_at = frameclock_web::now();
     let _ = s
-        .frame_clock
+        .frame_driver
         .submit_frame(frame, FrameSubmission::new(submitted_at, None))
         .summary
         .expect("RAF submission should resolve immediately");

@@ -19,7 +19,7 @@ use wayland_client::Connection;
 
 use frameclock::scheduler::Scheduler;
 use frameclock::timing::PresentFeedback;
-use frameclock::{Duration, FrameDemand, FrameOpportunity, SchedulerConfig};
+use frameclock::{Duration, FrameDemand, SchedulerConfig};
 use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresenterConfig};
 use subduction_core::layer::LayerStore;
 
@@ -193,12 +193,7 @@ fn main() {
         while let Some(tick) = state.wayland.poll_tick() {
             let build_start = frameclock_wayland::now();
 
-            let hints = frameclock_wayland::present_hints(&tick, Duration(16_666_667));
-            let opportunity = FrameOpportunity::new(
-                tick,
-                hints,
-                frameclock_wayland::display_timing(&tick, Duration(16_666_667)),
-            );
+            let opportunity = frameclock_wayland::frame_opportunity(tick, Duration(16_666_667));
             let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
 
             let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);

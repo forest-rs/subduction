@@ -33,10 +33,10 @@ use core::f64::consts::TAU;
 use frameclock::time::Timebase;
 use frameclock::timing::PresentationTiming;
 use frameclock::{
-    Duration, FrameBeginResult, FrameDemand, FrameSubmission, FrameTick, HostTime, OutputId,
-    SchedulerConfig,
+    Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameSubmission, FrameTick, HostTime,
+    OutputId, SchedulerConfig,
 };
-use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop, WebFrameClock};
+use frameclock_web::{DEFAULT_REFRESH_INTERVAL, RafLoop};
 use mediaclock::MediaTimeline;
 use subduction_backend_web::{DomPresenter, LayerRoot, Presenter as _};
 use subduction_core::layer::{LayerId, LayerStore};
@@ -83,7 +83,7 @@ struct VideoUi {
 struct VideoState {
     store: LayerStore,
     presenter: DomPresenter,
-    frame_clock: WebFrameClock,
+    frame_driver: FrameDriver,
     timebase: Timebase,
     app_start: HostTime,
     media_timeline: MediaTimeline,
@@ -337,7 +337,7 @@ pub fn main() -> Result<(), JsValue> {
     let state = Rc::new(RefCell::new(VideoState {
         store,
         presenter,
-        frame_clock: WebFrameClock::new(scheduler_cfg, DEFAULT_REFRESH_INTERVAL),
+        frame_driver: FrameDriver::new(scheduler_cfg),
         timebase,
         app_start,
         media_timeline,
@@ -460,12 +460,13 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     };
     s.prev_tick_us = Some(tick.now.ticks());
 
-    s.frame_clock.request(FrameDemand::ANIMATION);
-    let frame = match s.frame_clock.begin_frame(tick).result {
+    s.frame_driver.request(FrameDemand::ANIMATION);
+    let opportunity = frameclock_web::frame_opportunity(tick, DEFAULT_REFRESH_INTERVAL);
+    let frame = match s.frame_driver.begin_frame(opportunity).result {
         FrameBeginResult::Ready(frame) => frame,
         FrameBeginResult::Expired(summary) => {
             if !summary.demand.is_empty() {
-                s.frame_clock.request(summary.demand);
+                s.frame_driver.request(summary.demand);
             }
             return;
         }
@@ -643,7 +644,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
     }
     let submitted_at = frameclock_web::now();
     let summary = s
-        .frame_clock
+        .frame_driver
         .submit_frame(frame, FrameSubmission::new(submitted_at, None))
         .summary
         .expect("RAF submission should resolve immediately");
@@ -716,7 +717,7 @@ fn on_tick(state: &Rc<RefCell<VideoState>>, tick: FrameTick) {
 
     s.ui.hud.set_text_content(Some(&format!(
         "PresentationTiming: {presentation_timing_label}\nTs: {ts_ms:.3}ms\nTp: {tp_label}\npipeline depth: {}\nmissed deadlines: {}\ninj(timer/decode/gpu): {:+.2} / {:.2} / {:.2} ms",
-        s.frame_clock.driver().scheduler().pipeline_depth(),
+        s.frame_driver.scheduler().pipeline_depth(),
         report.missed_frames,
         s.last_timer_jitter_ms,
         s.last_decode_jitter_ms,

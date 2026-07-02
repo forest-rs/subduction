@@ -15,12 +15,12 @@ use core::cell::RefCell;
 use frameclock::scheduler::DegradationPolicy;
 use frameclock::time::Timebase;
 use frameclock::{
-    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameTick, OutputId,
-    SchedulerConfig,
+    ActiveFrame, DisplayTiming, Duration, FrameBeginResult, FrameDemand, FrameDriver, FrameTick,
+    OutputId, SchedulerConfig,
 };
+use frameclock_apple::DisplayLink;
 #[cfg(all(feature = "cv-display-link", not(feature = "ca-display-link")))]
 use frameclock_apple::TickForwarder;
-use frameclock_apple::{AppleFeedbackMode, AppleFrameClock, DisplayLink};
 use lotta_layers_common::LAYER_SIZE;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -141,7 +141,8 @@ fn layer_color(index: usize) -> [f64; 3] {
 struct AnimState {
     store: LayerStore,
     presenter: LayerPresenter,
-    frame_clock: AppleFrameClock,
+    frame_driver: FrameDriver,
+    display_timing: DisplayTiming,
     /// `group_ids[g]` is the `LayerId` for group `g`.
     group_ids: Vec<LayerId>,
     /// `child_ids[g * LAYERS_PER_GROUP + c]` is the `LayerId` for child `c`
@@ -242,17 +243,15 @@ fn setup_window(mtm: MainThreadMarker) {
     config.initial_depth = 1;
     config.degradation_policy = DegradationPolicy::Fixed;
     config.minimum_frame_start_margin = fallback_interval;
-    let frame_clock = AppleFrameClock::new_with_feedback_mode(
-        config,
-        DisplayTiming::fixed(fallback_interval),
-        apple_feedback_mode(),
-    );
+    let frame_driver = FrameDriver::new(config);
+    let display_timing = DisplayTiming::fixed(fallback_interval);
 
     ANIM_STATE.with(|cell| {
         *cell.borrow_mut() = Some(AnimState {
             store,
             presenter,
-            frame_clock,
+            frame_driver,
+            display_timing,
             group_ids,
             child_ids,
             start_ticks,
@@ -269,30 +268,20 @@ fn setup_window(mtm: MainThreadMarker) {
     });
 }
 
-fn apple_feedback_mode() -> AppleFeedbackMode {
-    #[cfg(feature = "ca-display-link")]
-    {
-        AppleFeedbackMode::DeferredActualPresent
-    }
-    #[cfg(not(feature = "ca-display-link"))]
-    {
-        AppleFeedbackMode::CommitOnly
-    }
-}
-
 fn on_tick(tick: FrameTick) {
     ANIM_STATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let Some(s) = borrow.as_mut() else { return };
 
-        s.frame_clock.request(FrameDemand::ANIMATION);
-        let begin = s.frame_clock.begin_frame(tick);
+        s.frame_driver.request(FrameDemand::ANIMATION);
+        let opportunity = frameclock_apple::frame_opportunity(tick, s.display_timing);
+        let begin = s.frame_driver.begin_frame(opportunity);
 
         match begin.result {
             FrameBeginResult::Ready(frame) => render_frame(s, frame),
             FrameBeginResult::WaitUntil(_) | FrameBeginResult::Idle => {}
             FrameBeginResult::Expired(_) => {
-                s.frame_clock.request(FrameDemand::ANIMATION);
+                s.frame_driver.request(FrameDemand::ANIMATION);
             }
         }
     });
@@ -320,13 +309,18 @@ fn render_frame(s: &mut AnimState, frame: ActiveFrame) {
 
     let changes = s.store.evaluate();
     s.presenter.apply(&s.store, &changes);
-    let _submit = s.frame_clock.submit_frame_now(frame);
+    let _submit = s.frame_driver.submit_frame(
+        frame,
+        frameclock_apple::DEFAULT_FEEDBACK_MODE.submission(frameclock_apple::now()),
+    );
 }
 
 fn apply_preferred_frame_interval(s: &AnimState, frame: &ActiveFrame) {
     #[cfg(feature = "ca-display-link")]
     {
-        let Some(range) = s.frame_clock.preferred_frame_rate_range(frame) else {
+        let Some(range) =
+            frameclock_apple::preferred_frame_rate_range_for_frame(frame, s.display_timing)
+        else {
             return;
         };
         KEEP_ALIVE.with(|cell| {

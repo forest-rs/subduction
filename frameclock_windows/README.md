@@ -26,7 +26,7 @@ Use `now` and `timebase` to read the QPC clock as a `HostTime` /
 `Timebase` pair (`nanos = ticks * timebase.numer / timebase.denom`). Call
 `make_tick` from a `VSync`-paced tick handler (for example, one driven by
 `DwmFlush` or a swapchain frame-latency waitable) to build a `FrameTick` from
-the refresh interval, frame index, and previous actual present time.
+the refresh interval and previous actual present time.
 
 ## Timing Model
 

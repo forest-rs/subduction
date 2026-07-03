@@ -51,7 +51,6 @@ fn main() {
             now: HostTime(now_ticks),
             predicted_present: Some(HostTime(now_ticks + refresh_interval)),
             refresh_interval: Some(refresh_interval),
-            frame_index,
             output: OutputId(0),
             prev_actual_present: if frame_index > 0 {
                 // Previous frame presented on time.
@@ -61,7 +60,7 @@ fn main() {
             },
         };
 
-        let tick_event = FrameTickEvent::from(&tick);
+        let tick_event = FrameTickEvent::new(frame_index, &tick);
         pretty.on_frame_tick(&tick_event);
         recorder.on_frame_tick(&tick_event);
 
@@ -85,7 +84,7 @@ fn main() {
             hints,
             DisplayTiming::from_tick(&tick, Duration(refresh_interval)),
         );
-        let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION);
+        let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION, frame_index);
         let plan_end = HostTime(now_ticks + 100_000);
 
         let plan_event = FramePlanEvent::new(&plan, scheduler.safety_margin_ticks());

@@ -19,7 +19,7 @@ use crate::{PreferredFrameRateRange, mach_time, preferred_frame_rate_range};
 
 struct DisplayLinkTargetIvars {
     callback: Box<dyn Fn(FrameTick)>,
-    frame_counter: Cell<u64>,
+    has_previous_timestamp: Cell<bool>,
     output: OutputId,
     timebase: Timebase,
 }
@@ -49,7 +49,7 @@ impl DisplayLinkTarget {
         let tb = mach_time::timebase();
         let this = mtm.alloc::<Self>().set_ivars(DisplayLinkTargetIvars {
             callback: Box::new(callback),
-            frame_counter: Cell::new(0),
+            has_previous_timestamp: Cell::new(false),
             output,
             timebase: tb,
         });
@@ -71,10 +71,7 @@ impl DisplayLinkTarget {
             mach_time::media_time_to_host_time(target_ts, now, ca_now, ivars.timebase);
         let refresh_interval = mach_time::seconds_to_ticks(duration, ivars.timebase);
 
-        let frame_index = ivars.frame_counter.get();
-        ivars.frame_counter.set(frame_index + 1);
-
-        let prev_actual_present = if frame_index > 0 {
+        let prev_actual_present = if ivars.has_previous_timestamp.replace(true) {
             mach_time::media_time_to_host_time(timestamp, now, ca_now, ivars.timebase)
         } else {
             None
@@ -84,7 +81,6 @@ impl DisplayLinkTarget {
             now,
             predicted_present,
             refresh_interval: Some(refresh_interval),
-            frame_index,
             output: ivars.output,
             prev_actual_present,
         };

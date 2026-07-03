@@ -541,11 +541,10 @@ mod tests {
             now: HostTime(100),
             predicted_present: Some(HostTime(200)),
             refresh_interval: Some(16_666_667),
-            frame_index: 7,
             output: OutputId(1),
             prev_actual_present: None,
         };
-        let evt = FrameTickEvent::from(&tick);
+        let evt = FrameTickEvent::new(7, &tick);
         assert_eq!(evt.frame_index, 7);
         assert_eq!(evt.output, OutputId(1));
         assert_eq!(evt.now, HostTime(100));

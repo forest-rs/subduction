@@ -196,7 +196,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present,
             refresh_interval: Some(16_666_667),
-            frame_index: 7,
             output: OutputId(0),
             prev_actual_present: None,
         }
@@ -239,7 +238,6 @@ mod tests {
             now: HostTime(2_000_000),
             predicted_present: Some(HostTime(1_900_000)),
             refresh_interval: Some(16_666_667),
-            frame_index: 7,
             output: OutputId(0),
             prev_actual_present: None,
         };

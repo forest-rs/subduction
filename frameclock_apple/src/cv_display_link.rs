@@ -8,7 +8,6 @@ use core::ffi::c_void;
 use core::fmt;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use frameclock::time::Timebase;
 use frameclock::{FrameTick, HostTime, OutputId};
@@ -47,7 +46,6 @@ impl core::error::Error for DisplayLinkError {}
 
 struct CallbackState {
     sender: TickSender,
-    frame_counter: AtomicU64,
     output: OutputId,
 }
 
@@ -88,11 +86,7 @@ impl DisplayLink {
         reason = "CVDisplayLink API is deprecated by Apple but still functional"
     )]
     pub fn new(sender: TickSender, output: OutputId) -> Result<Self, DisplayLinkError> {
-        let state = Box::pin(CallbackState {
-            sender,
-            frame_counter: AtomicU64::new(0),
-            output,
-        });
+        let state = Box::pin(CallbackState { sender, output });
 
         let mut link_ptr: *mut CVDisplayLinkRaw = core::ptr::null_mut();
         let ret = unsafe {
@@ -218,13 +212,10 @@ unsafe extern "C-unwind" fn display_link_callback(
         None
     };
 
-    let frame_index = state.frame_counter.fetch_add(1, Ordering::Relaxed);
-
     let tick = FrameTick {
         now,
         predicted_present: Some(predicted_present),
         refresh_interval,
-        frame_index,
         output: state.output,
         prev_actual_present: None,
     };

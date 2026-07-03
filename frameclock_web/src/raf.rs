@@ -46,7 +46,6 @@ type RafClosure = Closure<dyn FnMut(f64)>;
 struct RafInner {
     closure: RefCell<Option<RafClosure>>,
     callback: RefCell<Box<dyn FnMut(FrameTick)>>,
-    frame_counter: Cell<u64>,
     output: OutputId,
     running: Cell<bool>,
     raf_id: Cell<i32>,
@@ -63,7 +62,6 @@ impl RafLoop {
             inner: Rc::new(RafInner {
                 closure: RefCell::new(None),
                 callback: RefCell::new(Box::new(callback)),
-                frame_counter: Cell::new(0),
                 output,
                 running: Cell::new(false),
                 raf_id: Cell::new(0),
@@ -93,14 +91,10 @@ impl RafLoop {
             )]
             let now = HostTime((timestamp_ms * 1000.0) as u64);
 
-            let frame_index = inner.frame_counter.get();
-            inner.frame_counter.set(frame_index + 1);
-
             let tick = FrameTick {
                 now,
                 predicted_present: None,
                 refresh_interval: None,
-                frame_index,
                 output: inner.output,
                 prev_actual_present: None,
             };
@@ -150,7 +144,6 @@ impl core::fmt::Debug for RafLoop {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RafLoop")
             .field("running", &self.inner.running.get())
-            .field("frame_counter", &self.inner.frame_counter.get())
             .field("output", &self.inner.output)
             .finish()
     }

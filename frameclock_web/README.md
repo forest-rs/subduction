@@ -103,10 +103,10 @@ diagnostics stay in `frameclock`.
 `TIMEBASE` uses microsecond ticks: `1 tick = 1_000 ns`. This matches browser
 `DOMHighResTimeStamp` values after converting milliseconds to microseconds.
 
-`RafLoop` increments `FrameTick::frame_index` once per delivered RAF callback.
-Applications that bypass `RafLoop` and create their own ticks should keep the
-same per-output monotonic ownership rule: the frame index identifies a
-delivered browser frame opportunity for one output or surface.
+`RafLoop` emits pacing facts for each delivered RAF callback. It does not assign
+content-frame identity; retained hosts get `FramePlan::frame_index` from
+`FrameDriver`, while low-level `Scheduler` integrations pass their own frame id
+to `Scheduler::plan` and `FrameTickEvent::new`.
 
 Because RAF is pacing-only, `PresentHints::desired_present` is `None` and
 `PresentHints::latest_commit` is one fallback refresh interval after the RAF

@@ -248,14 +248,6 @@ pub struct FrameTick {
     pub predicted_present: Option<HostTime>,
     /// Display refresh interval in host-time ticks, if known.
     pub refresh_interval: Option<u64>,
-    /// Host-owned monotonically increasing frame counter for this output.
-    ///
-    /// Keep this stable for the full lifecycle of one planned content frame:
-    /// tick, plan, submit/feedback, and drop diagnostics all use this value to
-    /// join events. With [`FrameDriver`](crate::FrameDriver), increment it
-    /// after an [`ActiveFrame`](crate::ActiveFrame) is submitted or discarded,
-    /// not every time a frame-start wake fires while a plan is queued.
-    pub frame_index: u64,
     /// Which output this tick is for.
     pub output: OutputId,
     /// Actual present time of the *previous* frame, if the backend can report
@@ -275,12 +267,6 @@ pub struct FrameTick {
 /// when using the retained lifecycle API, or to
 /// [`Scheduler::plan`](crate::scheduler::Scheduler::plan) when using the
 /// lower-level scheduler directly.
-///
-/// `frame_index` lives on [`FrameTick`] and is owned by the host/backend. When
-/// using [`FrameDriver`](crate::FrameDriver), advance it after an
-/// [`ActiveFrame`](crate::ActiveFrame) is submitted or discarded. Do not
-/// advance it merely because a frame-start wake fired while an older planned
-/// frame was still queued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameOpportunity {
     /// Platform frame opportunity.
@@ -318,17 +304,11 @@ impl FrameOpportunity {
     /// - [`DisplayTiming::fixed`] with `refresh_interval`.
     #[inline]
     #[must_use]
-    pub fn pacing_only(
-        now: HostTime,
-        refresh_interval: Duration,
-        frame_index: u64,
-        output: OutputId,
-    ) -> Self {
+    pub fn pacing_only(now: HostTime, refresh_interval: Duration, output: OutputId) -> Self {
         let tick = FrameTick {
             now,
             predicted_present: None,
             refresh_interval: Some(refresh_interval.ticks()),
-            frame_index,
             output,
             prev_actual_present: None,
         };
@@ -373,10 +353,12 @@ pub struct FramePlan {
     pub pipeline_depth: u8,
     /// Which output this frame targets.
     pub output: OutputId,
-    /// Frame counter, carried from the originating [`FrameTick`].
+    /// Monotonic content-frame counter used for diagnostics and summaries.
     ///
-    /// This identifies the planned content frame, not necessarily the host
-    /// wake that eventually made the queued frame ready.
+    /// Retained hosts get this from [`FrameDriver`](crate::FrameDriver), which
+    /// advances its counter when a planned frame becomes ready or expires.
+    /// Low-level scheduler integrations pass the value explicitly to
+    /// [`Scheduler::plan`](crate::scheduler::Scheduler::plan).
     pub frame_index: u64,
 }
 
@@ -698,7 +680,6 @@ mod tests {
             now: HostTime(now),
             predicted_present: predicted.map(HostTime),
             refresh_interval,
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         }

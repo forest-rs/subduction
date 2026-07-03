@@ -270,23 +270,24 @@ unsafe extern "system" fn wnd_proc(
 fn on_tick() {
     let Some(s) = state_mut() else { return };
 
-    s.frame_index += 1;
-    let tick = make_tick(REFRESH_NS, s.frame_index, s.prev_present_time);
-    let frame_index = tick.frame_index;
+    let frame_index = s.frame_index;
+    s.frame_index = s.frame_index.saturating_add(1);
+    let tick = make_tick(REFRESH_NS, s.prev_present_time);
 
     // Resolve previous frame's feedback.
     if let Some(pending) = s.pending_feedback.take() {
+        let pending_frame_index = pending.plan.frame_index;
         let feedback = pending.resolve(tick.prev_actual_present);
         s.scheduler.observe(&feedback);
         s.recorder.on_present_feedback(&PresentFeedbackEvent {
-            frame_index: frame_index.saturating_sub(1),
+            frame_index: pending_frame_index,
             actual_present: tick.prev_actual_present,
             missed_deadline: feedback.missed_deadline,
             pacing_overrun: feedback.pacing_overrun,
         });
     }
 
-    let tick_event = FrameTickEvent::from(&tick);
+    let tick_event = FrameTickEvent::new(frame_index, &tick);
     s.recorder.on_frame_tick(&tick_event);
 
     // --- Plan phase ---
@@ -303,7 +304,9 @@ fn on_tick() {
         hints,
         DisplayTiming::from_tick(&tick, Duration(16_666_667)),
     );
-    let plan = s.scheduler.plan(opportunity, FrameDemand::ANIMATION);
+    let plan = s
+        .scheduler
+        .plan(opportunity, FrameDemand::ANIMATION, frame_index);
 
     let plan_end = backend::now();
     s.recorder.on_phase_end(&PhaseEndEvent {

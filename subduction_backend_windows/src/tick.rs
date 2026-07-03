@@ -178,12 +178,8 @@ impl Drop for FrameEventTickSource {
 
 /// Build a [`FrameTick`] from QPC. Call inside the `WM_APP_TICK` handler.
 #[must_use]
-pub fn make_tick(
-    refresh_interval_ns: u64,
-    frame_index: u64,
-    prev_present_time: Option<HostTime>,
-) -> FrameTick {
-    frameclock_windows::make_tick(refresh_interval_ns, frame_index, prev_present_time)
+pub fn make_tick(refresh_interval_ns: u64, prev_present_time: Option<HostTime>) -> FrameTick {
+    frameclock_windows::make_tick(refresh_interval_ns, prev_present_time)
 }
 
 /// Compute presentation hints from a tick and safety margin (nanoseconds).

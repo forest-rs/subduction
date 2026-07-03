@@ -103,7 +103,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(2_000_000)),
             refresh_interval: Some(16_666_667),
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };
@@ -118,8 +117,7 @@ mod tests {
     #[test]
     fn make_tick_with_refresh_and_prev() {
         let prev = HostTime(1_000_000);
-        let tick = make_tick(16_666_667, 5, Some(prev));
-        assert_eq!(tick.frame_index, 5);
+        let tick = make_tick(16_666_667, Some(prev));
         assert_eq!(tick.prev_actual_present, Some(prev));
         assert!(tick.predicted_present.is_some());
         assert!(tick.refresh_interval.is_some());
@@ -127,7 +125,7 @@ mod tests {
 
     #[test]
     fn make_tick_zero_refresh() {
-        let tick = make_tick(0, 1, None);
+        let tick = make_tick(0, None);
         assert_eq!(tick.predicted_present, None);
         assert_eq!(tick.refresh_interval, None);
         assert_eq!(tick.prev_actual_present, None);
@@ -135,7 +133,7 @@ mod tests {
 
     #[test]
     fn make_tick_first_frame_predicts_from_now() {
-        let tick = make_tick(16_666_667, 0, None);
+        let tick = make_tick(16_666_667, None);
         // First frame with no prev: predicted_present = now + interval
         let predicted = tick.predicted_present.unwrap();
         assert!(predicted.ticks() > tick.now.ticks());
@@ -147,7 +145,6 @@ mod tests {
             now: HostTime(1_000_000),
             predicted_present: None,
             refresh_interval: None,
-            frame_index: 0,
             output: OutputId(0),
             prev_actual_present: None,
         };

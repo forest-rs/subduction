@@ -1,6 +1,6 @@
 [package]
 name = "subduction_backend_x11"
-description = "X11 backend for subduction (Present extension, OML sync)"
+description = "X11 backend for subduction (Present extension, wgpu compositing)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -14,4 +14,26 @@ categories = ["rendering::engine"]
 workspace = true
 
 [dependencies]
+# The present/timing source is pure logic (fed decoded Present fields), so it
+# builds everywhere on `frameclock_x11` alone.
 subduction_core = { workspace = true, features = ["std"] }
+frameclock = { workspace = true, features = ["std"] }
+frameclock_x11 = { workspace = true }
+
+# The compositor owns an X11 window and a wgpu surface, so it is gated to the
+# targets that have both.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+subduction_backend_wgpu = { workspace = true }
+wgpu = { workspace = true }
+pollster = "0.4"
+# The Present extension carries frame timing; `dri3`/`xfixes`/`sync`/`randr`
+# back it and are not pulled transitively. `allow-unsafe-code` unlocks the
+# libxcb-backed `XCBConnection`, whose raw pointer the wgpu surface needs.
+x11rb = { version = "0.14", default-features = false, features = [
+  "allow-unsafe-code",
+  "dri3",
+  "present",
+  "randr",
+  "sync",
+  "xfixes",
+] }

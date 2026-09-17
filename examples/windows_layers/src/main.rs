@@ -279,12 +279,8 @@ fn on_tick() {
         let pending_frame_index = pending.plan.frame_index;
         let feedback = pending.resolve(tick.prev_actual_present);
         s.scheduler.observe(&feedback);
-        s.recorder.on_present_feedback(&PresentFeedbackEvent {
-            frame_index: pending_frame_index,
-            actual_present: tick.prev_actual_present,
-            missed_deadline: feedback.missed_deadline,
-            pacing_overrun: feedback.pacing_overrun,
-        });
+        s.recorder
+            .on_present_feedback(&PresentFeedbackEvent::new(pending_frame_index, &feedback));
     }
 
     let tick_event = FrameTickEvent::new(frame_index, &tick);

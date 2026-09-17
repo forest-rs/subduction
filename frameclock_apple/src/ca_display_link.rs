@@ -176,7 +176,7 @@ impl DisplayLink {
     ///
     /// This is the native `ProMotion` writeback seam. Hosts typically compute the
     /// range from a ready frame's selected interval with
-    /// [`preferred_frame_rate_range`](crate::preferred_frame_rate_range), apply
+    /// [`crate::preferred_frame_rate_range`], apply
     /// it to the display link, and then submit/render normally.
     pub fn set_preferred_frame_rate_range(&self, range: PreferredFrameRateRange) {
         self.raw.setPreferredFrameRateRange(CAFrameRateRange::new(

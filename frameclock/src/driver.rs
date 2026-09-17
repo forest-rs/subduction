@@ -14,7 +14,7 @@ use crate::diagnostics::{
     FrameTimingSummaryBuilder, PresentFeedbackEvent, SchedulerStateEvent, SubmitEvent,
 };
 use crate::scheduler::{Scheduler, SchedulerConfig};
-use crate::time::HostTime;
+use crate::time::{Duration, HostTime};
 use crate::timing::{FrameOpportunity, FramePlan, FrameTick, PresentFeedback, PresentHints};
 
 /// A queued scheduler plan paired with the platform facts used to make it.
@@ -156,7 +156,21 @@ pub enum PresentationObservation {
     /// The driver stores the submission and returns the summary in
     /// [`FrameBegin::resolved_feedback`] the next time
     /// [`FrameDriver::begin_frame`] is called.
+    ///
+    /// The tick's timestamp is the display's latest refresh, so this suits
+    /// hosts whose submission reaches the screen on the next one (a layer
+    /// tree committed to a compositor). A renderer with GPU work queued
+    /// behind the submission should use [`Self::Reported`].
     Deferred,
+    /// The host reports what became of this frame later, by frame index,
+    /// with [`FrameDriver::report_frame`].
+    ///
+    /// For hosts that learn each frame's own fate asynchronously, possibly
+    /// after later frames were submitted: GPU completion and presented
+    /// handlers, `wp_presentation` feedback, swapchain statistics. The
+    /// driver holds up to [`REPORTED_FRAME_CAPACITY`] such frames; a
+    /// submission beyond that resolves the oldest as commit-only.
+    Reported,
 }
 
 impl PresentationObservation {
@@ -166,7 +180,7 @@ impl PresentationObservation {
     pub const fn actual_present(self) -> Option<HostTime> {
         match self {
             Self::Actual(actual_present) => Some(actual_present),
-            Self::Unavailable | Self::Deferred => None,
+            Self::Unavailable | Self::Deferred | Self::Reported => None,
         }
     }
 }
@@ -221,6 +235,17 @@ impl FrameSubmission {
         }
     }
 
+    /// Creates submission facts for a frame whose fate the host reports
+    /// later with [`FrameDriver::report_frame`].
+    #[inline]
+    #[must_use]
+    pub const fn reported(submitted_at: HostTime) -> Self {
+        Self {
+            submitted_at,
+            presentation: PresentationObservation::Reported,
+        }
+    }
+
     /// Returns the immediate actual-present timestamp, if one is already
     /// available.
     #[inline]
@@ -228,6 +253,37 @@ impl FrameSubmission {
     pub const fn actual_present(self) -> Option<HostTime> {
         self.presentation.actual_present()
     }
+}
+
+/// How many [`PresentationObservation::Reported`] frames a [`FrameDriver`]
+/// holds while waiting for their reports.
+pub const REPORTED_FRAME_CAPACITY: usize = 8;
+
+/// What became of a submitted frame, reported to
+/// [`FrameDriver::report_frame`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FrameReport {
+    /// What the frame's submission cost beyond the host's own work, if the
+    /// platform can say: for a GPU renderer, how long its work took.
+    ///
+    /// Build cost is the longer of this and the host's span, so the
+    /// scheduler sees what a frame really costs. Report the work's
+    /// duration, not when it finished: a frame queued behind others waits,
+    /// and waiting is not what the frame costs.
+    pub work: Option<Duration>,
+    /// What the display did with the frame.
+    pub outcome: PresentOutcome,
+}
+
+/// What the display did with a submitted frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresentOutcome {
+    /// Shown at this host time.
+    Presented(HostTime),
+    /// Never shown: a later frame replaced it first.
+    NotPresented,
+    /// The platform could not say.
+    Unknown,
 }
 
 /// Result returned by [`FrameDriver::submit_frame`].
@@ -331,7 +387,10 @@ enum DriverBeginResult {
 ///    [`ActiveFrame::sample_time`], then either submit it with
 ///    [`submit_frame`](Self::submit_frame) or drop it with
 ///    [`discard_frame`](Self::discard_frame).
-/// 5. After submit or discard, call
+/// 5. A frame submitted with [`FrameSubmission::reported`] is resolved later:
+///    call [`report_frame`](Self::report_frame) with its index and
+///    [`FrameReport`] when the host learns what became of it.
+/// 6. After submit or discard, call
 ///    [`has_pending_demand`](Self::has_pending_demand). If it is true, request
 ///    another redraw so weaker retained demand can be planned on a fresh turn.
 ///
@@ -361,10 +420,13 @@ pub struct FrameDriver {
     pending_demand: FrameDemand,
     pending_frame: Option<PlannedFrame>,
     pending_feedback: Option<DeferredFrameFeedback>,
+    /// [`PresentationObservation::Reported`] frames awaiting their reports,
+    /// in submission order.
+    reported: [Option<DeferredFrameFeedback>; REPORTED_FRAME_CAPACITY],
     next_frame_index: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct DeferredFrameFeedback {
     planned: PlannedFrame,
     build_start: HostTime,
@@ -396,8 +458,16 @@ impl FrameDriver {
             pending_demand: FrameDemand::NONE,
             pending_frame: None,
             pending_feedback: None,
+            reported: [None; REPORTED_FRAME_CAPACITY],
             next_frame_index: 0,
         }
+    }
+
+    /// Returns how many [`PresentationObservation::Reported`] frames are
+    /// still waiting for [`report_frame`](Self::report_frame).
+    #[must_use]
+    pub fn awaiting_reports(&self) -> usize {
+        self.reported.iter().flatten().count()
     }
 
     /// Returns the underlying scheduler.
@@ -543,6 +613,14 @@ impl FrameDriver {
                     awaiting_actual_present: true,
                 }
             }
+            PresentationObservation::Reported => {
+                let summary = self
+                    .hold_for_report(DeferredFrameFeedback::new(frame, submission.submitted_at));
+                FrameSubmitResult {
+                    summary,
+                    awaiting_actual_present: true,
+                }
+            }
             PresentationObservation::Unavailable | PresentationObservation::Actual(_) => {
                 let feedback = PresentFeedback::new(
                     &frame.plan(),
@@ -558,6 +636,78 @@ impl FrameDriver {
                 ))
             }
         }
+    }
+
+    /// Resolves a [`PresentationObservation::Reported`] frame from what
+    /// the host learned about it.
+    ///
+    /// Feeds the scheduler and returns the frame's summary. Returns `None`
+    /// when no frame with `frame_index` is waiting: it was never submitted
+    /// as reported, was already reported, or was resolved commit-only to
+    /// make room.
+    ///
+    /// Reports may arrive in any order. A frame reported
+    /// [`PresentOutcome::NotPresented`] feeds build cost but no deadline
+    /// signal, and its summary carries
+    /// [`FrameDropReason::NotPresented`].
+    pub fn report_frame(
+        &mut self,
+        frame_index: u64,
+        report: FrameReport,
+    ) -> Option<FrameTimingSummary> {
+        let slot = self
+            .reported
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|held| held.planned.plan.frame_index == frame_index))?;
+        let held = slot.take()?;
+        let actual_present = match report.outcome {
+            PresentOutcome::Presented(at) => Some(at),
+            PresentOutcome::NotPresented | PresentOutcome::Unknown => None,
+        };
+        let feedback = PresentFeedback::with_work(
+            &held.planned.plan,
+            held.build_start,
+            held.submitted_at,
+            report.work,
+            actual_present,
+        );
+        let mut summary = self.finish_submitted_frame(
+            held.planned,
+            held.build_start,
+            held.submitted_at,
+            &feedback,
+        );
+        if report.outcome == PresentOutcome::NotPresented {
+            summary.drop_reason = Some(FrameDropReason::NotPresented);
+        }
+        Some(summary)
+    }
+
+    /// Holds `held` for a report, resolving the oldest held frame
+    /// commit-only when every slot is taken.
+    fn hold_for_report(&mut self, held: DeferredFrameFeedback) -> Option<FrameTimingSummary> {
+        if let Some(free) = self.reported.iter_mut().find(|slot| slot.is_none()) {
+            *free = Some(held);
+            return None;
+        }
+        let oldest = self
+            .reported
+            .iter_mut()
+            .min_by_key(|slot| slot.map_or(u64::MAX, |held| held.planned.plan.frame_index))
+            .expect("the capacity is not zero");
+        let evicted = oldest.replace(held).expect("every slot is taken");
+        let feedback = PresentFeedback::new(
+            &evicted.planned.plan,
+            evicted.build_start,
+            evicted.submitted_at,
+            None,
+        );
+        Some(self.finish_submitted_frame(
+            evicted.planned,
+            evicted.build_start,
+            evicted.submitted_at,
+            &feedback,
+        ))
     }
 
     fn resolve_deferred_feedback(
@@ -1200,19 +1350,145 @@ mod tests {
             panic!("input should start immediately");
         };
 
+        // A refresh late, not a tick late: the timestamp for the refresh a
+        // frame was planned for lands a little after the target.
         let summary = driver
             .submit_frame(
                 frame,
-                FrameSubmission::new(HostTime(20), Some(HostTime(101))),
+                FrameSubmission::new(HostTime(20), Some(HostTime(100 + REFRESH_INTERVAL.ticks()))),
             )
             .summary
             .expect("actual-present feedback should resolve immediately");
 
         assert_eq!(summary.timing_basis, FrameTimingBasis::ActualPresent);
         assert_eq!(summary.expected_present, Some(HostTime(100)));
-        assert_eq!(summary.actual_present, Some(HostTime(101)));
+        assert_eq!(
+            summary.actual_present,
+            Some(HostTime(100 + REFRESH_INTERVAL.ticks()))
+        );
         assert_eq!(summary.missed_deadline, Some(true));
         assert_eq!(summary.pacing_overrun, None);
+    }
+
+    /// Starts an input frame at `now`, to be shown at `now + 90` and
+    /// committed by `now + 80`.
+    fn input_frame(driver: &mut FrameDriver, now: u64) -> ActiveFrame {
+        driver.request(FrameDemand::INPUT);
+        let FrameBeginResult::Ready(frame) = driver
+            .begin_frame(predictive_opportunity(now, 0, now + 90, now + 80))
+            .result
+        else {
+            panic!("input should start immediately");
+        };
+        frame
+    }
+
+    fn presented(at: u64) -> FrameReport {
+        FrameReport {
+            work: None,
+            outcome: PresentOutcome::Presented(HostTime(at)),
+        }
+    }
+
+    #[test]
+    fn reported_frames_resolve_from_their_own_reports_in_any_order() {
+        let mut driver = driver();
+        let mut indices = [0; 3];
+        for (slot, now) in indices.iter_mut().zip([10, 110, 210]) {
+            let frame = input_frame(&mut driver, now);
+            *slot = frame.plan().frame_index;
+            let submit = driver.submit_frame(frame, FrameSubmission::reported(HostTime(now + 10)));
+            assert_eq!(submit.summary, None);
+            assert!(submit.awaiting_actual_present);
+        }
+        assert_eq!(driver.awaiting_reports(), 3);
+
+        // Shown two refreshes late: a miss, though a later tick's timestamp
+        // would have looked on time.
+        let late = driver
+            .report_frame(indices[1], presented(290))
+            .expect("the second frame is held");
+        assert_eq!(late.frame_index, indices[1]);
+        assert_eq!(late.actual_present, Some(HostTime(290)));
+        assert_eq!(late.missed_deadline, Some(true));
+
+        let on_time = driver
+            .report_frame(indices[0], presented(100))
+            .expect("the first frame is held");
+        assert_eq!(on_time.missed_deadline, Some(false));
+        assert_eq!(on_time.timing_basis, FrameTimingBasis::ActualPresent);
+
+        let replaced = driver
+            .report_frame(
+                indices[2],
+                FrameReport {
+                    work: Some(Duration(40)),
+                    outcome: PresentOutcome::NotPresented,
+                },
+            )
+            .expect("the third frame is held");
+        assert_eq!(replaced.drop_reason, Some(FrameDropReason::NotPresented));
+        assert_eq!(replaced.missed_deadline, None);
+        assert_eq!(replaced.work, Some(Duration(40)));
+
+        assert_eq!(driver.awaiting_reports(), 0);
+        assert_eq!(driver.report_frame(indices[0], presented(100)), None);
+    }
+
+    #[test]
+    fn reported_work_counts_toward_build_cost() {
+        let margin_after = |work: Option<u64>| {
+            let mut driver = driver();
+            let frame = input_frame(&mut driver, 10);
+            let index = frame.plan().frame_index;
+            let _ = driver.submit_frame(frame, FrameSubmission::reported(HostTime(20)));
+            let summary = driver
+                .report_frame(
+                    index,
+                    FrameReport {
+                        work: work.map(Duration),
+                        outcome: PresentOutcome::Unknown,
+                    },
+                )
+                .expect("the frame is held");
+            (driver.scheduler().safety_margin_ticks(), summary)
+        };
+
+        // The host's own span is 10 ticks, from build start to submission.
+        let (host_only, host_summary) = margin_after(None);
+        let (with_work, work_summary) = margin_after(Some(85));
+        assert!(
+            with_work > host_only,
+            "85 ticks of queued work cost more than the host's 10: {with_work} <= {host_only}"
+        );
+        assert_eq!(host_summary.work, None);
+        assert_eq!(work_summary.work, Some(Duration(85)));
+        // Work the host did not wait for does not make it late to commit.
+        assert_eq!(work_summary.pacing_overrun, Some(false));
+    }
+
+    #[test]
+    fn reported_frames_past_capacity_resolve_the_oldest_commit_only() {
+        let mut driver = driver();
+        let mut first = None;
+        for step in 0..REPORTED_FRAME_CAPACITY as u64 {
+            let now = step * 100 + 10;
+            let frame = input_frame(&mut driver, now);
+            first.get_or_insert(frame.plan().frame_index);
+            let submit = driver.submit_frame(frame, FrameSubmission::reported(HostTime(now + 10)));
+            assert_eq!(submit.summary, None);
+        }
+        let first = first.expect("frames were submitted");
+
+        let now = REPORTED_FRAME_CAPACITY as u64 * 100 + 10;
+        let frame = input_frame(&mut driver, now);
+        let submit = driver.submit_frame(frame, FrameSubmission::reported(HostTime(now + 10)));
+        let evicted = submit.summary.expect("the oldest frame makes room");
+
+        assert_eq!(evicted.frame_index, first);
+        assert_eq!(evicted.actual_present, None);
+        assert_eq!(driver.awaiting_reports(), REPORTED_FRAME_CAPACITY);
+        assert_eq!(driver.report_frame(first, presented(100)), None);
     }
 
     #[test]
@@ -1397,6 +1673,8 @@ mod tests {
     fn observe_updates_underlying_scheduler() {
         let mut driver = driver();
         driver.observe(&PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(20),
             build_start: HostTime(10),
             expected_present: None,

@@ -27,10 +27,6 @@ pub(crate) fn now() -> HostTime {
     HostTime(unsafe { mach_absolute_time() })
 }
 
-#[cfg_attr(
-    not(feature = "ca-display-link"),
-    allow(dead_code, reason = "used only by ca_display_link module")
-)]
 pub(crate) fn seconds_to_ticks(seconds: f64, tb: Timebase) -> u64 {
     let nanos = seconds * 1_000_000_000.0;
     #[expect(
@@ -49,7 +45,6 @@ pub(crate) fn seconds_to_ticks(seconds: f64, tb: Timebase) -> u64 {
 /// to a Mach host-time sample taken in the same callback.
 /// This avoids assuming Core Animation media seconds and Mach ticks share an
 /// absolute epoch.
-#[cfg(any(feature = "ca-display-link", test))]
 pub(crate) fn media_time_to_host_time(
     media_time_seconds: f64,
     host_now: HostTime,

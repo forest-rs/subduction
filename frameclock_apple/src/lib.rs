@@ -130,6 +130,22 @@ pub fn present_hints_with_commit_lead(
     PresentHints::pacing_only(commit_boundary(pacing_target, commit_lead, tick.now))
 }
 
+/// Converts a Core Animation media time to [`HostTime`].
+///
+/// Core Animation and Metal report times in media seconds
+/// (`CACurrentMediaTime`'s clock): a drawable's `presentedTime`, a command
+/// buffer's `GPUEndTime`, a display link's timestamps. Use this to turn
+/// them into [`frameclock::FrameReport`] facts. The conversion is relative
+/// to a pair of clock samples taken now, so it assumes nothing about the
+/// two clocks' epochs; call it soon after the time was reported. `None`
+/// when `media_seconds` is not finite.
+#[must_use]
+pub fn media_time_to_host_time(media_seconds: f64) -> Option<HostTime> {
+    let host_now = mach_time::now();
+    let media_now = objc2_quartz_core::CACurrentMediaTime();
+    mach_time::media_time_to_host_time(media_seconds, host_now, media_now, mach_time::timebase())
+}
+
 /// Returns display timing for an Apple display-link tick and target output.
 ///
 /// Pass a variable [`DisplayTiming`] when the current output is known to be a
@@ -173,6 +189,13 @@ pub fn frame_opportunity_with_commit_lead(
 }
 
 /// What presentation feedback an Apple display-link source can provide.
+///
+/// These are the display link's own facts. A host that presents through
+/// Metal knows more, frame by frame: submit with
+/// [`FrameSubmission::reported`] and report each drawable's
+/// `presentedTime` (and the command buffer's `GPUEndTime`) through
+/// [`frameclock::FrameDriver::report_frame`], converted with
+/// [`media_time_to_host_time`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AppleFeedbackMode {
     /// Actual-present feedback arrives on a later display-link tick.
@@ -180,6 +203,12 @@ pub enum AppleFeedbackMode {
     /// This is the normal `CADisplayLink` path: the next callback's timestamp
     /// resolves the submitted frame through
     /// [`FrameTick::prev_actual_present`].
+    ///
+    /// That timestamp is when the display last refreshed, which is when a
+    /// frame submitted on the previous tick was shown only if it reached
+    /// the screen at the next refresh, as a Core Animation transaction
+    /// does. A Metal renderer's frame is shown after its GPU work, often
+    /// several refreshes later; for it this feedback is wrong.
     DeferredActualPresent,
     /// The display-link source does not provide actual-present feedback.
     ///

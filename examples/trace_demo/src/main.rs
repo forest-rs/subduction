@@ -164,6 +164,8 @@ fn main() {
         // 6. Feedback
         let missed = submit_end > plan.commit_deadline;
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: submit_end,
             build_start: plan_start,
             expected_present: plan.target_present,
@@ -173,12 +175,7 @@ fn main() {
         };
         scheduler.observe(&feedback);
 
-        let feedback_event = PresentFeedbackEvent {
-            frame_index,
-            actual_present: plan.target_present,
-            missed_deadline: Some(missed),
-            pacing_overrun: feedback.pacing_overrun,
-        };
+        let feedback_event = PresentFeedbackEvent::new(frame_index, &feedback);
         pretty.on_present_feedback(&feedback_event);
         recorder.on_present_feedback(&feedback_event);
 

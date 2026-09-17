@@ -162,6 +162,7 @@ impl TraceSink for RecorderSink {
     fn on_present_feedback(&mut self, e: &PresentFeedbackEvent) {
         self.write_u8(TAG_PRESENT_FEEDBACK);
         self.write_u64(e.frame_index);
+        self.write_option_u64(e.work.map(|work| work.ticks()));
         self.write_option_u64(e.actual_present.map(|t| t.ticks()));
         self.write_option_bool(e.missed_deadline);
         self.write_option_bool(e.pacing_overrun);
@@ -375,6 +376,7 @@ impl DecodeIter<'_> {
     fn decode_present_feedback(&mut self) -> Option<RecordedEvent> {
         Some(RecordedEvent::PresentFeedback(PresentFeedbackEvent {
             frame_index: self.read_u64()?,
+            work: self.read_option_u64()?.map(Duration),
             actual_present: self.read_option_u64()?.map(HostTime),
             missed_deadline: self.read_option_bool()?,
             pacing_overrun: self.read_option_bool()?,
@@ -589,6 +591,7 @@ mod tests {
         let mut rec = RecorderSink::new();
         let orig = PresentFeedbackEvent {
             frame_index: 3,
+            work: Some(Duration(42)),
             actual_present: None,
             missed_deadline: Some(true),
             pacing_overrun: Some(false),
@@ -600,6 +603,7 @@ mod tests {
         match &events[0] {
             RecordedEvent::PresentFeedback(e) => {
                 assert_eq!(e.frame_index, 3);
+                assert_eq!(e.work, Some(Duration(42)));
                 assert_eq!(e.actual_present, None);
                 assert_eq!(e.missed_deadline, Some(true));
                 assert_eq!(e.pacing_overrun, Some(false));

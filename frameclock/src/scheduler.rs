@@ -70,6 +70,19 @@ pub struct SchedulerConfig {
     pub nominal_latency: Duration,
     /// Policy for adapting pipeline depth.
     pub degradation_policy: DegradationPolicy,
+    /// EMA smoothing factor for how late frames are actually shown
+    /// (0.0-1.0); `0.0` turns the compensation off.
+    ///
+    /// A host whose frames reach the screen some refreshes after the
+    /// predicted present — a renderer with GPU work and a compositor
+    /// behind its submission — only learns this from feedback that
+    /// carries each frame's own [`PresentFeedback::actual_present`]. The
+    /// scheduler then plans, and samples, for when a frame will really be
+    /// seen: [`FramePlan::target_present`] moves by whole refresh
+    /// intervals, and the frame rate does not change.
+    ///
+    /// [`PresentFeedback::actual_present`]: crate::timing::PresentFeedback::actual_present
+    pub present_latency_alpha: f64,
 }
 
 impl SchedulerConfig {
@@ -90,6 +103,7 @@ impl SchedulerConfig {
                 miss_threshold: 3,
                 recovery_threshold: 10,
             },
+            present_latency_alpha: 0.1,
         }
     }
 
@@ -111,6 +125,7 @@ impl SchedulerConfig {
                 miss_threshold: 3,
                 recovery_threshold: 10,
             },
+            present_latency_alpha: 0.1,
         }
     }
 
@@ -133,6 +148,9 @@ impl SchedulerConfig {
                 miss_threshold: 3,
                 recovery_threshold: 10,
             },
+            // Without an actual-present timestamp there is nothing to
+            // learn how late a frame was.
+            present_latency_alpha: 0.0,
         }
     }
 }
@@ -142,6 +160,9 @@ impl SchedulerConfig {
 pub struct SchedulerState {
     /// Current pipeline depth.
     pub pipeline_depth: u8,
+    /// How late frames are being shown, in host-time ticks: what
+    /// [`SchedulerConfig::present_latency_alpha`] learned.
+    pub present_latency_ticks: u64,
     /// Current estimated safety margin in host-time ticks.
     pub safety_margin_ticks: u64,
     /// Consecutive strong misses or pacing overruns currently accumulated.
@@ -149,6 +170,10 @@ pub struct SchedulerState {
     /// Consecutive strong hits currently accumulated.
     pub consecutive_hits: u32,
 }
+
+/// The most refresh intervals [`SchedulerConfig::present_latency_alpha`]
+/// will plan ahead for, however late frames are shown.
+const MAX_LATENCY_INTERVALS: u64 = 8;
 
 /// Exponential moving average tracker.
 #[derive(Clone, Copy, Debug)]
@@ -258,6 +283,9 @@ pub struct Scheduler {
     config: SchedulerConfig,
     pipeline_depth: u8,
     build_cost_ema: Ema,
+    /// How far past its target a frame is really shown.
+    present_latency_ema: Ema,
+    present_latency_ticks: u64,
     safety_margin_ticks: u64,
     consecutive_misses: u32,
     consecutive_hits: u32,
@@ -281,6 +309,8 @@ impl Scheduler {
         Self {
             pipeline_depth: config.initial_depth,
             build_cost_ema: Ema::new(config.ema_alpha),
+            present_latency_ema: Ema::new(sanitize_ema_alpha(config.present_latency_alpha)),
+            present_latency_ticks: 0,
             safety_margin_ticks: 0,
             consecutive_misses: 0,
             consecutive_hits: 0,
@@ -330,6 +360,7 @@ impl Scheduler {
         let scheduled_present = base_present
             .checked_add(schedule_delta)
             .unwrap_or(base_present);
+        let present_latency = self.present_latency_shift(source_interval);
         let base_commit_deadline = hints.latest_commit().max(tick.now);
         let commit_deadline = base_commit_deadline
             .checked_add(schedule_delta)
@@ -337,8 +368,13 @@ impl Scheduler {
 
         let (target_present, sample_time) = match presentation_timing {
             PresentationTiming::Predictive | PresentationTiming::Estimated => {
-                let target_present = platform_present.map(|_| scheduled_present);
-                let sample_time = target_present.unwrap_or(scheduled_present);
+                // Where the frame will really be seen: the platform's
+                // predicted present plus however late frames have been.
+                let shown_at = scheduled_present
+                    .checked_add(present_latency)
+                    .unwrap_or(scheduled_present);
+                let target_present = platform_present.map(|_| shown_at);
+                let sample_time = target_present.unwrap_or(shown_at);
                 (target_present, sample_time)
             }
             PresentationTiming::PacingOnly => {
@@ -357,9 +393,25 @@ impl Scheduler {
             presentation_timing,
             commit_deadline,
             pipeline_depth: self.pipeline_depth,
+            present_latency,
             output: tick.output,
             frame_index,
         }
+    }
+
+    /// The learned presentation latency, rounded to whole refresh
+    /// intervals: a frame is shown at a refresh, not between two.
+    fn present_latency_shift(&self, source_interval: Duration) -> Duration {
+        let interval = source_interval.ticks();
+        if self.present_latency_ticks == 0 || interval == 0 {
+            return Duration::ZERO;
+        }
+        let intervals = (self.present_latency_ticks + interval / 2) / interval;
+        Duration(
+            intervals
+                .min(MAX_LATENCY_INTERVALS)
+                .saturating_mul(interval),
+        )
     }
 
     fn schedule_delta(
@@ -464,16 +516,32 @@ impl Scheduler {
     /// [`FrameDriver::submit_frame`](crate::FrameDriver::submit_frame) do not
     /// call this directly because the driver observes feedback internally.
     pub fn observe(&mut self, feedback: &PresentFeedback) {
-        // Update build cost EMA.
-        let build_ticks = feedback
-            .submitted_at
-            .saturating_duration_since(feedback.build_start)
-            .ticks();
+        // Update build cost EMA, over the whole frame when the host can
+        // say what its submission cost beyond the host's own work.
+        let build_ticks = feedback.build_cost().ticks();
         self.build_cost_ema.update(build_ticks as f64);
 
         // Update safety margin.
         self.safety_margin_ticks =
             f64_ticks_to_u64(self.build_cost_ema.get() * self.config.safety_multiplier);
+
+        // Learn how late frames are shown. The frame was planned for a
+        // target that already carried the estimate, so what is left over
+        // corrects it: late frames raise it, early ones lower it.
+        if self.config.present_latency_alpha > 0.0
+            && let (Some(actual), Some(expected)) =
+                (feedback.actual_present, feedback.expected_present)
+        {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "host ticks of a frame's lateness"
+            )]
+            let residual = actual.ticks() as f64 - expected.ticks() as f64;
+            #[expect(clippy::cast_precision_loss, reason = "the learned estimate")]
+            let latency = (feedback.present_latency.ticks() as f64 + residual).max(0.0);
+            self.present_latency_ema.update(latency);
+            self.present_latency_ticks = f64_ticks_to_u64(self.present_latency_ema.get());
+        }
 
         // Adapt pipeline depth according to degradation policy.
         //
@@ -543,6 +611,15 @@ impl Scheduler {
         self.pipeline_depth
     }
 
+    /// Returns how late frames are being shown, in host-time ticks.
+    ///
+    /// Zero until feedback carrying actual-present timestamps arrives, or
+    /// when [`SchedulerConfig::present_latency_alpha`] is zero.
+    #[must_use]
+    pub fn present_latency_ticks(&self) -> u64 {
+        self.present_latency_ticks
+    }
+
     /// Returns the current estimated safety margin in ticks.
     #[must_use]
     pub fn safety_margin_ticks(&self) -> u64 {
@@ -554,6 +631,7 @@ impl Scheduler {
     pub const fn state(&self) -> SchedulerState {
         SchedulerState {
             pipeline_depth: self.pipeline_depth,
+            present_latency_ticks: self.present_latency_ticks,
             safety_margin_ticks: self.safety_margin_ticks,
             consecutive_misses: self.consecutive_misses,
             consecutive_hits: self.consecutive_hits,
@@ -634,6 +712,84 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_shown_late_moves_the_next_frames_target_present() {
+        // Fixed depth, so only the latency compensation moves the target.
+        let mut config = SchedulerConfig::predictive();
+        config.degradation_policy = DegradationPolicy::Fixed;
+        let mut sched = Scheduler::new(config);
+        let predicted = 2000;
+        let plan = sched.plan(
+            make_opportunity(PresentationTiming::Predictive, 1000, Some(predicted), 1800),
+            FrameDemand::ANIMATION,
+            0,
+        );
+        assert_eq!(plan.target_present, Some(HostTime(predicted)));
+
+        // It was shown two refreshes after the time it was planned for.
+        let late = HostTime(predicted + 2 * REFRESH_INTERVAL.ticks());
+        for _ in 0..20 {
+            sched.observe(&PresentFeedback {
+                present_latency: Duration::ZERO,
+                submitted_at: HostTime(1500),
+                build_start: HostTime(1000),
+                work: None,
+                expected_present: plan.target_present,
+                actual_present: Some(late),
+                missed_deadline: Some(true),
+                pacing_overrun: None,
+            });
+        }
+
+        let planned = sched.plan(
+            make_opportunity(PresentationTiming::Predictive, 1000, Some(predicted), 1800),
+            FrameDemand::ANIMATION,
+            1,
+        );
+
+        assert_eq!(
+            planned.target_present,
+            Some(HostTime(predicted + 2 * REFRESH_INTERVAL.ticks())),
+            "the next frame is planned, and sampled, for when it will be seen"
+        );
+        assert_eq!(
+            planned.sample_time,
+            HostTime(predicted + 2 * REFRESH_INTERVAL.ticks())
+        );
+        // Pacing is unchanged: the frame still starts and commits as before.
+        assert_eq!(planned.frame_interval, REFRESH_INTERVAL);
+        assert_eq!(planned.commit_deadline, HostTime(1800));
+        assert!(sched.present_latency_ticks() > 0);
+    }
+
+    #[test]
+    fn present_latency_compensation_is_off_without_actual_present_times() {
+        let mut config = SchedulerConfig::predictive();
+        config.degradation_policy = DegradationPolicy::Fixed;
+        let mut sched = Scheduler::new(config);
+        for _ in 0..20 {
+            sched.observe(&PresentFeedback {
+                present_latency: Duration::ZERO,
+                submitted_at: HostTime(1500),
+                build_start: HostTime(1000),
+                work: None,
+                expected_present: Some(HostTime(2000)),
+                actual_present: None,
+                missed_deadline: None,
+                pacing_overrun: Some(true),
+            });
+        }
+
+        let plan = sched.plan(
+            make_opportunity(PresentationTiming::Predictive, 1000, Some(2000), 1800),
+            FrameDemand::ANIMATION,
+            0,
+        );
+
+        assert_eq!(sched.present_latency_ticks(), 0);
+        assert_eq!(plan.target_present, Some(HostTime(2000)));
+    }
+
+    #[test]
     fn plan_uses_explicit_frame_index() {
         let config = SchedulerConfig::predictive();
         let mut sched = Scheduler::new(config);
@@ -686,6 +842,8 @@ mod tests {
         config.safety_multiplier = 2.0;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(1_200),
             build_start: HostTime(1_000),
             expected_present: None,
@@ -712,6 +870,8 @@ mod tests {
         config.safety_multiplier = f64::INFINITY;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(1_200),
             build_start: HostTime(1_000),
             expected_present: None,
@@ -784,6 +944,8 @@ mod tests {
         config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(21_000_000),
             build_start: HostTime(1_000_000),
             expected_present: None,
@@ -818,6 +980,8 @@ mod tests {
         config.minimum_frame_start_margin = Duration::ZERO;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(11_000_000),
             build_start: HostTime(1_000_000),
             expected_present: None,
@@ -851,6 +1015,8 @@ mod tests {
         config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(13_000_000),
             build_start: HostTime(1_000_000),
             expected_present: None,
@@ -891,6 +1057,8 @@ mod tests {
         config.safety_multiplier = 1.0;
         let mut sched = Scheduler::new(config);
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(13_000_000),
             build_start: HostTime(1_000_000),
             expected_present: None,
@@ -931,6 +1099,8 @@ mod tests {
         assert_eq!(sched.pipeline_depth(), 1);
 
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1018,6 +1188,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let miss = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1047,6 +1219,8 @@ mod tests {
         assert_eq!(sched.pipeline_depth(), 3);
 
         let hit = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1072,6 +1246,8 @@ mod tests {
         assert_eq!(sched.pipeline_depth(), 2);
 
         let miss = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1099,6 +1275,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let miss = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1127,6 +1305,8 @@ mod tests {
         assert_eq!(sched.pipeline_depth(), 2);
 
         let hit = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1169,6 +1349,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let miss = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1203,6 +1385,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let unknown = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2_000),
             build_start: HostTime(1_000),
             expected_present: None,
@@ -1234,6 +1418,8 @@ mod tests {
         assert_eq!(sched.pipeline_depth(), 1);
 
         let miss = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1256,6 +1442,8 @@ mod tests {
         assert_eq!(sched.safety_margin_ticks(), 0);
 
         let feedback = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2000),
             build_start: HostTime(1000),
             expected_present: None,
@@ -1277,6 +1465,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let overrun = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2_000),
             build_start: HostTime(1_000),
             expected_present: None,
@@ -1300,6 +1490,8 @@ mod tests {
         let mut sched = Scheduler::new(config);
 
         let overrun = PresentFeedback {
+            present_latency: Duration::ZERO,
+            work: None,
             submitted_at: HostTime(2_000),
             build_start: HostTime(1_000),
             expected_present: None,

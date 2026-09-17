@@ -14,7 +14,6 @@ categories = ["os::macos-apis", "rendering::engine"]
 default = ["ca-display-link"]
 cv-display-link = ["dep:objc2-core-video", "dep:dispatch2", "dispatch2/alloc"]
 ca-display-link = [
-  "objc2-quartz-core/CABase",
   "objc2-quartz-core/CADisplayLink",
   "objc2-quartz-core/CAFrameRateRange",
 ]
@@ -33,6 +32,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSString",
 ] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = [
+  "CABase",
   "objc2-core-foundation",
   "objc2-core-graphics",
 ] }

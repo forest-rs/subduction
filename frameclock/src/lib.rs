@@ -48,6 +48,12 @@
 //!               -> FrameTimingSummary
 //! ```
 //!
+//! A host that learns each frame's fate only later (a GPU renderer whose
+//! completion and presented handlers fire frames after submission) submits
+//! with [`FrameSubmission::reported`] and calls
+//! [`FrameDriver::report_frame`] with each frame's [`FrameReport`] as it
+//! arrives; the summary comes back from that call.
+//!
 //! A minimal host loop has this shape:
 //!
 //! ```rust,ignore
@@ -140,8 +146,8 @@ pub mod timing;
 pub use demand::FrameDemand;
 pub use diagnostics::FrameTimingSummary;
 pub use driver::{
-    ActiveFrame, FrameBegin, FrameBeginResult, FrameDriver, FrameSubmission, FrameSubmitResult,
-    PresentationObservation,
+    ActiveFrame, FrameBegin, FrameBeginResult, FrameDriver, FrameReport, FrameSubmission,
+    FrameSubmitResult, PresentOutcome, PresentationObservation, REPORTED_FRAME_CAPACITY,
 };
 pub use output::OutputId;
 pub use scheduler::SchedulerConfig;

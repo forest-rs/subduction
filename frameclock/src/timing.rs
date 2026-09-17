@@ -351,6 +351,15 @@ pub struct FramePlan {
     pub commit_deadline: HostTime,
     /// Current scheduler pipeline depth.
     pub pipeline_depth: u8,
+    /// How much later than the platform's predicted present this frame is
+    /// planned for, because frames are being shown that much later
+    /// ([`SchedulerConfig::present_latency_alpha`]).
+    ///
+    /// Feedback carries it back so the scheduler can correct the estimate
+    /// from what this frame actually did.
+    ///
+    /// [`SchedulerConfig::present_latency_alpha`]: crate::scheduler::SchedulerConfig::present_latency_alpha
+    pub present_latency: Duration,
     /// Which output this frame targets.
     pub output: OutputId,
     /// Monotonic content-frame counter used for diagnostics and summaries.
@@ -496,6 +505,21 @@ pub struct PresentFeedback {
     pub submitted_at: HostTime,
     /// When the frame began building (for build cost estimation).
     pub build_start: HostTime,
+    /// The presentation latency the plan was made with, carried back so
+    /// the scheduler can correct it.
+    pub present_latency: Duration,
+    /// What producing this frame cost beyond the host's own work, if the
+    /// platform can say: a renderer that submits GPU work and returns
+    /// reports how long that work took.
+    ///
+    /// Build cost is the longer of this and the host's span from
+    /// [`build_start`](Self::build_start) to
+    /// [`submitted_at`](Self::submitted_at), so a frame whose GPU work
+    /// outlasts the display's refresh is one the scheduler knows cannot
+    /// hold that cadence. It is the work's own duration, not the time it
+    /// finished: a frame queued behind others waits, and waiting is not
+    /// what the frame costs.
+    pub work: Option<Duration>,
     /// Expected present time at submission, if known.
     pub expected_present: Option<HostTime>,
     /// Actual present time, if the platform reports it.
@@ -527,12 +551,50 @@ impl PresentFeedback {
         submitted_at: HostTime,
         actual_present: Option<HostTime>,
     ) -> Self {
-        Self::from_hints(
+        let mut feedback = Self::from_hints(
             &PresentHints::for_plan(plan),
             build_start,
             submitted_at,
             actual_present,
-        )
+        );
+        feedback.present_latency = plan.present_latency;
+        // A frame shown at the refresh it was planned for is on time, even
+        // though the timestamp for that refresh lands a little after the
+        // target: only the next refresh is a real miss. Platforms that
+        // report presentation times report them with that much jitter.
+        if let (Some(actual), Some(expected)) = (actual_present, feedback.expected_present) {
+            let tolerance = plan.frame_interval.div_u64(2);
+            feedback.missed_deadline = Some(actual.saturating_duration_since(expected) > tolerance);
+        }
+        feedback
+    }
+
+    /// Constructs feedback for a frame that cost `work` beyond the host's
+    /// own span, such as the GPU work its submission queued.
+    #[must_use]
+    pub fn with_work(
+        plan: &FramePlan,
+        build_start: HostTime,
+        submitted_at: HostTime,
+        work: Option<Duration>,
+        actual_present: Option<HostTime>,
+    ) -> Self {
+        let mut feedback = Self::new(plan, build_start, submitted_at, actual_present);
+        feedback.work = work;
+        feedback
+    }
+
+    /// What this frame cost to produce: the longer of the host's own span
+    /// and the [`work`](Self::work) its submission queued.
+    #[must_use]
+    pub fn build_cost(&self) -> Duration {
+        let host = self
+            .submitted_at
+            .saturating_duration_since(self.build_start);
+        match self.work {
+            Some(work) if work > host => work,
+            _ => host,
+        }
     }
 
     /// Constructs feedback from already-normalized presentation hints.
@@ -585,6 +647,8 @@ impl PresentFeedback {
         Self {
             submitted_at,
             build_start,
+            present_latency: Duration::ZERO,
+            work: None,
             expected_present,
             actual_present,
             missed_deadline,
@@ -658,6 +722,7 @@ mod tests {
 
     fn plan_with_hints(hints: PresentHints) -> FramePlan {
         FramePlan {
+            present_latency: Duration::ZERO,
             demand: FrameDemand::ANIMATION,
             frame_interval: Duration(1_000_000),
             frame_start: HostTime(0),
@@ -798,10 +863,19 @@ mod tests {
         ));
         let pending = PendingFeedback::new(plan, HostTime(1_700_000), HostTime(1_750_000));
 
-        // Actual present arrived late → missed.
-        let fb = pending.resolve(Some(HostTime(2_100_000)));
+        // A refresh late → missed.
+        let late = HostTime(2_000_000 + plan.frame_interval.ticks());
+        let fb = pending.resolve(Some(late));
         assert_eq!(fb.missed_deadline, Some(true));
-        assert_eq!(fb.actual_present, Some(HostTime(2_100_000)));
+        assert_eq!(fb.actual_present, Some(late));
+        assert_eq!(fb.pacing_overrun, None);
+
+        // Shown at the refresh it was planned for, timestamped a little
+        // after it → not missed.
+        let jittered = HostTime(2_000_000 + plan.frame_interval.ticks() / 4);
+        let fb = pending.resolve(Some(jittered));
+        assert_eq!(fb.missed_deadline, Some(false));
+        assert_eq!(fb.actual_present, Some(jittered));
         assert_eq!(fb.pacing_overrun, None);
 
         // Actual present on time → not missed.

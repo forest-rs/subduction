@@ -152,6 +152,25 @@ match begin.result {
 }
 ```
 
+## Late, Per-Frame Feedback
+
+Some hosts learn what became of a frame only after later frames were
+submitted: a GPU renderer's completion and presented handlers, compositor
+presentation events, swapchain statistics. Such a host submits with
+`FrameSubmission::reported(submitted_at)` and, as each frame's facts arrive,
+calls `FrameDriver::report_frame(frame_index, FrameReport { ready_at, outcome })`.
+The driver holds up to `REPORTED_FRAME_CAPACITY` frames, resolves each from
+its own report in any order, and returns its summary from that call.
+
+`ready_at` is when the frame's content was complete (for a GPU renderer, when
+its work finished). Build cost runs to it rather than to the submission, so a
+frame whose GPU work outlasts the refresh interval makes the scheduler choose a
+slower, steady cadence instead of alternating intervals.
+
+`FrameSubmission::deferred` remains right for hosts whose submission reaches
+the screen at the next refresh: the next tick's `prev_actual_present` is then
+that frame's present.
+
 ## Display Timing And VRR
 
 `DisplayTiming::fixed(interval)` is the right model when a backend has only a

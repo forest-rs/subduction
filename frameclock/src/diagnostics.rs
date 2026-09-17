@@ -137,6 +137,9 @@ pub struct SubmitEvent {
 pub struct PresentFeedbackEvent {
     /// Monotonic content-frame counter.
     pub frame_index: u64,
+    /// What the frame's submission cost beyond the host's own work, if
+    /// the platform reported it.
+    pub work: Option<Duration>,
     /// Actual presentation time, if reported by the platform.
     pub actual_present: Option<HostTime>,
     /// Whether the frame missed a real presentation deadline, if determinable.
@@ -152,6 +155,7 @@ impl PresentFeedbackEvent {
     pub fn new(frame_index: u64, feedback: &PresentFeedback) -> Self {
         Self {
             frame_index,
+            work: feedback.work,
             actual_present: feedback.actual_present,
             missed_deadline: feedback.missed_deadline,
             pacing_overrun: feedback.pacing_overrun,
@@ -159,7 +163,10 @@ impl PresentFeedbackEvent {
     }
 }
 
-/// Why a planned frame was dropped before submission.
+/// Why a planned frame was never shown.
+///
+/// Every reason but [`NotPresented`](Self::NotPresented) drops the frame
+/// before submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FrameDropReason {
     /// The host intentionally discarded the frame without a more specific
@@ -173,6 +180,9 @@ pub enum FrameDropReason {
     SurfaceUnavailable,
     /// The target output was unavailable, hidden, or no longer valid.
     OutputUnavailable,
+    /// The frame was submitted, but the display path never showed it: a
+    /// later frame replaced it first.
+    NotPresented,
 }
 
 /// Diagnostics event created when a planned frame is dropped before submission.
@@ -265,6 +275,9 @@ pub struct FrameTimingSummary {
     pub commit_deadline: HostTime,
     /// Host time when the frame was submitted, if recorded.
     pub submitted_at: Option<HostTime>,
+    /// What the frame's submission cost beyond the host's own work, if
+    /// the platform reported it.
+    pub work: Option<Duration>,
     /// Expected presentation time at submission, if recorded.
     pub expected_present: Option<HostTime>,
     /// Actual presentation time, if reported by the platform.
@@ -273,8 +286,7 @@ pub struct FrameTimingSummary {
     pub missed_deadline: Option<bool>,
     /// Whether frame building overran a pacing boundary, if determinable.
     pub pacing_overrun: Option<bool>,
-    /// Reason the frame was dropped before submission, if it was not
-    /// submitted.
+    /// Why the frame was never shown, if it was dropped.
     pub drop_reason: Option<FrameDropReason>,
     /// Scheduler pipeline depth used for the plan.
     pub pipeline_depth: u8,
@@ -416,6 +428,7 @@ impl FrameTimingSummaryBuilder {
             target_present: plan.target_present,
             commit_deadline: plan.commit_deadline,
             submitted_at: submit.map(|submit| submit.submitted_at),
+            work: feedback.and_then(|feedback| feedback.work),
             expected_present: submit.and_then(|submit| submit.expected_present),
             actual_present: feedback.and_then(|feedback| feedback.actual_present),
             missed_deadline: feedback.and_then(|feedback| feedback.missed_deadline),
@@ -682,12 +695,14 @@ mod tests {
         };
         let feedback = PresentFeedbackEvent {
             frame_index: 7,
+            work: None,
             actual_present: Some(HostTime(2_050)),
             missed_deadline: Some(true),
             pacing_overrun: Some(false),
         };
         let state = SchedulerStateEvent {
             state: SchedulerState {
+                present_latency_ticks: 0,
                 pipeline_depth: 1,
                 safety_margin_ticks: 600,
                 consecutive_misses: 1,
@@ -729,6 +744,7 @@ mod tests {
         };
         let mismatched_feedback = PresentFeedbackEvent {
             frame_index: 9,
+            work: None,
             actual_present: Some(HostTime(2_050)),
             missed_deadline: Some(true),
             pacing_overrun: Some(true),

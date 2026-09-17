@@ -555,6 +555,7 @@ mod tests {
     fn frame_plan_event_new() {
         let plan = FramePlan {
             demand: FrameDemand::ANIMATION,
+            present_latency: Duration::ZERO,
             frame_interval: Duration(16),
             frame_start: HostTime(800),
             sample_time: HostTime(1000),
@@ -606,6 +607,7 @@ mod tests {
         tracer.scheduler_state(&SchedulerStateEvent {
             state: SchedulerState {
                 pipeline_depth: 1,
+                present_latency_ticks: 0,
                 safety_margin_ticks: 0,
                 consecutive_misses: 0,
                 consecutive_hits: 0,

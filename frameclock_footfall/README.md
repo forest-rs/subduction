@@ -28,7 +28,9 @@ FrameTimingSummary  -> Recorder::record(&summary)
 
 Pass every summary the driver returns, including the ones that arrive frames
 later from `report_frame` or `FrameBegin::resolved_feedback`. Frame points
-carry the frame's number, so they find their frame whenever they arrive.
+carry the frame's number, so they find their frame whenever they arrive. The
+summary is the only source of frame points: the plan's deadline and target are
+known at begin, but recording them then would only duplicate it.
 
 ## What Is Recorded
 

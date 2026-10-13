@@ -136,15 +136,16 @@ mod tests {
 
     const REFRESH: u64 = 16_666_667;
 
-    /// Plans a frame at a tick at `now`, after a refresh shown a millisecond
-    /// earlier, so the plan has a target to be judged against.
+    /// Plans a frame at a tick at `now` that predicts the next refresh, as
+    /// `TickerState` does once feedback has established the cadence, so the
+    /// plan has a target to be judged against.
     fn plan(scheduler: &mut Scheduler, frames: &mut FrameFeedback, now: u64) -> FramePlan {
         let tick = FrameTick {
             now: HostTime(now),
-            predicted_present: None,
+            predicted_present: Some(HostTime(now + REFRESH)),
             refresh_interval: Some(REFRESH),
             output: OutputId(0),
-            prev_actual_present: Some(HostTime(now - 1_000_000)),
+            prev_actual_present: Some(HostTime(now + REFRESH - 2 * REFRESH)),
         };
         let opportunity = frameclock_wayland::frame_opportunity(tick, Duration(REFRESH));
         scheduler.plan(

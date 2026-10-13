@@ -14,6 +14,7 @@ env:
   RUST_MIN_VER_PKGS: >-
     -p frameclock
     -p frameclock_apple
+    -p frameclock_footfall
     -p frameclock_wayland
     -p frameclock_web
     -p frameclock_windows

@@ -1,0 +1,22 @@
+[package]
+name = "frameclock_footfall"
+description = "Records frameclock's frame timing in Footfall traces"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["frame-pacing", "profiling", "tracing", "no_std"]
+categories = ["no-std", "development-tools::profiling", "rendering::engine"]
+
+[lints]
+workspace = true
+
+[dependencies]
+footfall_core = { workspace = true }
+frameclock = { workspace = true }
+
+[dev-dependencies]
+footfall_analysis = { workspace = true }
+footfall_runtime = { workspace = true }

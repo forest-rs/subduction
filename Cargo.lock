@@ -424,6 +424,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "footfall_analysis"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=f051d21d267772691bd54ee147cb925d2fc7d9cb#f051d21d267772691bd54ee147cb925d2fc7d9cb"
+dependencies = [
+ "footfall_core",
+ "footfall_runtime",
+ "footfall_session",
+]
+
+[[package]]
+name = "footfall_core"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=f051d21d267772691bd54ee147cb925d2fc7d9cb#f051d21d267772691bd54ee147cb925d2fc7d9cb"
+
+[[package]]
+name = "footfall_runtime"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=f051d21d267772691bd54ee147cb925d2fc7d9cb#f051d21d267772691bd54ee147cb925d2fc7d9cb"
+dependencies = [
+ "footfall_core",
+]
+
+[[package]]
+name = "footfall_session"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=f051d21d267772691bd54ee147cb925d2fc7d9cb#f051d21d267772691bd54ee147cb925d2fc7d9cb"
+dependencies = [
+ "footfall_core",
+ "footfall_runtime",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -465,6 +497,16 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "frameclock_footfall"
+version = "0.0.1"
+dependencies = [
+ "footfall_analysis",
+ "footfall_core",
+ "footfall_runtime",
+ "frameclock",
 ]
 
 [[package]]

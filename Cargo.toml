@@ -7,6 +7,7 @@ members = [
   "frameclock_apple",
   "frameclock_wayland",
   "frameclock_windows",
+  "frameclock_footfall",
   "subduction_backend_apple",
   "subduction_backend_web",
   "subduction_backend_wgpu",
@@ -42,6 +43,7 @@ members = [
 # and their examples must be selected explicitly (e.g. `cargo check -p subduction_backend_wayland`).
 default-members = [
   "frameclock",
+  "frameclock_footfall",
   "mediaclock",
   "subduction_core",
   "subduction_debug",
@@ -82,6 +84,13 @@ bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = { version = "0.2", default-features = false }
 web-sys = "0.3"
 web-time = { version = "1.1.0" }
+# Footfall isn't on crates.io yet, and the APIs frameclock_footfall needs
+# (numbered frames, clocks, frame points) arrive with forest-rs/footfall#34–#39.
+# Pinned to that stack's tip until they land; then move to Footfall's main
+# branch, and to crates.io once it is published.
+footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
+footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
+footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

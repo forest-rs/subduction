@@ -125,6 +125,13 @@ fn pacing_judges_frames_and_predictions_from_what_frameclock_learned() {
         4,
         "the superseded frame is not a miss; one not presented, for a reason not known, is"
     );
+    let deadlines = pacing.deadlines();
+    assert_eq!(
+        (deadlines.met, deadlines.missed),
+        (12, 0),
+        "every frame's work was done before the deadline frameclock gave it, \
+         including the late ones"
+    );
     let basis = pacing.presentation_basis();
     assert_eq!(
         (basis.observed, basis.estimated, basis.unknown),

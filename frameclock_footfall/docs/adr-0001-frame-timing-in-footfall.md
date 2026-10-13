@@ -35,26 +35,39 @@ was shown frames after submitting it, through `FrameDriver::report_frame` or
   converting, and it reports any points it could not place.
 - **Every time frameclock knows is a point.** The platform's prediction at
   frame start (`predicted_present`), the commit deadline, the target, the
-  present time expected at submit (`expected_present`), and the actual present
-  time each become a frame point, so Footfall can judge every prediction
-  against what happened.
+  sample time, the submission time, the present time expected at submit
+  (`expected_present`), and the actual present time each become a frame
+  point, so Footfall can judge every prediction against what happened, judge
+  the deadline by when the frame was really submitted, and compare the time
+  the content was made for with when it was shown.
+- **Points say how their times were known.** A presentation time is observed
+  when frameclock's timing basis is `ActualPresent` and estimated otherwise;
+  the submission time is observed. The predicted point carries frameclock's
+  presentation timing as an arg. Analysis then reports how many judgments
+  rest on estimates instead of guessing from which points exist.
 - **Every drop carries its reason.** Each `FrameDropReason` becomes
   `FramePoint::dropped` with the matching Footfall `DropReason`;
-  `NotPresented` is `Replaced`. Frames the host discarded or superseded itself
+  `NotPresented` stays `NotPresented`, since frameclock does not say whether
+  a later frame replaced the frame. Frames the host discarded or superseded itself
   are recorded too. Deciding which drops are misses is the analysis's job, not
   the adapter's: Footfall counts only some reasons as misses, and counts the
   work on every unshown frame as wasted.
-- **Scheduler state goes in counters.** Pipeline depth, safety margin, frame
-  interval and learned present latency are gauges. Submission work, such as
-  GPU time, is a histogram. Durations are converted to nanoseconds. Counter
-  descriptors are private, and their names are documented.
-- **No state.** The recorder holds only the timebase and a context handle, so
-  it can live in a `static` and be shared.
+- **Scheduler state stays with its frame.** Pipeline depth, safety margin,
+  frame interval, and learned present latency are args on the frame's
+  deadline point, not gauges set when the summary arrives, which may be
+  frames after the plan they describe. Submission work, such as GPU time, is
+  an arg on the submitted point and a histogram. Durations are converted to
+  nanoseconds, and the arg and histogram names are documented.
+- **Frames are numbered in a stream.** Each recorder numbers frames in a
+  Footfall `FrameStream`, the default unless the host gives one, so several
+  drivers, or a recreated one whose frame indices start again, keep their
+  frames apart.
+- **No state.** The recorder holds only the timebase, a context handle, and
+  a stream, so it can live in a `static` and be shared.
 
 ## Consequences
 
-- Frameclock's timing basis and presentation timing aren't recorded. Analysis
-  infers the basis from which points exist.
-- Gauges are stamped when the summary arrives, not when the frame ran.
+- The scheduler state appears per frame, in `FramePacing::args`, rather than
+  as counters a live view can plot over time.
 - Footfall is pinned by git revision until it is published. The crate depends
   only on `footfall_core`, which is `no_std` and has no dependencies.

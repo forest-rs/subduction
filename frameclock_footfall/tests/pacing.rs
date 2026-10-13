@@ -85,7 +85,8 @@ fn pacing_judges_frames_and_predictions_from_what_frameclock_learned() {
                     late.push(number);
                     PresentOutcome::Presented(target + Duration(REFRESH))
                 }
-                // A mailbox swapchain replaced it with the next frame.
+                // The platform reported it was never shown, without
+                // saying why.
                 10 => PresentOutcome::NotPresented,
                 _ => PresentOutcome::Presented(target),
             };
@@ -116,13 +117,19 @@ fn pacing_judges_frames_and_predictions_from_what_frameclock_learned() {
             counts.submitted_late,
             counts.unknown
         ),
-        (7, 2, 1, 2, 0, 0),
+        (7, 2, 2, 1, 0, 0),
         "on time, late, dropped, skipped, submitted late, unknown: {counts:?}"
     );
     assert_eq!(
         counts.missed(),
-        3,
-        "the superseded and replaced frames are not misses"
+        4,
+        "the superseded frame is not a miss; one not presented, for a reason not known, is"
+    );
+    let basis = pacing.presentation_basis();
+    assert_eq!(
+        (basis.observed, basis.estimated, basis.unknown),
+        (9, 0, 0),
+        "every presentation time was reported by the platform"
     );
     assert_eq!(
         pacing.wasted().frames,

@@ -6,8 +6,9 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use footfall_core::{
-    Backend, ClockReading, ContextHandle, CounterDesc, DropReason, FramePoint, FramePointKind,
-    InstrumentationLevel, MarkerKind, MarkerPhase, TickPeriod, Unit,
+    Backend, ClockReading, ContextHandle, CounterDesc, DropReason, FrameNumber, FramePoint,
+    FramePointKind, FrameStream, InstrumentationLevel, LabelValue, MarkerKind, MarkerPhase,
+    TickPeriod, TimingBasis, Unit,
 };
 use frameclock::diagnostics::{FrameDropReason, FrameTimingBasis, FrameTimingSummary};
 use frameclock::scheduler::SchedulerState;
@@ -21,10 +22,17 @@ const MACH: Timebase = Timebase::new(125, 3);
 
 #[derive(Debug, PartialEq)]
 enum Seen {
-    Marker(MarkerPhase, u64),
+    Marker(MarkerPhase, FrameNumber),
     Sync(u64),
-    Point(u64, FramePointKind, Option<u64>),
+    Point(FrameNumber, FramePointKind, Option<u64>, TimingBasis),
+    /// The args of the point just before.
+    Args(Vec<(&'static str, LabelValue)>),
     Counter(&'static str, Unit, &'static str, u64),
+}
+
+/// A point of frame `number` of the default stream, with no basis.
+fn point(number: u64, kind: FramePointKind, ticks: Option<u64>) -> Seen {
+    Seen::Point(number.into(), kind, ticks, TimingBasis::Unknown)
 }
 
 #[derive(Default)]
@@ -41,7 +49,7 @@ impl Backend for Recording {
         &self,
         kind: MarkerKind,
         phase: MarkerPhase,
-        number: u64,
+        number: FrameNumber,
         _context: ContextHandle,
     ) {
         assert_eq!(kind, MarkerKind::Frame, "only frame markers are emitted");
@@ -73,7 +81,17 @@ impl Backend for Recording {
             point.number(),
             point.kind(),
             point.time().map(|time| time.ticks()),
+            point.basis(),
         ));
+        if !point.args().is_empty() {
+            self.push(Seen::Args(
+                point
+                    .args()
+                    .iter()
+                    .map(|arg| (arg.key(), arg.value()))
+                    .collect(),
+            ));
+        }
     }
 
     fn counter_add(&self, desc: &'static CounterDesc, _context: ContextHandle, value: u64) {
@@ -153,16 +171,36 @@ fn a_shown_frame_records_every_time_frameclock_knows_in_host_ticks() {
     assert_eq!(
         taken(backend),
         [
-            Seen::Point(1234, FramePointKind::Predicted, Some(3_900)),
-            Seen::Point(1234, FramePointKind::Deadline, Some(3_250)),
-            Seen::Point(1234, FramePointKind::Target, Some(4_000)),
-            Seen::Point(1234, FramePointKind::Expected, Some(4_100)),
-            Seen::Point(1234, FramePointKind::Presented, Some(7_000)),
-            Seen::Counter("frameclock_pipeline_depth", Unit::Count, "gauge", 2),
-            // 300 Mach ticks are 12.5 µs.
-            Seen::Counter("frameclock_safety_margin", Unit::Nanos, "gauge", 12_500),
-            Seen::Counter("frameclock_frame_interval", Unit::Nanos, "gauge", 125_000),
-            Seen::Counter("frameclock_present_latency", Unit::Nanos, "gauge", 1_250),
+            point(1234, FramePointKind::Predicted, Some(3_900)),
+            Seen::Args(vec![(
+                "presentation_timing",
+                LabelValue::StaticStr("predictive")
+            )]),
+            point(1234, FramePointKind::Deadline, Some(3_250)),
+            // The scheduler state the frame was planned with: 300 Mach
+            // ticks are 12.5 µs.
+            Seen::Args(vec![
+                ("pipeline_depth", LabelValue::Unsigned(2)),
+                ("safety_margin_ns", LabelValue::Unsigned(12_500)),
+                ("frame_interval_ns", LabelValue::Unsigned(125_000)),
+                ("present_latency_ns", LabelValue::Unsigned(1_250)),
+            ]),
+            point(1234, FramePointKind::Target, Some(4_000)),
+            point(1234, FramePointKind::Sampled, Some(4_000)),
+            Seen::Point(
+                1234.into(),
+                FramePointKind::Submitted,
+                Some(2_900),
+                TimingBasis::Observed
+            ),
+            Seen::Args(vec![("work_ns", LabelValue::Unsigned(25_000))]),
+            point(1234, FramePointKind::Expected, Some(4_100)),
+            Seen::Point(
+                1234.into(),
+                FramePointKind::Presented,
+                Some(7_000),
+                TimingBasis::Observed
+            ),
             Seen::Counter(
                 "frameclock_submission_work",
                 Unit::Nanos,
@@ -174,33 +212,91 @@ fn a_shown_frame_records_every_time_frameclock_knows_in_host_ticks() {
 }
 
 #[test]
-fn a_frame_the_display_never_showed_is_dropped_as_replaced() {
+fn a_frame_the_display_never_showed_is_not_presented() {
     let (backend, _serial) = recording();
-    let mut replaced = summary(7);
-    replaced.actual_present = None;
-    replaced.missed_deadline = None;
-    replaced.work = None;
-    replaced.scheduler_state = None;
-    replaced.drop_reason = Some(FrameDropReason::NotPresented);
-    Recorder::new(MACH).record(&replaced);
+    let mut unshown = summary(7);
+    unshown.actual_present = None;
+    unshown.missed_deadline = None;
+    unshown.work = None;
+    unshown.scheduler_state = None;
+    unshown.drop_reason = Some(FrameDropReason::NotPresented);
+    Recorder::new(MACH).record(&unshown);
 
-    let seen = taken(backend);
+    let points: Vec<_> = taken(backend)
+        .into_iter()
+        .filter(|seen| !matches!(seen, Seen::Args(..)))
+        .collect();
     assert_eq!(
-        seen[..5],
+        points,
         [
-            Seen::Point(7, FramePointKind::Predicted, Some(3_900)),
-            Seen::Point(7, FramePointKind::Deadline, Some(3_250)),
-            Seen::Point(7, FramePointKind::Target, Some(4_000)),
-            Seen::Point(7, FramePointKind::Expected, Some(4_100)),
-            Seen::Point(7, FramePointKind::Dropped(DropReason::Replaced), None),
+            point(7, FramePointKind::Predicted, Some(3_900)),
+            point(7, FramePointKind::Deadline, Some(3_250)),
+            point(7, FramePointKind::Target, Some(4_000)),
+            point(7, FramePointKind::Sampled, Some(4_000)),
+            Seen::Point(
+                7.into(),
+                FramePointKind::Submitted,
+                Some(2_900),
+                TimingBasis::Observed
+            ),
+            point(7, FramePointKind::Expected, Some(4_100)),
+            point(7, FramePointKind::Dropped(DropReason::NotPresented), None),
         ],
-        "a replaced frame keeps its plan's times"
+        "it keeps its plan's times, and frameclock does not say a later frame replaced it"
     );
+}
+
+#[test]
+fn the_plan_records_only_the_scheduler_state_it_sampled() {
+    let (backend, _serial) = recording();
+    let mut unsampled = summary(8);
+    unsampled.scheduler_state = None;
+    Recorder::new(MACH).record(&unsampled);
+
+    let plan = taken(backend)
+        .into_iter()
+        .skip_while(|seen| !matches!(seen, Seen::Point(_, FramePointKind::Deadline, ..)))
+        .nth(1);
+    assert_eq!(
+        plan,
+        Some(Seen::Args(vec![
+            ("pipeline_depth", LabelValue::Unsigned(2)),
+            ("safety_margin_ns", LabelValue::Unsigned(12_500)),
+            ("frame_interval_ns", LabelValue::Unsigned(125_000)),
+        ]))
+    );
+}
+
+#[test]
+fn a_presentation_frameclock_did_not_observe_is_estimated() {
+    let (backend, _serial) = recording();
+    let mut estimated = summary(9);
+    estimated.timing_basis = FrameTimingBasis::TargetPresent;
+    Recorder::new(MACH).record(&estimated);
+
+    assert!(taken(backend).contains(&Seen::Point(
+        9.into(),
+        FramePointKind::Presented,
+        Some(7_000),
+        TimingBasis::Estimated
+    )));
+}
+
+#[test]
+fn frames_are_numbered_in_the_recorders_stream() {
+    let (backend, _serial) = recording();
+    let window = FrameStream::new(3).with_generation(1);
+    Recorder::new(MACH).with_stream(window).record(&summary(5));
+
     assert!(
-        !seen
+        taken(backend)
             .iter()
-            .any(|seen| matches!(seen, Seen::Counter("frameclock_present_latency", ..))),
-        "no scheduler state was sampled"
+            .filter_map(|seen| match seen {
+                Seen::Point(number, ..) => Some(*number),
+                _ => None,
+            })
+            .all(|number| number == window.frame(5)),
+        "every point is frame 5 of the window's stream"
     );
 }
 
@@ -220,7 +316,7 @@ fn every_drop_reason_reaches_footfall() {
             FrameDropReason::OutputUnavailable,
             DropReason::OutputUnavailable,
         ),
-        (FrameDropReason::NotPresented, DropReason::Replaced),
+        (FrameDropReason::NotPresented, DropReason::NotPresented),
     ];
     for (number, (frameclock_reason, _)) in (0_u64..).zip(reasons) {
         let mut dropped = summary(number);
@@ -232,7 +328,9 @@ fn every_drop_reason_reaches_footfall() {
     let drops: Vec<_> = taken(backend)
         .into_iter()
         .filter_map(|seen| match seen {
-            Seen::Point(number, FramePointKind::Dropped(reason), None) => Some((number, reason)),
+            Seen::Point(number, FramePointKind::Dropped(reason), None, _) => {
+                Some((number.number(), reason))
+            }
             _ => None,
         })
         .collect();
@@ -244,7 +342,7 @@ fn every_drop_reason_reaches_footfall() {
 }
 
 #[test]
-fn a_pacing_only_frame_records_its_deadline_alone() {
+fn a_pacing_only_frame_records_no_present_times() {
     let (backend, _serial) = recording();
     let mut paced = summary(9);
     paced.timing_basis = FrameTimingBasis::PacingOnly;
@@ -261,7 +359,16 @@ fn a_pacing_only_frame_records_its_deadline_alone() {
         .collect();
     assert_eq!(
         points,
-        [Seen::Point(9, FramePointKind::Deadline, Some(3_250))]
+        [
+            point(9, FramePointKind::Deadline, Some(3_250)),
+            point(9, FramePointKind::Sampled, Some(4_000)),
+            Seen::Point(
+                9.into(),
+                FramePointKind::Submitted,
+                Some(2_900),
+                TimingBasis::Observed
+            ),
+        ]
     );
 }
 
@@ -291,8 +398,8 @@ fn syncs_and_frames_are_in_frameclock_terms() {
         taken(backend),
         [
             Seen::Sync(24_000_000),
-            Seen::Marker(MarkerPhase::Begin, number),
-            Seen::Marker(MarkerPhase::End, number),
+            Seen::Marker(MarkerPhase::Begin, number.into()),
+            Seen::Marker(MarkerPhase::End, number.into()),
         ]
     );
 }
@@ -305,7 +412,12 @@ fn as_a_diagnostics_sink_it_records_summaries() {
     diagnostics.frame_timing_summary(&summary(42));
 
     assert!(
-        taken(backend).contains(&Seen::Point(42, FramePointKind::Presented, Some(7_000))),
+        taken(backend).contains(&Seen::Point(
+            42.into(),
+            FramePointKind::Presented,
+            Some(7_000),
+            TimingBasis::Observed
+        )),
         "the summary reached Footfall"
     );
 }

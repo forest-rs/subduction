@@ -11,10 +11,11 @@
 //! - [`Recorder::begin_frame`] and [`Recorder::end_frame`] delimit the frame's
 //!   CPU work with Footfall frame markers numbered by frameclock's frame
 //!   index.
-//! - [`Recorder::record`] turns each [`FrameTimingSummary`] into frame points
-//!   (the platform's prediction, the commit deadline, the target and expected
-//!   present times, and when the frame was shown, or that it never was and
-//!   why) and gauges for the scheduler's adaptation.
+//! - [`Recorder::record`] turns each [`FrameTimingSummary`] into frame points:
+//!   the platform's prediction, the commit deadline with the scheduler state
+//!   the plan was made with, the target, sample, and expected present times,
+//!   when the frame was submitted, and when it was shown, or that it never
+//!   was and why.
 //! - [`Recorder::sync`] records the host clock against Footfall's own, so
 //!   analysis can place those times.
 //!
@@ -23,8 +24,9 @@
 //! converts them, and `Trace::pacing` judges each frame from them.
 //!
 //! A summary often arrives frames after the frame's work, when the display
-//! reports back. That is fine: frame points carry the frame's number, not the
-//! time they were recorded.
+//! reports back. That is fine: frame points carry the frame's number, and the
+//! scheduler state rides on the frame's own deadline point, so both describe
+//! the frame they belong to whenever they are recorded.
 //!
 //! # Example
 //!
@@ -66,11 +68,12 @@
 #![no_std]
 
 use footfall_core::{
-    ClockDesc, ClockReading, ContextHandle, CounterDesc, DropReason, FramePoint, FramePointKind,
-    TickPeriod, Unit,
+    Args, ClockDesc, ClockReading, ContextHandle, CounterDesc, DropReason, FrameNumber, FramePoint,
+    FramePointKind, FrameStream, TickPeriod, TimingBasis, Unit,
 };
-use frameclock::diagnostics::{DiagnosticsSink, FrameDropReason};
+use frameclock::diagnostics::{DiagnosticsSink, FrameDropReason, FrameTimingBasis};
 use frameclock::time::Timebase;
+use frameclock::timing::PresentationTiming;
 use frameclock::{ActiveFrame, FrameTimingSummary, HostTime};
 
 /// The clock frameclock's [`HostTime`] values are read from: Mach absolute
@@ -82,10 +85,6 @@ use frameclock::{ActiveFrame, FrameTimingSummary, HostTime};
 /// timestamp pair, so Footfall converts them all through the same syncs.
 pub static HOST_CLOCK: ClockDesc = ClockDesc::new("frameclock host");
 
-static PIPELINE_DEPTH: CounterDesc = CounterDesc::count("frameclock_pipeline_depth");
-static SAFETY_MARGIN: CounterDesc = CounterDesc::new("frameclock_safety_margin", Unit::Nanos);
-static FRAME_INTERVAL: CounterDesc = CounterDesc::new("frameclock_frame_interval", Unit::Nanos);
-static PRESENT_LATENCY: CounterDesc = CounterDesc::new("frameclock_present_latency", Unit::Nanos);
 static SUBMISSION_WORK: CounterDesc = CounterDesc::new("frameclock_submission_work", Unit::Nanos);
 /// Footfall's name for why frameclock dropped a frame.
 const fn drop_reason(reason: FrameDropReason) -> DropReason {
@@ -95,7 +94,17 @@ const fn drop_reason(reason: FrameDropReason) -> DropReason {
         FrameDropReason::MissedDeadline => DropReason::MissedDeadline,
         FrameDropReason::SurfaceUnavailable => DropReason::SurfaceUnavailable,
         FrameDropReason::OutputUnavailable => DropReason::OutputUnavailable,
-        FrameDropReason::NotPresented => DropReason::Replaced,
+        FrameDropReason::NotPresented => DropReason::NotPresented,
+    }
+}
+
+/// How frameclock says the platform's predicted present time should be
+/// read, as the `presentation_timing` arg on a predicted point.
+const fn presentation_timing(timing: PresentationTiming) -> &'static str {
+    match timing {
+        PresentationTiming::Predictive => "predictive",
+        PresentationTiming::Estimated => "estimated",
+        PresentationTiming::PacingOnly => "pacing only",
     }
 }
 
@@ -112,6 +121,7 @@ const fn drop_reason(reason: FrameDropReason) -> DropReason {
 pub struct Recorder {
     timebase: Timebase,
     context: ContextHandle,
+    stream: FrameStream,
 }
 
 impl Recorder {
@@ -121,11 +131,29 @@ impl Recorder {
         Self {
             timebase,
             context: ContextHandle::ROOT,
+            stream: FrameStream::DEFAULT,
         }
     }
 
-    /// Returns this recorder, emitting frame markers and gauges under
-    /// `context`, such as the window or surface the driver paces.
+    /// Returns this recorder, numbering frames in `stream`, such as one per
+    /// window or surface when a program runs several frame drivers. Give a
+    /// recreated driver, whose frame indices start again, a new generation
+    /// of its stream.
+    #[must_use]
+    pub const fn with_stream(mut self, stream: FrameStream) -> Self {
+        self.stream = stream;
+        self
+    }
+
+    /// Returns the frame stream frames are numbered in.
+    #[must_use]
+    pub const fn stream(&self) -> FrameStream {
+        self.stream
+    }
+
+    /// Returns this recorder, emitting frame markers and the submission-work
+    /// histogram under `context`, such as the window or surface the driver
+    /// paces.
     #[must_use]
     pub const fn with_context(mut self, context: ContextHandle) -> Self {
         self.context = context;
@@ -138,7 +166,7 @@ impl Recorder {
         TickPeriod::new(self.timebase.numer, self.timebase.denom)
     }
 
-    /// Returns the context frame markers and gauges are emitted under.
+    /// Returns the context frame markers and the histogram are emitted under.
     #[must_use]
     pub const fn context(&self) -> ContextHandle {
         self.context
@@ -159,7 +187,7 @@ impl Recorder {
     /// Call it once [`FrameDriver::begin_frame`](frameclock::FrameDriver::begin_frame)
     /// returns the frame ready.
     pub fn begin_frame(&self, frame: &ActiveFrame) {
-        footfall_core::frame_begin_numbered(frame.plan().frame_index, self.context);
+        footfall_core::frame_begin_numbered(self.number(frame.plan().frame_index), self.context);
     }
 
     /// Marks the end of `frame`'s CPU work.
@@ -170,7 +198,7 @@ impl Recorder {
     /// so a frame whose work ends after its commit deadline shows as submitted
     /// late.
     pub fn end_frame(&self, frame: &ActiveFrame) {
-        footfall_core::frame_end_numbered(frame.plan().frame_index, self.context);
+        footfall_core::frame_end_numbered(self.number(frame.plan().frame_index), self.context);
     }
 
     /// Records what `summary` says about its frame.
@@ -183,73 +211,93 @@ impl Recorder {
     /// [`discard_frame`](frameclock::FrameDriver::discard_frame).
     ///
     /// Each frame gets a frame point for every time frameclock knows, all in
-    /// host ticks:
+    /// host ticks and numbered in the recorder's [`stream`](Self::stream):
     ///
-    /// | Summary field | Frame point |
-    /// | --- | --- |
-    /// | `predicted_present` | [`Predicted`](FramePointKind::Predicted) |
-    /// | `commit_deadline` | [`Deadline`](FramePointKind::Deadline) |
-    /// | `target_present` | [`Target`](FramePointKind::Target) |
-    /// | `expected_present` | [`Expected`](FramePointKind::Expected) |
-    /// | `actual_present` | [`Presented`](FramePointKind::Presented) |
-    /// | `drop_reason` | [`Dropped`](FramePointKind::Dropped), with the matching [`DropReason`] |
+    /// | Summary field | Frame point | Basis | Args |
+    /// | --- | --- | --- | --- |
+    /// | `predicted_present` | [`Predicted`](FramePointKind::Predicted) | | `presentation_timing` |
+    /// | `commit_deadline` | [`Deadline`](FramePointKind::Deadline) | | the plan's scheduler state, below |
+    /// | `target_present` | [`Target`](FramePointKind::Target) | | |
+    /// | `sample_time` | [`Sampled`](FramePointKind::Sampled) | | |
+    /// | `submitted_at` | [`Submitted`](FramePointKind::Submitted) | observed | `work_ns`, when reported |
+    /// | `expected_present` | [`Expected`](FramePointKind::Expected) | | |
+    /// | `actual_present` | [`Presented`](FramePointKind::Presented) | observed for `ActualPresent`, otherwise estimated | |
+    /// | `drop_reason` | [`Dropped`](FramePointKind::Dropped), with the matching [`DropReason`] | | |
+    ///
+    /// The deadline point carries the scheduler state the frame was planned
+    /// with, so it stays with that frame however late the summary arrives:
+    /// `pipeline_depth`, `safety_margin_ns`, `frame_interval_ns`, and, when
+    /// the scheduler sampled its state, `present_latency_ns`.
     ///
     /// Every drop is recorded with its reason, including frames the host
     /// discarded or superseded itself; Footfall's analysis counts only some
-    /// reasons as misses. `NotPresented` is [`DropReason::Replaced`].
+    /// reasons as misses. `NotPresented` stays
+    /// [`DropReason::NotPresented`]: frameclock does not say whether a later
+    /// frame replaced it.
     ///
-    /// Alongside the frame points it sets these counters, under
-    /// [`context`](Self::context):
-    ///
-    /// | Counter | Kind | Unit | From |
-    /// | --- | --- | --- | --- |
-    /// | `frameclock_pipeline_depth` | gauge | count | `pipeline_depth` |
-    /// | `frameclock_safety_margin` | gauge | nanos | `safety_margin_ticks` |
-    /// | `frameclock_frame_interval` | gauge | nanos | `frame_interval` |
-    /// | `frameclock_present_latency` | gauge | nanos | `scheduler_state`, when sampled |
-    /// | `frameclock_submission_work` | histogram | nanos | `work`, when reported |
-    ///
-    /// Gauges are set as of when the summary arrives, which may be frames
-    /// after the frame ran.
+    /// The submission work, when reported, also goes to the
+    /// `frameclock_submission_work` histogram, in nanoseconds, under
+    /// [`context`](Self::context).
     pub fn record(&self, summary: &FrameTimingSummary) {
-        let number = summary.frame_index;
-        let times = [
-            (FramePointKind::Predicted, summary.predicted_present),
-            (FramePointKind::Deadline, Some(summary.commit_deadline)),
-            (FramePointKind::Target, summary.target_present),
-            (FramePointKind::Expected, summary.expected_present),
-            (FramePointKind::Presented, summary.actual_present),
-        ];
-        for (kind, at) in times {
-            if let Some(at) = at {
-                self.point(number, kind, at);
-            }
+        let number = self.number(summary.frame_index);
+        if let Some(at) = summary.predicted_present {
+            footfall_core::frame_point(&self.at(number, FramePointKind::Predicted, at).with_args(
+                Args::none().with(
+                    "presentation_timing",
+                    presentation_timing(summary.presentation_timing),
+                ),
+            ));
+        }
+        let mut plan = Args::none()
+            .with("pipeline_depth", summary.pipeline_depth)
+            .with("safety_margin_ns", self.nanos(summary.safety_margin_ticks))
+            .with(
+                "frame_interval_ns",
+                self.nanos(summary.frame_interval.ticks()),
+            );
+        if let Some(state) = summary.scheduler_state {
+            plan = plan.with(
+                "present_latency_ns",
+                self.nanos(state.present_latency_ticks),
+            );
+        }
+        footfall_core::frame_point(
+            &self
+                .at(number, FramePointKind::Deadline, summary.commit_deadline)
+                .with_args(plan),
+        );
+        if let Some(at) = summary.target_present {
+            footfall_core::frame_point(&self.at(number, FramePointKind::Target, at));
+        }
+        footfall_core::frame_point(&self.at(number, FramePointKind::Sampled, summary.sample_time));
+        if let Some(at) = summary.submitted_at {
+            let work = match summary.work {
+                Some(work) => Args::none().with("work_ns", self.nanos(work.ticks())),
+                None => Args::none(),
+            };
+            footfall_core::frame_point(
+                &self
+                    .at(number, FramePointKind::Submitted, at)
+                    .with_basis(TimingBasis::Observed)
+                    .with_args(work),
+            );
+        }
+        if let Some(at) = summary.expected_present {
+            footfall_core::frame_point(&self.at(number, FramePointKind::Expected, at));
+        }
+        if let Some(at) = summary.actual_present {
+            let basis = match summary.timing_basis {
+                FrameTimingBasis::ActualPresent => TimingBasis::Observed,
+                _ => TimingBasis::Estimated,
+            };
+            footfall_core::frame_point(
+                &self
+                    .at(number, FramePointKind::Presented, at)
+                    .with_basis(basis),
+            );
         }
         if let Some(reason) = summary.drop_reason {
             footfall_core::frame_point(&FramePoint::dropped(number, drop_reason(reason)));
-        }
-
-        footfall_core::gauge_set(
-            &PIPELINE_DEPTH,
-            self.context,
-            u64::from(summary.pipeline_depth),
-        );
-        footfall_core::gauge_set(
-            &SAFETY_MARGIN,
-            self.context,
-            self.nanos(summary.safety_margin_ticks),
-        );
-        footfall_core::gauge_set(
-            &FRAME_INTERVAL,
-            self.context,
-            self.nanos(summary.frame_interval.ticks()),
-        );
-        if let Some(state) = summary.scheduler_state {
-            footfall_core::gauge_set(
-                &PRESENT_LATENCY,
-                self.context,
-                self.nanos(state.present_latency_ticks),
-            );
         }
         if let Some(work) = summary.work {
             footfall_core::histogram_record(
@@ -260,14 +308,13 @@ impl Recorder {
         }
     }
 
-    fn point(&self, number: u64, kind: FramePointKind, at: HostTime) {
-        footfall_core::frame_point(&FramePoint::at(
-            number,
-            kind,
-            &HOST_CLOCK,
-            self.period(),
-            at.ticks(),
-        ));
+    /// Returns frameclock's frame index as a frame of the recorder's stream.
+    const fn number(&self, frame_index: u64) -> FrameNumber {
+        self.stream.frame(frame_index)
+    }
+
+    fn at(&self, number: FrameNumber, kind: FramePointKind, at: HostTime) -> FramePoint {
+        FramePoint::at(number, kind, &HOST_CLOCK, self.period(), at.ticks())
     }
 
     const fn reading(&self, at: HostTime) -> ClockReading {

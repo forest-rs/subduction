@@ -34,22 +34,31 @@ carry the frame's number, so they find their frame whenever they arrive.
 
 | `FrameTimingSummary` | Footfall |
 | --- | --- |
-| `frame_index` | the number on the frame markers and every frame point |
-| `predicted_present` | `FramePointKind::Predicted` |
-| `commit_deadline` | `FramePointKind::Deadline` |
+| `frame_index` | the number on the frame markers and every frame point, in the recorder's `FrameStream` |
+| `predicted_present` | `FramePointKind::Predicted`, with a `presentation_timing` arg |
+| `commit_deadline` | `FramePointKind::Deadline`, with the plan's scheduler state as args |
 | `target_present` | `FramePointKind::Target` |
+| `sample_time` | `FramePointKind::Sampled` |
+| `submitted_at` | `FramePointKind::Submitted`, observed, with a `work_ns` arg when reported |
 | `expected_present` | `FramePointKind::Expected` |
-| `actual_present` | `FramePointKind::Presented` |
-| `drop_reason` | `FramePointKind::Dropped`, with the matching `DropReason`; `NotPresented` is `Replaced` |
-| `pipeline_depth` | `frameclock_pipeline_depth` gauge |
-| `safety_margin_ticks` | `frameclock_safety_margin` gauge, in nanoseconds |
-| `frame_interval` | `frameclock_frame_interval` gauge, in nanoseconds |
-| `scheduler_state.present_latency_ticks` | `frameclock_present_latency` gauge, in nanoseconds |
-| `work` | `frameclock_submission_work` histogram, in nanoseconds |
+| `actual_present` | `FramePointKind::Presented`, observed for `ActualPresent` and estimated otherwise |
+| `drop_reason` | `FramePointKind::Dropped`, with the matching `DropReason` |
+| `pipeline_depth`, `safety_margin_ticks`, `frame_interval`, `scheduler_state.present_latency_ticks` | args on the deadline point: `pipeline_depth`, `safety_margin_ns`, `frame_interval_ns`, `present_latency_ns` |
+| `work` | also the `frameclock_submission_work` histogram, in nanoseconds |
+
+The scheduler state rides on the frame's own deadline point rather than in
+gauges set when the summary arrives, which may be frames later, so it
+describes the frame it was planned for. `FramePacing::args` returns it.
+
+A program with several frame drivers, such as one per window, gives each
+recorder its own stream with `Recorder::with_stream`, and a recreated driver,
+whose frame indices start again, a new generation of it.
 
 Every drop is recorded with its reason, including frames the host discarded
-or superseded itself. Footfall's analysis keeps those, and frames a later frame
-replaced, out of its miss counts, while still counting the work they wasted.
+or superseded itself. Footfall's analysis keeps those out of its miss counts,
+while still counting the work they wasted. `NotPresented` stays
+`DropReason::NotPresented`, a miss: frameclock does not say whether a later
+frame replaced the frame or it was lost.
 
 Frame points stay in host ticks under `HOST_CLOCK`, with the platform
 adapter's timebase as the tick period. Footfall's analysis converts them

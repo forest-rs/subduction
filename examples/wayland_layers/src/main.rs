@@ -23,13 +23,12 @@ use subduction_backend_wayland::{Presenter as _, WaylandPresenter, WaylandPresen
 use subduction_core::layer::{LayerId, LayerStore};
 use subduction_core::transform::Transform3d;
 
-use wayland_example_common::{ExampleState, ShmBuffer, ShmPool};
+use wayland_example_common::{ExampleState, FrameFeedback, ShmBuffer, ShmPool};
 
 const DEFAULT_W: u32 = 800;
 const DEFAULT_H: u32 = 600;
 const NUM_LAYERS: usize = 5;
 const LAYER_SIZE: u32 = 80;
-const UNOBSERVED_FRAME_INDEX: u64 = 0;
 
 /// ARGB colors for the five layers.
 const COLORS: [[u8; 4]; NUM_LAYERS] = [
@@ -131,6 +130,7 @@ fn main() {
     // --- Animation state ---
     let start_nanos = frameclock_wayland::now().ticks();
     let mut scheduler = Scheduler::new(SchedulerConfig::estimated());
+    let mut frames = FrameFeedback::new();
     let mut win_w = effective_width(&state);
     let mut win_h = effective_height(&state);
 
@@ -161,11 +161,22 @@ fn main() {
             }
         }
 
+        // Each frame's own presentation, matched to it by its commit.
+        while let Some(event) = state.wayland.poll_present_event() {
+            if let Some(feedback) = frames.resolve(&event) {
+                scheduler.observe(&feedback);
+            }
+        }
+
         while let Some(tick) = state.wayland.poll_tick() {
             let build_start = frameclock_wayland::now();
 
             let opportunity = frameclock_wayland::frame_opportunity(tick, Duration(16_666_667));
-            let plan = scheduler.plan(opportunity, FrameDemand::ANIMATION, UNOBSERVED_FRAME_INDEX);
+            let plan = scheduler.plan(
+                opportunity,
+                FrameDemand::ANIMATION,
+                frames.next_frame_index(),
+            );
 
             let elapsed_nanos = plan.sample_time.ticks().saturating_sub(start_nanos);
             let t = elapsed_nanos as f64 / 1_000_000_000.0;
@@ -181,15 +192,26 @@ fn main() {
             let changes = store.evaluate();
             presenter.apply(&store, &changes);
 
-            let _id = state
+            let id = state
                 .wayland
                 .commit_frame(&qh, &connection)
                 .expect("commit_frame failed");
 
             let submitted_at = frameclock_wayland::now();
-            let feedback =
-                PresentFeedback::new(&plan, build_start, submitted_at, tick.prev_actual_present);
-            scheduler.observe(&feedback);
+            if state.wayland.capabilities().has_presentation_time {
+                // Judged when the compositor says when this commit was shown.
+                if let Some(feedback) = frames.committed(id, &plan, build_start, submitted_at) {
+                    scheduler.observe(&feedback);
+                }
+            } else {
+                // No presentation feedback will come: judge it by its commit.
+                scheduler.observe(&PresentFeedback::new(
+                    &plan,
+                    build_start,
+                    submitted_at,
+                    None,
+                ));
+            }
         }
     }
 }

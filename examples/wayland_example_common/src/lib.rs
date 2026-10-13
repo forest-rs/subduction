@@ -3,14 +3,17 @@
 
 //! Shared helpers for Wayland examples.
 //!
-//! Provides xdg-shell window creation, `wl_shm` buffer allocation, and
-//! Wayland dispatch wiring that the individual examples share.
+//! Provides xdg-shell window creation, `wl_shm` buffer allocation, Wayland
+//! dispatch wiring, and matching presentation feedback to frames, which the
+//! individual examples share.
 
 #![expect(unsafe_code, reason = "wl_shm requires unsafe memfd/mmap")]
 
+mod feedback;
 mod shm;
 mod xdg;
 
+pub use feedback::{FrameFeedback, MAX_WAITING};
 pub use shm::{ShmBuffer, ShmPool};
 pub use xdg::{ExampleState, XdgState, XdgWindow, create_window};
 

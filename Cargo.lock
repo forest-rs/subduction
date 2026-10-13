@@ -426,7 +426,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "footfall_analysis"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/footfall?rev=5349e144a514cdcd65184ea9d6be684a1b49f641#5349e144a514cdcd65184ea9d6be684a1b49f641"
+source = "git+https://github.com/forest-rs/footfall?rev=e714b0afa44aa42f6d0d77155332e64a88da443a#e714b0afa44aa42f6d0d77155332e64a88da443a"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
@@ -436,12 +436,12 @@ dependencies = [
 [[package]]
 name = "footfall_core"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/footfall?rev=5349e144a514cdcd65184ea9d6be684a1b49f641#5349e144a514cdcd65184ea9d6be684a1b49f641"
+source = "git+https://github.com/forest-rs/footfall?rev=e714b0afa44aa42f6d0d77155332e64a88da443a#e714b0afa44aa42f6d0d77155332e64a88da443a"
 
 [[package]]
 name = "footfall_runtime"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/footfall?rev=5349e144a514cdcd65184ea9d6be684a1b49f641#5349e144a514cdcd65184ea9d6be684a1b49f641"
+source = "git+https://github.com/forest-rs/footfall?rev=e714b0afa44aa42f6d0d77155332e64a88da443a#e714b0afa44aa42f6d0d77155332e64a88da443a"
 dependencies = [
  "footfall_core",
 ]
@@ -449,7 +449,7 @@ dependencies = [
 [[package]]
 name = "footfall_session"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/footfall?rev=5349e144a514cdcd65184ea9d6be684a1b49f641#5349e144a514cdcd65184ea9d6be684a1b49f641"
+source = "git+https://github.com/forest-rs/footfall?rev=e714b0afa44aa42f6d0d77155332e64a88da443a#e714b0afa44aa42f6d0d77155332e64a88da443a"
 dependencies = [
  "footfall_core",
  "footfall_runtime",

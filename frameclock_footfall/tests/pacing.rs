@@ -4,8 +4,8 @@
 //! A simulated `FrameDriver` recorded into a real Footfall runtime, judged by
 //! Footfall's pacing analysis.
 
-use footfall_analysis::{FramePacing, Outcome, OwnedSnapshot, Trace};
-use footfall_core::{DropReason, FramePointKind, InstrumentationLevel};
+use footfall_analysis::{FramePacing, LateCause, Outcome, OwnedSnapshot, Support, Trace};
+use footfall_core::{DropReason, FramePointKind, InstrumentationLevel, TimingBasis};
 use footfall_runtime::Runtime;
 use frameclock::diagnostics::{FrameDropReason, FrameTimingSummary};
 use frameclock::time::Timebase;
@@ -147,7 +147,38 @@ fn pacing_judges_frames_and_predictions_from_what_frameclock_learned() {
             frame.frame().is_some(),
             "its CPU work is the numbered frame"
         );
+        let why = frame.why().expect("a late frame says why");
+        assert_eq!(
+            (
+                why.cause,
+                why.support,
+                why.submit_reported,
+                why.submitted_late,
+                why.gpu_recorded,
+                why.behind_previous,
+                why.presented,
+            ),
+            (
+                LateCause::AfterSubmit,
+                Support::Unresolved,
+                true,
+                None,
+                false,
+                false,
+                TimingBasis::Observed,
+            ),
+            "frame {number} was submitted in time, as frameclock reported, with no GPU work recorded: {why:?}"
+        );
     }
+    assert_eq!(
+        (
+            counts.late_support.observed,
+            counts.late_support.inferred,
+            counts.late_support.unresolved
+        ),
+        (0, 0, 2),
+        "the trace stops short of why either late frame was late"
+    );
     let superseded = summaries[5].frame_index;
     assert_eq!(
         pacing.frame(superseded).map(FramePacing::outcome),

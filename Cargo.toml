@@ -86,12 +86,11 @@ web-sys = "0.3"
 web-time = { version = "1.1.0" }
 # Footfall isn't on crates.io yet. Pinned to a commit that has the APIs
 # frameclock_footfall needs (numbered frames in streams, clocks, frame points
-# with drop reasons, timing bases, and args). It is on Footfall's
-# timing-basis branch (forest-rs/footfall#49) until that lands; then move the
-# pin to main, and to crates.io once it is published.
-footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "bfc51e9a5caa2ad43af6f6a4d3fc77e2b11b920f" }
-footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "bfc51e9a5caa2ad43af6f6a4d3fc77e2b11b920f" }
-footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "bfc51e9a5caa2ad43af6f6a4d3fc77e2b11b920f" }
+# with drop reasons, timing bases, and args), on Footfall's main branch. Move
+# to crates.io once it is published.
+footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "0189aa41773756d1428d165e0ed12a2480fa1c1b" }
+footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "0189aa41773756d1428d165e0ed12a2480fa1c1b" }
+footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "0189aa41773756d1428d165e0ed12a2480fa1c1b" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

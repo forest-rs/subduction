@@ -127,11 +127,14 @@
 //!
 //! - **Simple path**: use
 //!   [`FrameTick::prev_actual_present`](frameclock::FrameTick::prev_actual_present)
-//!   which is populated automatically from the most recent feedback.
+//!   which is populated automatically from the most recent feedback. It is
+//!   when the *previous* commit was shown, so it suits pacing estimates, not
+//!   judging the frame being committed now.
 //! - **Robust path**: drain [`PresentEvent`](frameclock_wayland::PresentEvent)s via
 //!   [`WaylandState::poll_present_event`] (or
 //!   [`OwnedQueueMode::poll_present_event`]) and correlate them by
-//!   [`SubmissionId`](frameclock_wayland::SubmissionId) to feed a timing scheduler's `observe()` method.
+//!   [`SubmissionId`](frameclock_wayland::SubmissionId) to feed a timing scheduler's `observe()` method,
+//!   so each frame is judged by its own presentation.
 
 mod commit;
 mod event_loop;

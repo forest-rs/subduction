@@ -2293,6 +2293,8 @@ dependencies = [
 name = "wayland_example_common"
 version = "0.0.1"
 dependencies = [
+ "frameclock",
+ "frameclock_wayland",
  "libc",
  "subduction_backend_wayland",
  "wayland-client",

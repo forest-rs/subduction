@@ -12,6 +12,8 @@ publish = false
 workspace = true
 
 [dependencies]
+frameclock = { workspace = true }
+frameclock_wayland = { workspace = true }
 subduction_backend_wayland = { path = "../../subduction_backend_wayland" }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }

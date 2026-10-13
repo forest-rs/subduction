@@ -298,7 +298,7 @@ fn on_tick() {
     let opportunity = FrameOpportunity::new(
         tick,
         hints,
-        DisplayTiming::from_tick(&tick, Duration(16_666_667)),
+        DisplayTiming::from_tick(&tick, Duration(s.timebase.nanos_to_ticks(REFRESH_NS))),
     );
     let plan = s
         .scheduler

@@ -102,7 +102,8 @@ mod tests {
         let tick = FrameTick {
             now: HostTime(1_000_000),
             predicted_present: Some(HostTime(2_000_000)),
-            refresh_interval: Some(16_666_667),
+            // 16.67 ms in ticks of a 10 MHz QPC.
+            refresh_interval: Some(166_666),
             output: OutputId(0),
             prev_actual_present: None,
         };

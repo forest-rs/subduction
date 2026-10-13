@@ -33,10 +33,17 @@ was shown frames after submitting it, through `FrameDriver::report_frame` or
   the platform adapter's `Timebase` as Footfall's `TickPeriod`. The host calls
   `Recorder::sync` right after reading its clock. Footfall's analysis does the
   converting, and it reports any points it could not place.
-- **Only frames meant to be shown get points.** A frame the host discarded or
-  replaced itself (`Discarded`, `Superseded`) was never meant to be shown, so
-  it is not a pacing miss. It gets only its drop counter. Every other drop
-  reason is a `Dropped` frame point.
+- **Every time frameclock knows is a point.** The platform's prediction at
+  frame start (`predicted_present`), the commit deadline, the target, the
+  present time expected at submit (`expected_present`), and the actual present
+  time each become a frame point, so Footfall can judge every prediction
+  against what happened.
+- **Every drop carries its reason.** Each `FrameDropReason` becomes
+  `FramePoint::dropped` with the matching Footfall `DropReason`;
+  `NotPresented` is `Replaced`. Frames the host discarded or superseded itself
+  are recorded too. Deciding which drops are misses is the analysis's job, not
+  the adapter's: Footfall counts only some reasons as misses, and counts the
+  work on every unshown frame as wasted.
 - **Scheduler state goes in counters.** Pipeline depth, safety margin, frame
   interval and learned present latency are gauges. Submission work, such as
   GPU time, is a histogram. Durations are converted to nanoseconds. Counter
@@ -46,9 +53,8 @@ was shown frames after submitting it, through `FrameDriver::report_frame` or
 
 ## Consequences
 
-- Footfall can't express predicted and expected present times, or frameclock's
-  timing basis and presentation timing. Analysis infers the basis from which
-  points exist.
+- Frameclock's timing basis and presentation timing aren't recorded. Analysis
+  infers the basis from which points exist.
 - Gauges are stamped when the summary arrives, not when the frame ran.
 - Footfall is pinned by git revision until it is published. The crate depends
   only on `footfall_core`, which is `no_std` and has no dependencies.

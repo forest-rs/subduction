@@ -35,21 +35,28 @@ carry the frame's number, so they find their frame whenever they arrive.
 | `FrameTimingSummary` | Footfall |
 | --- | --- |
 | `frame_index` | the number on the frame markers and every frame point |
+| `predicted_present` | `FramePointKind::Predicted` |
 | `commit_deadline` | `FramePointKind::Deadline` |
 | `target_present` | `FramePointKind::Target` |
+| `expected_present` | `FramePointKind::Expected` |
 | `actual_present` | `FramePointKind::Presented` |
-| `drop_reason`, except `Discarded` and `Superseded` | `FramePoint::dropped`, and a `frameclock_dropped_<reason>` counter |
-| `drop_reason` `Discarded` or `Superseded` | the counter only: the host chose not to show the frame |
+| `drop_reason` | `FramePointKind::Dropped`, with the matching `DropReason`; `NotPresented` is `Replaced` |
 | `pipeline_depth` | `frameclock_pipeline_depth` gauge |
 | `safety_margin_ticks` | `frameclock_safety_margin` gauge, in nanoseconds |
 | `frame_interval` | `frameclock_frame_interval` gauge, in nanoseconds |
 | `scheduler_state.present_latency_ticks` | `frameclock_present_latency` gauge, in nanoseconds |
 | `work` | `frameclock_submission_work` histogram, in nanoseconds |
 
+Every drop is recorded with its reason, including frames the host discarded
+or superseded itself. Footfall's analysis keeps those, and frames a later frame
+replaced, out of its miss counts, while still counting the work they wasted.
+
 Frame points stay in host ticks under `HOST_CLOCK`, with the platform
 adapter's timebase as the tick period. Footfall's analysis converts them
 through the clock syncs `Recorder::sync` records, and `Trace::pacing` judges
-each frame on time, late, dropped, or submitted late from them.
+each frame on time, late, dropped, skipped, or submitted late from them.
+`Pacing::prediction_error` compares the predicted, target, and expected times
+with when frames were shown.
 
 ## Footfall Version
 

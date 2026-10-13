@@ -12,8 +12,9 @@
 //!   CPU work with Footfall frame markers numbered by frameclock's frame
 //!   index.
 //! - [`Recorder::record`] turns each [`FrameTimingSummary`] into frame points
-//!   (the commit deadline, the target present time, when the frame was shown,
-//!   or that it never was) and gauges for the scheduler's adaptation.
+//!   (the platform's prediction, the commit deadline, the target and expected
+//!   present times, and when the frame was shown, or that it never was and
+//!   why) and gauges for the scheduler's adaptation.
 //! - [`Recorder::sync`] records the host clock against Footfall's own, so
 //!   analysis can place those times.
 //!
@@ -65,8 +66,8 @@
 #![no_std]
 
 use footfall_core::{
-    ClockDesc, ClockReading, ContextHandle, CounterDesc, FramePoint, FramePointKind, TickPeriod,
-    Unit,
+    ClockDesc, ClockReading, ContextHandle, CounterDesc, DropReason, FramePoint, FramePointKind,
+    TickPeriod, Unit,
 };
 use frameclock::diagnostics::{DiagnosticsSink, FrameDropReason};
 use frameclock::time::Timebase;
@@ -86,23 +87,15 @@ static SAFETY_MARGIN: CounterDesc = CounterDesc::new("frameclock_safety_margin",
 static FRAME_INTERVAL: CounterDesc = CounterDesc::new("frameclock_frame_interval", Unit::Nanos);
 static PRESENT_LATENCY: CounterDesc = CounterDesc::new("frameclock_present_latency", Unit::Nanos);
 static SUBMISSION_WORK: CounterDesc = CounterDesc::new("frameclock_submission_work", Unit::Nanos);
-static DISCARDED: CounterDesc = CounterDesc::count("frameclock_dropped_discarded");
-static SUPERSEDED: CounterDesc = CounterDesc::count("frameclock_dropped_superseded");
-static MISSED_DEADLINE: CounterDesc = CounterDesc::count("frameclock_dropped_missed_deadline");
-static SURFACE_UNAVAILABLE: CounterDesc =
-    CounterDesc::count("frameclock_dropped_surface_unavailable");
-static OUTPUT_UNAVAILABLE: CounterDesc =
-    CounterDesc::count("frameclock_dropped_output_unavailable");
-static NOT_PRESENTED: CounterDesc = CounterDesc::count("frameclock_dropped_not_presented");
-
-const fn dropped_counter(reason: FrameDropReason) -> &'static CounterDesc {
+/// Footfall's name for why frameclock dropped a frame.
+const fn drop_reason(reason: FrameDropReason) -> DropReason {
     match reason {
-        FrameDropReason::Discarded => &DISCARDED,
-        FrameDropReason::Superseded => &SUPERSEDED,
-        FrameDropReason::MissedDeadline => &MISSED_DEADLINE,
-        FrameDropReason::SurfaceUnavailable => &SURFACE_UNAVAILABLE,
-        FrameDropReason::OutputUnavailable => &OUTPUT_UNAVAILABLE,
-        FrameDropReason::NotPresented => &NOT_PRESENTED,
+        FrameDropReason::Discarded => DropReason::Discarded,
+        FrameDropReason::Superseded => DropReason::Superseded,
+        FrameDropReason::MissedDeadline => DropReason::MissedDeadline,
+        FrameDropReason::SurfaceUnavailable => DropReason::SurfaceUnavailable,
+        FrameDropReason::OutputUnavailable => DropReason::OutputUnavailable,
+        FrameDropReason::NotPresented => DropReason::Replaced,
     }
 }
 
@@ -189,11 +182,21 @@ impl Recorder {
     /// [`FrameBeginResult::Expired`](frameclock::FrameBeginResult::Expired), and
     /// [`discard_frame`](frameclock::FrameDriver::discard_frame).
     ///
-    /// A frame the display was meant to show gets its commit deadline, its
-    /// target present time when frameclock has one, and either when it was
-    /// shown or that it was dropped. A frame the host discarded or replaced
-    /// itself was never meant to be shown, so it gets no frame points, only
-    /// its drop count.
+    /// Each frame gets a frame point for every time frameclock knows, all in
+    /// host ticks:
+    ///
+    /// | Summary field | Frame point |
+    /// | --- | --- |
+    /// | `predicted_present` | [`Predicted`](FramePointKind::Predicted) |
+    /// | `commit_deadline` | [`Deadline`](FramePointKind::Deadline) |
+    /// | `target_present` | [`Target`](FramePointKind::Target) |
+    /// | `expected_present` | [`Expected`](FramePointKind::Expected) |
+    /// | `actual_present` | [`Presented`](FramePointKind::Presented) |
+    /// | `drop_reason` | [`Dropped`](FramePointKind::Dropped), with the matching [`DropReason`] |
+    ///
+    /// Every drop is recorded with its reason, including frames the host
+    /// discarded or superseded itself; Footfall's analysis counts only some
+    /// reasons as misses. `NotPresented` is [`DropReason::Replaced`].
     ///
     /// Alongside the frame points it sets these counters, under
     /// [`context`](Self::context):
@@ -205,30 +208,25 @@ impl Recorder {
     /// | `frameclock_frame_interval` | gauge | nanos | `frame_interval` |
     /// | `frameclock_present_latency` | gauge | nanos | `scheduler_state`, when sampled |
     /// | `frameclock_submission_work` | histogram | nanos | `work`, when reported |
-    /// | `frameclock_dropped_<reason>` | counter | count | `drop_reason`, in snake case |
     ///
     /// Gauges are set as of when the summary arrives, which may be frames
     /// after the frame ran.
     pub fn record(&self, summary: &FrameTimingSummary) {
         let number = summary.frame_index;
-        let host_intended = matches!(
-            summary.drop_reason,
-            Some(FrameDropReason::Discarded | FrameDropReason::Superseded)
-        );
-        if !host_intended {
-            self.point(number, FramePointKind::Deadline, summary.commit_deadline);
-            if let Some(target) = summary.target_present {
-                self.point(number, FramePointKind::Target, target);
-            }
-            if let Some(shown) = summary.actual_present {
-                self.point(number, FramePointKind::Presented, shown);
-            }
-            if summary.drop_reason.is_some() {
-                footfall_core::frame_point(&FramePoint::dropped(number));
+        let times = [
+            (FramePointKind::Predicted, summary.predicted_present),
+            (FramePointKind::Deadline, Some(summary.commit_deadline)),
+            (FramePointKind::Target, summary.target_present),
+            (FramePointKind::Expected, summary.expected_present),
+            (FramePointKind::Presented, summary.actual_present),
+        ];
+        for (kind, at) in times {
+            if let Some(at) = at {
+                self.point(number, kind, at);
             }
         }
         if let Some(reason) = summary.drop_reason {
-            footfall_core::counter_add(dropped_counter(reason), self.context, 1);
+            footfall_core::frame_point(&FramePoint::dropped(number, drop_reason(reason)));
         }
 
         footfall_core::gauge_set(

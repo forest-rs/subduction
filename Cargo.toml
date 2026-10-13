@@ -85,12 +85,13 @@ wasm-bindgen = { version = "0.2", default-features = false }
 web-sys = "0.3"
 web-time = { version = "1.1.0" }
 # Footfall isn't on crates.io yet, and the APIs frameclock_footfall needs
-# (numbered frames, clocks, frame points) arrive with forest-rs/footfall#34–#39.
+# (numbered frames, clocks, frame points and drop reasons) arrive with
+# forest-rs/footfall#34–#41.
 # Pinned to that stack's tip until they land; then move to Footfall's main
 # branch, and to crates.io once it is published.
-footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
-footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
-footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "f051d21d267772691bd54ee147cb925d2fc7d9cb" }
+footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "5349e144a514cdcd65184ea9d6be684a1b49f641" }
+footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "5349e144a514cdcd65184ea9d6be684a1b49f641" }
+footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "5349e144a514cdcd65184ea9d6be684a1b49f641" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

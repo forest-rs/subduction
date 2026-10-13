@@ -4,9 +4,10 @@
 //! A simulated `FrameDriver` recorded into a real Footfall runtime, judged by
 //! Footfall's pacing analysis.
 
-use footfall_analysis::{Outcome, OutcomeCounts, OwnedSnapshot, Trace};
-use footfall_core::InstrumentationLevel;
+use footfall_analysis::{FramePacing, Outcome, OwnedSnapshot, Trace};
+use footfall_core::{DropReason, FramePointKind, InstrumentationLevel};
 use footfall_runtime::Runtime;
+use frameclock::diagnostics::{FrameDropReason, FrameTimingSummary};
 use frameclock::time::Timebase;
 use frameclock::timing::{DisplayTiming, FrameTick};
 use frameclock::{
@@ -35,7 +36,7 @@ fn opportunity(now: u64) -> FrameOpportunity {
 }
 
 #[test]
-fn pacing_judges_frames_from_what_frameclock_learned() {
+fn pacing_judges_frames_and_predictions_from_what_frameclock_learned() {
     let runtime = Runtime::builder()
         .level(InstrumentationLevel::Trace)
         .event_capacity(4096)
@@ -49,8 +50,9 @@ fn pacing_judges_frames_from_what_frameclock_learned() {
     // period from that sync, exactly. A real host syncs each frame.
     recorder.sync(HostTime(START));
 
+    let tolerance = core::time::Duration::from_millis(1);
     let mut late = Vec::new();
-    let mut dropped = Vec::new();
+    let mut summaries = Vec::new();
     for frame in 0..12_u64 {
         let now = START + frame * REFRESH;
         driver.request(FrameDemand::INPUT);
@@ -64,64 +66,129 @@ fn pacing_judges_frames_from_what_frameclock_learned() {
             .expect("the plan is predictive");
         recorder.begin_frame(&active);
         recorder.end_frame(&active);
-        let submit =
-            driver.submit_frame(active, FrameSubmission::reported(HostTime(now + 1_000_000)));
-        assert_eq!(submit.summary, None, "frame {frame} waits for its report");
 
-        let outcome = match frame {
-            3 | 7 => {
-                late.push(number);
-                PresentOutcome::Presented(target + Duration(REFRESH))
-            }
-            10 => {
-                dropped.push(number);
-                PresentOutcome::NotPresented
-            }
-            _ => PresentOutcome::Presented(target),
+        // Frame 5 was made stale by newer work, and frame 9 found no
+        // drawable: neither was submitted.
+        let host_drop = match frame {
+            5 => Some(FrameDropReason::Superseded),
+            9 => Some(FrameDropReason::SurfaceUnavailable),
+            _ => None,
         };
-        let summary = driver
-            .report_frame(
-                number,
-                FrameReport {
-                    work: Some(Duration(2_000_000)),
-                    outcome,
-                },
-            )
-            .expect("the frame was held for its report");
+        let summary = if let Some(reason) = host_drop {
+            driver.discard_frame_with_reason(active, reason)
+        } else {
+            let submit =
+                driver.submit_frame(active, FrameSubmission::reported(HostTime(now + 1_000_000)));
+            assert_eq!(submit.summary, None, "frame {frame} waits for its report");
+            let outcome = match frame {
+                3 | 7 => {
+                    late.push(number);
+                    PresentOutcome::Presented(target + Duration(REFRESH))
+                }
+                // A mailbox swapchain replaced it with the next frame.
+                10 => PresentOutcome::NotPresented,
+                _ => PresentOutcome::Presented(target),
+            };
+            driver
+                .report_frame(
+                    number,
+                    FrameReport {
+                        work: Some(Duration(2_000_000)),
+                        outcome,
+                    },
+                )
+                .expect("the frame was held for its report")
+        };
         recorder.record(&summary);
+        summaries.push(summary);
     }
 
     let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
-    let pacing = trace.pacing(core::time::Duration::from_millis(1));
+    let pacing = trace.pacing(tolerance);
     assert_eq!(pacing.unplaced_points(), 0, "every host time was placed");
+    let counts = pacing.counts();
     assert_eq!(
-        pacing.counts(),
-        OutcomeCounts {
-            on_time: 9,
-            late: 2,
-            dropped: 1,
-            submitted_late: 0,
-            unknown: 0,
-        }
+        (
+            counts.on_time,
+            counts.late,
+            counts.dropped,
+            counts.skipped,
+            counts.submitted_late,
+            counts.unknown
+        ),
+        (7, 2, 1, 2, 0, 0),
+        "on time, late, dropped, skipped, submitted late, unknown: {counts:?}"
+    );
+    assert_eq!(
+        counts.missed(),
+        3,
+        "the superseded and replaced frames are not misses"
+    );
+    assert_eq!(
+        pacing.wasted().frames,
+        3,
+        "every frame never shown is wasted work, whatever the reason"
     );
     for number in late {
         let frame = pacing.frame(number).expect("the late frame was recorded");
-        assert_eq!(
-            frame.outcome(),
-            Outcome::Late {
-                by: core::time::Duration::from_nanos(REFRESH)
-            },
-            "frame {number} was shown a refresh late"
+        assert!(
+            matches!(frame.outcome(), Outcome::Late { by, .. } if by == core::time::Duration::from_nanos(REFRESH)),
+            "frame {number} was shown a refresh late: {:?}",
+            frame.outcome()
         );
         assert!(
             frame.frame().is_some(),
             "its CPU work is the numbered frame"
         );
     }
-    for number in dropped {
+    let superseded = summaries[5].frame_index;
+    assert_eq!(
+        pacing.frame(superseded).map(FramePacing::outcome),
+        Some(Outcome::Dropped {
+            reason: DropReason::Superseded
+        }),
+        "a superseded frame is skipped, not missed"
+    );
+    assert_eq!(
+        pacing
+            .frame(summaries[9].frame_index)
+            .map(FramePacing::outcome),
+        Some(Outcome::Dropped {
+            reason: DropReason::SurfaceUnavailable
+        })
+    );
+
+    // How good frameclock's predictions were, from the points it recorded,
+    // against the same judgment made straight from the summaries.
+    for (kind, time) in [
+        (
+            FramePointKind::Predicted,
+            (|summary| summary.predicted_present) as fn(&FrameTimingSummary) -> Option<HostTime>,
+        ),
+        (FramePointKind::Target, |summary| summary.target_present),
+        (FramePointKind::Expected, |summary| summary.expected_present),
+    ] {
+        let (mut within, mut shown_late) = (0, 0);
+        for summary in &summaries {
+            let (Some(at), Some(shown)) = (time(summary), summary.actual_present) else {
+                continue;
+            };
+            if u128::from(shown.ticks().abs_diff(at.ticks())) > tolerance.as_nanos() {
+                assert!(shown > at, "no frame is shown early");
+                shown_late += 1;
+            } else {
+                within += 1;
+            }
+        }
+        let error = pacing.prediction_error(kind);
+        assert!(
+            within + shown_late > 0,
+            "the summaries carry {kind:?} times"
+        );
         assert_eq!(
-            pacing.frame(number).map(|frame| frame.outcome()),
-            Some(Outcome::Dropped)
+            (error.within(), error.late.count(), error.early.count()),
+            (within, shown_late, 0),
+            "{kind:?} predictions"
         );
     }
 }

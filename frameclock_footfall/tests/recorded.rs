@@ -6,7 +6,7 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use footfall_core::{
-    Backend, ClockReading, ContextHandle, CounterDesc, FramePoint, FramePointKind,
+    Backend, ClockReading, ContextHandle, CounterDesc, DropReason, FramePoint, FramePointKind,
     InstrumentationLevel, MarkerKind, MarkerPhase, TickPeriod, Unit,
 };
 use frameclock::diagnostics::{FrameDropReason, FrameTimingBasis, FrameTimingSummary};
@@ -118,7 +118,7 @@ fn summary(frame_index: u64) -> FrameTimingSummary {
         timing_basis: FrameTimingBasis::ActualPresent,
         presentation_timing: PresentationTiming::Predictive,
         tick_time: HostTime(1_000),
-        predicted_present: Some(HostTime(4_000)),
+        predicted_present: Some(HostTime(3_900)),
         refresh_interval: Some(3_000),
         demand: FrameDemand::ANIMATION,
         frame_interval: Duration(3_000),
@@ -128,7 +128,7 @@ fn summary(frame_index: u64) -> FrameTimingSummary {
         commit_deadline: HostTime(3_250),
         submitted_at: Some(HostTime(2_900)),
         work: Some(Duration(600)),
-        expected_present: Some(HostTime(4_000)),
+        expected_present: Some(HostTime(4_100)),
         actual_present: Some(HostTime(7_000)),
         missed_deadline: Some(true),
         pacing_overrun: None,
@@ -146,15 +146,17 @@ fn summary(frame_index: u64) -> FrameTimingSummary {
 }
 
 #[test]
-fn a_shown_frame_records_its_deadline_target_and_present_in_host_ticks() {
+fn a_shown_frame_records_every_time_frameclock_knows_in_host_ticks() {
     let (backend, _serial) = recording();
     Recorder::new(MACH).record(&summary(1234));
 
     assert_eq!(
         taken(backend),
         [
+            Seen::Point(1234, FramePointKind::Predicted, Some(3_900)),
             Seen::Point(1234, FramePointKind::Deadline, Some(3_250)),
             Seen::Point(1234, FramePointKind::Target, Some(4_000)),
+            Seen::Point(1234, FramePointKind::Expected, Some(4_100)),
             Seen::Point(1234, FramePointKind::Presented, Some(7_000)),
             Seen::Counter("frameclock_pipeline_depth", Unit::Count, "gauge", 2),
             // 300 Mach ticks are 12.5 µs.
@@ -172,7 +174,7 @@ fn a_shown_frame_records_its_deadline_target_and_present_in_host_ticks() {
 }
 
 #[test]
-fn a_frame_the_display_never_showed_is_dropped() {
+fn a_frame_the_display_never_showed_is_dropped_as_replaced() {
     let (backend, _serial) = recording();
     let mut replaced = summary(7);
     replaced.actual_present = None;
@@ -184,13 +186,15 @@ fn a_frame_the_display_never_showed_is_dropped() {
 
     let seen = taken(backend);
     assert_eq!(
-        seen[..4],
+        seen[..5],
         [
+            Seen::Point(7, FramePointKind::Predicted, Some(3_900)),
             Seen::Point(7, FramePointKind::Deadline, Some(3_250)),
             Seen::Point(7, FramePointKind::Target, Some(4_000)),
-            Seen::Point(7, FramePointKind::Dropped, None),
-            Seen::Counter("frameclock_dropped_not_presented", Unit::Count, "add", 1),
-        ]
+            Seen::Point(7, FramePointKind::Expected, Some(4_100)),
+            Seen::Point(7, FramePointKind::Dropped(DropReason::Replaced), None),
+        ],
+        "a replaced frame keeps its plan's times"
     );
     assert!(
         !seen
@@ -201,24 +205,42 @@ fn a_frame_the_display_never_showed_is_dropped() {
 }
 
 #[test]
-fn a_frame_the_host_discarded_gets_no_points() {
+fn every_drop_reason_reaches_footfall() {
     let (backend, _serial) = recording();
-    let mut discarded = summary(8);
-    discarded.actual_present = None;
-    discarded.drop_reason = Some(FrameDropReason::Superseded);
-    Recorder::new(MACH).record(&discarded);
+    let recorder = Recorder::new(MACH);
+    let reasons = [
+        (FrameDropReason::Discarded, DropReason::Discarded),
+        (FrameDropReason::Superseded, DropReason::Superseded),
+        (FrameDropReason::MissedDeadline, DropReason::MissedDeadline),
+        (
+            FrameDropReason::SurfaceUnavailable,
+            DropReason::SurfaceUnavailable,
+        ),
+        (
+            FrameDropReason::OutputUnavailable,
+            DropReason::OutputUnavailable,
+        ),
+        (FrameDropReason::NotPresented, DropReason::Replaced),
+    ];
+    for (number, (frameclock_reason, _)) in (0_u64..).zip(reasons) {
+        let mut dropped = summary(number);
+        dropped.actual_present = None;
+        dropped.drop_reason = Some(frameclock_reason);
+        recorder.record(&dropped);
+    }
 
-    let seen = taken(backend);
-    assert!(
-        !seen.iter().any(|seen| matches!(seen, Seen::Point(..))),
-        "the host chose not to show it, so it is not a pacing miss: {seen:?}"
-    );
-    assert!(seen.contains(&Seen::Counter(
-        "frameclock_dropped_superseded",
-        Unit::Count,
-        "add",
-        1
-    )));
+    let drops: Vec<_> = taken(backend)
+        .into_iter()
+        .filter_map(|seen| match seen {
+            Seen::Point(number, FramePointKind::Dropped(reason), None) => Some((number, reason)),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<_> = (0_u64..)
+        .zip(reasons)
+        .map(|(number, (_, reason))| (number, reason))
+        .collect();
+    assert_eq!(drops, expected, "one drop per frame, with its reason");
 }
 
 #[test]

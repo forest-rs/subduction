@@ -71,8 +71,7 @@ with when frames were shown.
 
 ## Footfall Version
 
-Footfall isn't on crates.io yet. Until it is, the workspace pins it by git
-revision.
+This crate uses Footfall 0.1.
 
 ## Minimum Supported Rust Version (MSRV)
 

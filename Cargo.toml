@@ -84,13 +84,9 @@ bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = { version = "0.2", default-features = false }
 web-sys = "0.3"
 web-time = { version = "1.1.0" }
-# Footfall isn't on crates.io yet. Pinned to a commit that has the APIs
-# frameclock_footfall needs (numbered frames in streams, clocks, frame points
-# with drop reasons, timing bases, and args), on Footfall's main branch. Move
-# to crates.io once it is published.
-footfall_core = { git = "https://github.com/forest-rs/footfall", rev = "70c95cc776ac13ccc9edf8d15aeaf626c7e790fc" }
-footfall_runtime = { git = "https://github.com/forest-rs/footfall", rev = "70c95cc776ac13ccc9edf8d15aeaf626c7e790fc" }
-footfall_analysis = { git = "https://github.com/forest-rs/footfall", rev = "70c95cc776ac13ccc9edf8d15aeaf626c7e790fc" }
+footfall_analysis = "0.1.0"
+footfall_core = "0.1.0"
+footfall_runtime = "0.1.0"
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

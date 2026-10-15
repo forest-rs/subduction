@@ -18,6 +18,7 @@ env:
     -p frameclock_wayland
     -p frameclock_web
     -p frameclock_windows
+    -p frameclock_x11
     -p mediaclock
     -p subduction_backend_android
     -p subduction_backend_apple
@@ -34,6 +35,7 @@ env:
     --exclude frameclock_simulated
     --exclude frameclock_wayland
     --exclude frameclock_windows
+    --exclude frameclock_x11
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
@@ -64,6 +66,7 @@ env:
     --exclude frameclock_apple
     --exclude frameclock_wayland
     --exclude frameclock_windows
+    --exclude frameclock_x11
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
@@ -72,6 +75,7 @@ env:
     --exclude subduction_backend_web
     --exclude subduction_backend_wgpu
     --exclude subduction_backend_windows
+    --exclude subduction_backend_x11
     --exclude wayland_example_common
     --exclude wayland_layers
     --exclude wayland_lotta_layers
@@ -89,12 +93,14 @@ env:
     --exclude frameclock_apple
     --exclude frameclock_wayland
     --exclude frameclock_windows
+    --exclude frameclock_x11
     --exclude macos_layers
     --exclude macos_lotta_layers
     --exclude macos_wgpu
     --exclude subduction_backend_apple
     --exclude subduction_backend_windows
     --exclude subduction_backend_wayland
+    --exclude subduction_backend_x11
     --exclude trace_demo
     --exclude wayland_example_common
     --exclude wayland_layers
@@ -118,7 +124,9 @@ env:
   # Packages excluded on non-Linux runners (Linux-only).
   RUST_LINUX_EXCLUDE_PKGS: >-
     --exclude frameclock_wayland
+    --exclude frameclock_x11
     --exclude subduction_backend_wayland
+    --exclude subduction_backend_x11
     --exclude wayland_example_common
     --exclude wayland_layers
     --exclude wayland_lotta_layers
@@ -332,6 +340,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'merge_group' }}
+
+      - name: install libxcb (Linux)
+        # `subduction_backend_x11` links the system libxcb through `x11rb`'s
+        # `XCBConnection`, so linking its test binaries needs the dev package's
+        # `libxcb.so`.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev
 
       - name: cargo nextest (Linux)
         if: runner.os == 'Linux'

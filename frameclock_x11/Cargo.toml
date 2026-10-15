@@ -1,0 +1,18 @@
+[package]
+name = "frameclock_x11"
+description = "X11 timing adapters for frameclock (Present extension, MSC/UST)"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["frame-pacing", "timing", "x11", "present-extension", "linux"]
+categories = ["os::unix-apis", "rendering::engine"]
+
+[lints]
+workspace = true
+
+[dependencies]
+frameclock = { workspace = true }
+rustix = { version = "1.1.3", default-features = false, features = ["time"] }
